@@ -8,11 +8,9 @@
 
 language: en-US
 tone_instructions: >
-  Professional, direct, and architectural. Flag structural concerns
-  about the pluggable-substrate promise: anything that encodes our
-  specific organizational shape into the framework, or primitives that
-  would not generalize to small or mid-size teams with different
-  structures. Cite file:line when proposing changes.
+  Professional, direct, architectural. Flag anything that encodes our
+  org shape into framework primitives or blocks small/mid-team use.
+  Cite file:line when proposing changes.
 early_access: false
 
 reviews:
