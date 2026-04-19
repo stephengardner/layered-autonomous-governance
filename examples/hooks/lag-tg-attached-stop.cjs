@@ -47,6 +47,8 @@ const INBOX_DIR = path.join(QUEUE_DIR, 'inbox');
 const CONSUMED_DIR = path.join(QUEUE_DIR, 'consumed');
 const OUTBOX_DIR = path.join(QUEUE_DIR, 'outbox');
 const MARKER_PATH = path.join(QUEUE_DIR, 'active-turn.json');
+const MIRROR_ALL_SENTINEL = path.join(QUEUE_DIR, 'mirror-all');
+const LAST_MIRRORED_PATH = path.join(QUEUE_DIR, 'last-mirrored-uuid.txt');
 
 // ---------------------------------------------------------------------------
 // Main.
@@ -66,31 +68,65 @@ const MARKER_PATH = path.join(QUEUE_DIR, 'active-turn.json');
       process.exit(0);
     }
 
-    // Step 1: if a prior inject left a marker, parse my last assistant
-    //         response and write it to the outbox for the daemon.
+    // Step 1a: if a prior inject left a marker, parse my last assistant
+    //          response and write it to the outbox for the daemon.
+    //          (TG-origin turn: always mirrored regardless of mode.)
+    let outboundSentFromMarker = false;
     const marker = readJsonOrNull(MARKER_PATH);
     if (marker && transcriptPath) {
       try {
-        const reply = findLastAssistantText(transcriptPath);
-        if (reply && reply.trim().length > 0) {
-          fs.mkdirSync(OUTBOX_DIR, { recursive: true });
-          const tsSlug = new Date().toISOString().replace(/[:.]/g, '-');
-          const outFile = path.join(OUTBOX_DIR, `${tsSlug}.json`);
-          const payload = {
+        const replyInfo = findLastAssistant(transcriptPath);
+        if (replyInfo && replyInfo.text.trim().length > 0) {
+          writeOutbox({
             chatId: marker.chatId,
-            text: reply,
+            text: replyInfo.text,
             respondedTo: marker.handles || [],
             at: new Date().toISOString(),
-          };
-          fs.writeFileSync(outFile, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+            origin: 'tg-response',
+          });
+          persistLastMirrored(replyInfo.uuid);
+          outboundSentFromMarker = true;
         }
       } catch (err) {
-        // Best-effort; never fail the hook.
         process.stderr.write(`[lag-tg-stop] outbox write failed: ${err.message}\n`);
       }
       try {
         fs.rmSync(MARKER_PATH, { force: true });
       } catch { /* ignore */ }
+    }
+
+    // Step 1b: mirror-all mode. If the sentinel file exists and we did
+    //          not just mirror via the marker path, push the latest
+    //          assistant reply to Telegram regardless of origin. Uses a
+    //          last-mirrored-uuid state file to skip the same turn twice.
+    if (!outboundSentFromMarker && fs.existsSync(MIRROR_ALL_SENTINEL) && transcriptPath) {
+      try {
+        const replyInfo = findLastAssistant(transcriptPath);
+        const lastSent = readTextOrNull(LAST_MIRRORED_PATH);
+        if (
+          replyInfo
+          && replyInfo.text.trim().length > 0
+          && replyInfo.uuid !== lastSent
+        ) {
+          // Default chat id: read from the sentinel file if it contains a
+          // number, else fall back to env or no chatId (daemon uses its
+          // configured default).
+          const sentinelContent = fs.readFileSync(MIRROR_ALL_SENTINEL, 'utf8').trim();
+          const parsedChatId = Number(sentinelContent);
+          const payload = {
+            text: replyInfo.text,
+            at: new Date().toISOString(),
+            origin: 'terminal-mirror',
+          };
+          if (Number.isFinite(parsedChatId) && parsedChatId > 0) {
+            payload.chatId = parsedChatId;
+          }
+          writeOutbox(payload);
+          persistLastMirrored(replyInfo.uuid);
+        }
+      } catch (err) {
+        process.stderr.write(`[lag-tg-stop] mirror-all write failed: ${err.message}\n`);
+      }
     }
 
     // Step 2: check inbox for new messages. If any, consume and inject.
@@ -202,15 +238,40 @@ function readJsonOrNull(p) {
   }
 }
 
+function readTextOrNull(p) {
+  try {
+    return fs.readFileSync(p, 'utf8').trim();
+  } catch {
+    return null;
+  }
+}
+
+function writeOutbox(payload) {
+  fs.mkdirSync(OUTBOX_DIR, { recursive: true });
+  const tsSlug = new Date().toISOString().replace(/[:.]/g, '-');
+  const rand = Math.random().toString(36).slice(2, 6);
+  const outFile = path.join(OUTBOX_DIR, `${tsSlug}-${rand}.json`);
+  fs.writeFileSync(outFile, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+}
+
+function persistLastMirrored(uuid) {
+  try {
+    fs.mkdirSync(QUEUE_DIR, { recursive: true });
+    fs.writeFileSync(LAST_MIRRORED_PATH, uuid || '', 'utf8');
+  } catch (err) {
+    process.stderr.write(`[lag-tg-stop] last-mirrored write failed: ${err.message}\n`);
+  }
+}
+
 /**
- * Walk the session jsonl and return the text of the most recent
+ * Walk the session jsonl and return {text, uuid} of the most recent
  * assistant message (concatenated `text` blocks of the last turn).
  * Returns null if none found.
  *
  * Skips turns produced by this hook itself (the systemMessage turn)
  * so we capture the actual response Claude gave, not the reinject.
  */
-function findLastAssistantText(transcriptPath) {
+function findLastAssistant(transcriptPath) {
   if (!fs.existsSync(transcriptPath)) return null;
   const data = fs.readFileSync(transcriptPath, 'utf8');
   const lines = data.split(/\r?\n/);
@@ -224,8 +285,9 @@ function findLastAssistantText(transcriptPath) {
     const msg = obj.message;
     if (!msg) continue;
     const content = msg.content;
+    const uuid = typeof obj.uuid === 'string' ? obj.uuid : '';
     if (typeof content === 'string') {
-      if (content.trim().length > 0) return content;
+      if (content.trim().length > 0) return { text: content, uuid };
       continue;
     }
     if (Array.isArray(content)) {
@@ -235,8 +297,14 @@ function findLastAssistantText(transcriptPath) {
           parts.push(b.text);
         }
       }
-      if (parts.length > 0) return parts.join('\n\n');
+      if (parts.length > 0) return { text: parts.join('\n\n'), uuid };
     }
   }
   return null;
+}
+
+// Retained for backward compatibility.
+function findLastAssistantText(transcriptPath) {
+  const r = findLastAssistant(transcriptPath);
+  return r ? r.text : null;
 }
