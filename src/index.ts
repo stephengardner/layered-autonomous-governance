@@ -229,6 +229,20 @@ export type {
 } from './extraction/index.js';
 
 // ---------------------------------------------------------------------------
+// Policy (Phase 52a): canon-driven autonomy dial above Claude's permission mode
+// ---------------------------------------------------------------------------
+export {
+  checkToolPolicy,
+  matchSpecificity,
+  parsePolicy,
+} from './policy/index.js';
+export type {
+  PolicyContext,
+  PolicyDecision,
+  PolicyResult,
+} from './policy/index.js';
+
+// ---------------------------------------------------------------------------
 // Questions (Phase 50b): HIL Q-A with causality binding
 // ---------------------------------------------------------------------------
 export {
