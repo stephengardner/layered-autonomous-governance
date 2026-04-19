@@ -101,14 +101,18 @@ export function createGhClient(options: GhClientOptions = {}): GhClient {
     query: string,
     variables: Readonly<Record<string, unknown>> = {},
   ): Promise<T> {
-    // --raw-field for the query body (multi-line string, no JSON parsing);
-    // -F for variables so numbers / booleans / null keep their JSON types.
-    // Without this, `-F number=1` round-trips as the integer 1 but
-    // `--raw-field number=1` sends the string "1", which GitHub rejects
-    // for Int!-typed GraphQL variables ("invalid value ... expected Int").
+    // Variable typing in `gh api graphql` is sharp-edged:
+    //   - --raw-field: value is sent as a JSON string literally.
+    //   - -F (--field):  value is JSON-parsed (bare numbers / booleans /
+    //     null become their JSON types; bareword strings would be sent
+    //     with the surrounding JSON quotes, which GitHub's GraphQL
+    //     parser rejects as a malformed literal).
+    // For GraphQL variables we need types preserved. Strings route via
+    // --raw-field (bare value becomes JSON string on the wire). Numbers /
+    // booleans / null route via -F with bare literal (JSON-typed).
     const args: string[] = ['api', 'graphql', '--raw-field', `query=${query}`];
     for (const [k, v] of Object.entries(variables)) {
-      args.push('-F', `${k}=${formatFieldValue(v)}`);
+      pushVariableArg(args, k, v);
     }
     const result = await raw(args);
     const parsed = parseJson<{ data: T; errors?: ReadonlyArray<{ message: string }> }>(result.stdout, args);
@@ -137,11 +141,20 @@ function applyQueryString(
   return `${path}${sep}${qs}`;
 }
 
-function formatFieldValue(v: unknown): string {
-  if (typeof v === 'string') return JSON.stringify(v);
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  if (v === null) return 'null';
-  return JSON.stringify(v);
+function pushVariableArg(args: string[], key: string, value: unknown): void {
+  if (typeof value === 'string') {
+    args.push('--raw-field', `${key}=${value}`);
+    return;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    args.push('-F', `${key}=${String(value)}`);
+    return;
+  }
+  if (value === null) {
+    args.push('-F', `${key}=null`);
+    return;
+  }
+  args.push('-F', `${key}=${JSON.stringify(value)}`);
 }
 
 function parseJson<T>(stdout: string, args: ReadonlyArray<string>): T {

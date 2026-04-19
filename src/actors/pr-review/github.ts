@@ -39,7 +39,17 @@ export interface GitHubPrReviewAdapterOptions {
    * 100 threads. Default 10 (1000 threads is far more than any real PR).
    */
   readonly maxThreadPages?: number;
+  /**
+   * Author logins whose presence in a thread marks that thread as
+   * already-handled. Prevents the actor from replying to its own
+   * replies and infinite-looping. Default: ['github-actions[bot]'].
+   * Set to [] to disable (testing only; returns every unresolved
+   * comment regardless of prior replies).
+   */
+  readonly alreadyRepliedAuthors?: ReadonlyArray<string>;
 }
+
+const DEFAULT_ALREADY_REPLIED_AUTHORS: ReadonlyArray<string> = ['github-actions[bot]'];
 
 const REVIEW_THREADS_QUERY = `
 query ReviewThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
@@ -85,12 +95,16 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
   private readonly client: GhClient;
   private readonly dryRun: boolean;
   private readonly maxThreadPages: number;
+  private readonly alreadyRepliedAuthors: ReadonlySet<string>;
   private readonly threadIndex = new Map<string, string>();
 
   constructor(options: GitHubPrReviewAdapterOptions) {
     this.client = options.client;
     this.dryRun = options.dryRun ?? false;
     this.maxThreadPages = options.maxThreadPages ?? 10;
+    this.alreadyRepliedAuthors = new Set(
+      options.alreadyRepliedAuthors ?? DEFAULT_ALREADY_REPLIED_AUTHORS,
+    );
   }
 
   async listUnresolvedComments(pr: PrIdentifier): Promise<ReadonlyArray<ReviewComment>> {
@@ -114,11 +128,17 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
 
       for (const thread of threads.nodes) {
         if (thread.isResolved || thread.isOutdated) continue;
-        for (const c of thread.comments.nodes) {
-          const commentId = String(c.databaseId);
-          this.threadIndex.set(commentId, thread.id);
-          comments.push(mkComment(commentId, thread.id, thread.path, c));
-        }
+        if (this.threadAlreadyHandled(thread)) continue;
+        const nodes = thread.comments.nodes;
+        if (nodes.length === 0) continue;
+        // Only expose the ROOT comment of each unresolved thread. That's
+        // the one the actor replies to; replies thread underneath via
+        // the /replies endpoint. Surfacing every nested comment would
+        // cause the actor to reply to its own replies on the next pass.
+        const root = nodes[0]!;
+        const commentId = String(root.databaseId);
+        this.threadIndex.set(commentId, thread.id);
+        comments.push(mkComment(commentId, thread.id, thread.path, root));
       }
 
       if (!threads.pageInfo.hasNextPage) break;
@@ -162,6 +182,19 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       RESOLVE_THREAD_MUTATION,
       { threadId },
     );
+  }
+
+  private threadAlreadyHandled(thread: {
+    readonly comments: {
+      readonly nodes: ReadonlyArray<{ readonly author?: { readonly login: string } }>;
+    };
+  }): boolean {
+    if (this.alreadyRepliedAuthors.size === 0) return false;
+    for (const c of thread.comments.nodes) {
+      const login = c.author?.login;
+      if (login && this.alreadyRepliedAuthors.has(login)) return true;
+    }
+    return false;
   }
 
   private async resolveThreadId(pr: PrIdentifier, commentId: string): Promise<string | null> {

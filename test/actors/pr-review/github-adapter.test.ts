@@ -112,6 +112,70 @@ describe('GitHubPrReviewAdapter', () => {
     expect(comments[0]!.threadId).toBe('t1');
   });
 
+  it('listUnresolvedComments returns only the ROOT comment per thread', async () => {
+    const client = mkClient({
+      graphql: [
+        mkThreadsPage([
+          {
+            id: 't1',
+            comments: [
+              { databaseId: 901, body: 'original nit', author: 'coderabbitai' },
+              { databaseId: 902, body: 'a human reply', author: 'human-reviewer' },
+            ],
+          },
+        ]),
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client, alreadyRepliedAuthors: [] });
+    const comments = await adapter.listUnresolvedComments(PR);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.id).toBe('901');
+  });
+
+  it('listUnresolvedComments skips threads already replied by the bot (default)', async () => {
+    const client = mkClient({
+      graphql: [
+        mkThreadsPage([
+          {
+            id: 't1',
+            comments: [
+              { databaseId: 301, body: 'original nit', author: 'coderabbitai' },
+              { databaseId: 302, body: 'bot reply', author: 'github-actions[bot]' },
+            ],
+          },
+          {
+            id: 't2',
+            comments: [{ databaseId: 303, body: 'fresh nit', author: 'coderabbitai' }],
+          },
+        ]),
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const comments = await adapter.listUnresolvedComments(PR);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.id).toBe('303');
+  });
+
+  it('alreadyRepliedAuthors: [] disables the filter (testing knob)', async () => {
+    const client = mkClient({
+      graphql: [
+        mkThreadsPage([
+          {
+            id: 't1',
+            comments: [
+              { databaseId: 401, body: 'original', author: 'coderabbitai' },
+              { databaseId: 402, body: 'bot reply', author: 'github-actions[bot]' },
+            ],
+          },
+        ]),
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client, alreadyRepliedAuthors: [] });
+    const comments = await adapter.listUnresolvedComments(PR);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.id).toBe('401');
+  });
+
   it('listUnresolvedComments paginates until hasNextPage=false', async () => {
     const client = mkClient({
       graphql: [
