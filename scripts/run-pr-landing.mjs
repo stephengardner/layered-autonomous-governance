@@ -55,26 +55,41 @@ function parseArgs(argv) {
     principalId: 'pr-landing-agent',
     origin: 'github-action',
   };
+  const parseInt = (raw, flag) => {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1) {
+      console.error(`ERROR: ${flag} expects a positive integer, got "${raw}".`);
+      process.exit(2);
+    }
+    return n;
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--pr') args.prNumber = Number(argv[++i]);
+    if (a === '--pr') args.prNumber = parseInt(argv[++i], '--pr');
     else if (a === '--owner') args.owner = argv[++i];
     else if (a === '--repo') args.repo = argv[++i];
     else if (a === '--live') args.live = true;
     else if (a === '--dry-run') args.live = false;
-    else if (a === '--max-iterations') args.maxIterations = Number(argv[++i]);
-    else if (a === '--deadline-ms') args.deadlineMs = Number(argv[++i]);
+    else if (a === '--max-iterations') args.maxIterations = parseInt(argv[++i], '--max-iterations');
+    else if (a === '--deadline-ms') args.deadlineMs = parseInt(argv[++i], '--deadline-ms');
     else if (a === '--principal') args.principalId = argv[++i];
     else if (a === '--origin') args.origin = argv[++i];
     else if (a === '--help' || a === '-h') {
       console.log(
-        'Usage: node scripts/run-pr-landing.mjs --pr <n> [--owner o] [--repo r] [--live] [--max-iterations n]',
+        'Usage: node scripts/run-pr-landing.mjs --pr <n> [--owner o --repo r] [--live] [--max-iterations n]',
       );
       process.exit(0);
     } else {
       console.error(`Unknown argument: ${a}`);
       process.exit(2);
     }
+  }
+  // All-or-nothing pair: both or neither. Mixing one exposes the
+  // caller to resolveOwnerRepo fallback behaviour they probably did
+  // not intend; surface it early.
+  if ((args.owner === null) !== (args.repo === null)) {
+    console.error('ERROR: --owner and --repo must be provided together (or neither, for gh repo-view fallback).');
+    process.exit(2);
   }
   return args;
 }

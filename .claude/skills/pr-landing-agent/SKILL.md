@@ -54,6 +54,7 @@ Set by `scripts/bootstrap-pr-landing-canon.mjs`. Current shape:
 | `pr-resolve-nit`             | allow     | symmetric with reply-nit |
 | `pr-reply-suggestion`        | allow     | best-effort ack |
 | `pr-reply-architectural`     | escalate  | operator judges |
+| `pr-ensure-review`           | allow     | prompts a reviewer bot when it has not engaged (e.g., posts `@coderabbitai review`). Idempotent: skipped when bot has already posted on this PR. |
 | `^pr-merge-.*`               | deny      | no auto-merge (D13) |
 | `*` (catch-all)              | deny      | default-deny scoped to this principal |
 
