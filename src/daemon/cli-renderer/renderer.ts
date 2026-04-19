@@ -168,6 +168,16 @@ export class CliRenderer {
     }
   }
 
+  /**
+   * Wait for any pending serialized edits to drain. Exposed for tests
+   * that need to observe intermediate channel traffic synchronously;
+   * production callers do not need this — they await terminal emits
+   * which already chain through the serialized queue.
+   */
+  async waitForIdle(): Promise<void> {
+    await this.editChain;
+  }
+
   private async handleStart(label?: string, hint?: string): Promise<void> {
     if (this.messageId !== null) return;
     if (label) this.label = label;
@@ -352,6 +362,11 @@ export class CliRenderer {
           text: body,
           parseMode: 'HTML',
           disableNotification: true,
+          // Telegram's editMessageText strips reply_markup when the
+          // field is omitted; re-send the action on every intermediate
+          // edit to keep the Stop button visible until a terminal
+          // state (handleComplete / handleError clear it).
+          ...(this.action ? { actions: [this.action] } : {}),
         });
       } catch (err) {
         logChannelError('edit', err);
@@ -399,7 +414,11 @@ export class CliRenderer {
   private renderFooter(meta: Readonly<Record<string, string | number>> | undefined): string {
     if (!meta || Object.keys(meta).length === 0) return '';
     const parts = Object.entries(meta).map(([k, v]) => `${k}=${String(v)}`);
-    return `<i>${escapeHtml(parts.join(' · '))}</i>`;
+    // Emit as markdown italic, not literal HTML. When renderFinal is a
+    // markdown->HTML converter (TelegramHtml), raw `<i>` tags would be
+    // escaped to `&lt;i&gt;` by the converter's free-text escape pass.
+    // `_..._` lets the converter produce the `<i>` tag itself.
+    return `_${parts.join(' · ')}_`;
   }
 }
 
