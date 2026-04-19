@@ -43,9 +43,11 @@
  */
 
 import { spawn as ptySpawn } from 'node-pty';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir, stat, open as openFile } from 'node:fs/promises';
+import { existsSync, readdirSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -265,56 +267,35 @@ async function main() {
     try { child.resize(cols, rows); } catch { /* ignore */ }
   });
 
-  // Mirror: accumulate PTY output; flush to Telegram only when the
-  // terminal has been quiet for a sustained window AND the content is
-  // meaningfully different from the last thing we sent. This prevents
-  // the throbber (Braille-pattern spinner redrawing every ~100ms) from
-  // producing one Telegram message per frame.
+  // Mirror: tail the session's jsonl file instead of scraping PTY
+  // output. The jsonl is the authoritative record of Claude's turns,
+  // written atomically at turn boundaries. This gives us exact
+  // assistant text (no spinner glyphs, no TUI redraw artifacts, no
+  // timing heuristics).
   //
-  // Policy:
-  //   - idle window: 5s of no new PTY output triggers a flush
-  //   - minimum content length: 40 chars after cleaning
-  //   - dedup: skip if the cleaned content matches the last flush
-  //   - cleaning strips CSI, OSC, cursor ops, Braille spinner chars,
-  //     and collapses whitespace
-  const mirrorState = {
-    buffer: '',
-    lastWriteAt: 0,
-    lastFlushHash: '',
-  };
-  const mirrorIdleWindowMs = 5_000;
+  // We poll the file every 1s, reading any new bytes appended since
+  // last check, parsing JSONL records, and forwarding `assistant`
+  // entries' text blocks to Telegram. Skip `thinking`, `tool_use`,
+  // and `tool_result` blocks; those are operational noise.
+  //
+  // The session file path is determined from the resumed session id
+  // (when --resume-session is passed) or detected by watching for
+  // the newest jsonl in the current project's projects dir.
   const mirrorMinChars = 40;
-
-  const mirrorCheckTimer = args.mirror
-    ? setInterval(async () => {
-        if (mirrorState.buffer.length === 0) return;
-        const sinceLastWrite = Date.now() - mirrorState.lastWriteAt;
-        if (sinceLastWrite < mirrorIdleWindowMs) return;
-
-        const cleaned = cleanForMirror(mirrorState.buffer);
-        mirrorState.buffer = '';
-        if (cleaned.length < mirrorMinChars) return;
-
-        const hash = hashString(cleaned);
-        if (hash === mirrorState.lastFlushHash) return;
-        mirrorState.lastFlushHash = hash;
-
+  let mirrorController = null;
+  if (args.mirror) {
+    mirrorController = startJsonlMirror({
+      repoRoot: REPO_ROOT,
+      resumeSessionId: args.resumeSessionId,
+      onText: async (text) => {
+        if (text.length < mirrorMinChars) return;
         try {
-          await injector.sendMessage(chunkForTelegram(cleaned));
+          await injector.sendMessage(chunkForTelegram(text));
         } catch (err) {
           if (args.verbose) console.error('[tg] mirror send failed:', err.message);
         }
-      }, 1_000)
-    : null;
-
-  if (args.mirror) {
-    child.onData((data) => {
-      mirrorState.buffer += data;
-      mirrorState.lastWriteAt = Date.now();
-      // Cap buffer so long streams do not balloon memory.
-      if (mirrorState.buffer.length > 40_000) {
-        mirrorState.buffer = mirrorState.buffer.slice(-40_000);
-      }
+      },
+      verbose: args.verbose,
     });
   }
 
@@ -337,7 +318,7 @@ async function main() {
 
   const shutdown = () => {
     injector.stop();
-    if (mirrorTimer) clearInterval(mirrorTimer);
+    if (mirrorController) mirrorController.stop();
     try { child.kill(); } catch { /* ignore */ }
     process.exit(0);
   };
@@ -351,49 +332,190 @@ async function main() {
 // Helpers.
 // ---------------------------------------------------------------------------
 
-/**
- * Strip terminal control sequences and noisy redraw artifacts so the
- * mirrored text is readable chat content. Handles:
- *   - CSI sequences `\x1b[...X` (cursor moves, colors, clears)
- *   - OSC sequences `\x1b]...\x07` (window titles, hyperlinks)
- *   - Legacy single-char escapes (`\x1b=`, `\x1b>`, `\x1b<`)
- *   - Control characters outside \t \n \r
- *   - Unicode Braille block (U+2800-U+28FF), the go-to spinner glyphs
- *   - Classic ASCII spinners and scrolls of them
- *   - Carriage returns -> newlines, redundant blank lines collapsed
- */
-function cleanForMirror(s) {
-  return s
-    // eslint-disable-next-line no-control-regex
-    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')    // CSI
-    // eslint-disable-next-line no-control-regex
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC
-    // eslint-disable-next-line no-control-regex
-    .replace(/\x1b[=><#][0-9A-Za-z]?/g, '')    // mode switches, DEC line attrs
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')  // stray control chars
-    .replace(/[\u2800-\u28FF]/g, '')           // Braille spinner block
-    .replace(/[|/\\\-*+oO·]{2,}/g, '')         // multi-char ASCII spinners
-    .replace(/\r+/g, '\n')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-/**
- * Fast 32-bit djb2 hash, enough to dedup identical mirror flushes.
- */
-function hashString(s) {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
-  }
-  return String(h);
-}
-
 function chunkForTelegram(text, max = 4000) {
   if (text.length <= max) return text;
   return text.slice(0, max - 40) + '\n\n...[truncated in mirror]';
+}
+
+/**
+ * Start tailing the session's jsonl file for assistant turn outputs.
+ * Returns a { stop } controller.
+ *
+ * Polls every 1s. Reads only bytes appended since last check so the
+ * poll cost is bounded even for long sessions. Parses each appended
+ * line as JSON, forwards `assistant` messages' text blocks to the
+ * supplied onText callback.
+ *
+ * Path resolution:
+ *   - If resumeSessionId given: watch
+ *     ~/.claude/projects/<sanitized-cwd>/<resumeSessionId>.jsonl
+ *     as soon as it exists.
+ *   - Else: detect the session file by finding the newest-mtime jsonl
+ *     in the project dir that wasn't there at wrapper start. Up to a
+ *     30s wait; gives up quietly if none appears.
+ */
+function startJsonlMirror({ repoRoot, resumeSessionId, onText, verbose }) {
+  const projectsRoot = join(homedir(), '.claude', 'projects');
+  const sanitized = repoRoot.replace(/[:\\/]/g, '-');
+  const projectDir = join(projectsRoot, sanitized);
+
+  const state = {
+    filePath: null,
+    offset: 0,
+    partial: '', // last incomplete line, if any
+    seenUuids: new Set(),
+    timer: null,
+    wallStart: Date.now(),
+    initialSnapshot: new Set(),
+    running: true,
+    // Seek-to-end flag: on the first attach to a jsonl file, we set
+    // offset = current size so historical assistant turns (from a
+    // prior resumed session) are NOT mirrored. Only turns written
+    // *after* wrapper start are forwarded.
+    attached: false,
+  };
+
+  // If resume id given, we know the target file directly.
+  if (resumeSessionId) {
+    state.filePath = join(projectDir, `${resumeSessionId}.jsonl`);
+  } else {
+    // Snapshot current jsonls so a new one (the session we're about
+    // to launch) can be distinguished when it appears.
+    try {
+      const entries = readdirSync(projectDir).filter((n) => n.endsWith('.jsonl'));
+      for (const e of entries) state.initialSnapshot.add(e);
+    } catch {
+      // project dir may not exist yet; fine
+    }
+  }
+
+  const tick = async () => {
+    if (!state.running) return;
+    try {
+      if (!state.filePath || !existsSync(state.filePath)) {
+        // Detect mode: find a new jsonl that appeared since start.
+        if (!resumeSessionId) {
+          try {
+            const entries = await readdir(projectDir);
+            const jsonls = entries.filter((n) => n.endsWith('.jsonl'));
+            const fresh = jsonls.filter((n) => !state.initialSnapshot.has(n));
+            if (fresh.length > 0) {
+              // Pick the most-recently-modified fresh file.
+              let best = null;
+              for (const n of fresh) {
+                const s = await stat(join(projectDir, n));
+                if (!best || s.mtimeMs > best.mtime) {
+                  best = { path: join(projectDir, n), mtime: s.mtimeMs };
+                }
+              }
+              state.filePath = best.path;
+              if (verbose) console.error(`[mirror] tailing ${state.filePath}`);
+            } else if (Date.now() - state.wallStart > 30_000) {
+              // Give up detecting after 30s.
+              state.running = false;
+              return;
+            }
+          } catch {
+            // project dir not yet present
+          }
+        }
+        if (state.running && state.filePath === null) {
+          state.timer = setTimeout(tick, 1_000);
+          return;
+        }
+        if (!existsSync(state.filePath)) {
+          state.timer = setTimeout(tick, 1_000);
+          return;
+        }
+        if (verbose) console.error(`[mirror] tailing ${state.filePath}`);
+      }
+
+      // On first attach, seek to EOF and also register every existing
+      // assistant uuid as "seen" so nothing historical is ever mirrored,
+      // even if the writer rewrites or appends out-of-order.
+      if (!state.attached) {
+        const s0 = await stat(state.filePath);
+        try {
+          const existing = await readFile(state.filePath, 'utf8');
+          for (const line of existing.split(/\r?\n/)) {
+            if (!line.trim()) continue;
+            try {
+              const obj = JSON.parse(line);
+              if (obj.type === 'assistant' && typeof obj.uuid === 'string') {
+                state.seenUuids.add(obj.uuid);
+              }
+            } catch { /* skip malformed */ }
+          }
+        } catch { /* fine, we will still skip via offset */ }
+        state.offset = s0.size;
+        state.attached = true;
+        if (verbose) console.error(`[mirror] attached at EOF (${s0.size} bytes, ${state.seenUuids.size} historical assistant turns skipped)`);
+      }
+
+      // Read appended bytes since last offset.
+      const s = await stat(state.filePath);
+      if (s.size > state.offset) {
+        const fh = await openFile(state.filePath, 'r');
+        try {
+          const length = s.size - state.offset;
+          const buf = Buffer.alloc(length);
+          await fh.read(buf, 0, length, state.offset);
+          state.offset = s.size;
+          const chunk = state.partial + buf.toString('utf8');
+          const lines = chunk.split(/\r?\n/);
+          state.partial = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            let obj;
+            try { obj = JSON.parse(line); } catch { continue; }
+            if (obj.type !== 'assistant') continue;
+            const uuid = typeof obj.uuid === 'string' ? obj.uuid : null;
+            if (uuid && state.seenUuids.has(uuid)) continue;
+            if (uuid) state.seenUuids.add(uuid);
+            const text = extractAssistantText(obj.message);
+            if (text && text.trim().length > 0) {
+              try { await onText(text); } catch (e) { if (verbose) console.error('[mirror] onText threw:', e.message); }
+            }
+          }
+        } finally {
+          await fh.close();
+        }
+      }
+    } catch (err) {
+      if (verbose) console.error('[mirror] tick error:', err.message);
+    } finally {
+      if (state.running) state.timer = setTimeout(tick, 1_000);
+    }
+  };
+
+  state.timer = setTimeout(tick, 500);
+
+  return {
+    stop() {
+      state.running = false;
+      if (state.timer) clearTimeout(state.timer);
+    },
+  };
+}
+
+/**
+ * Extract the text content from an assistant message body. Skips
+ * `thinking`, `tool_use`, `tool_result`. Concatenates multiple text
+ * blocks with blank lines between.
+ */
+function extractAssistantText(message) {
+  if (!message) return '';
+  const content = message.content;
+  if (typeof content === 'string') return content.trim();
+  if (!Array.isArray(content)) return '';
+  const parts = [];
+  for (const b of content) {
+    if (!b || typeof b !== 'object') continue;
+    if (b.type === 'text' && typeof b.text === 'string' && b.text.trim().length > 0) {
+      parts.push(b.text);
+    }
+  }
+  return parts.join('\n\n').trim();
 }
 
 main().catch((err) => {
