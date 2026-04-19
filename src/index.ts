@@ -197,12 +197,16 @@ export type {
 export {
   ClaudeCodeTranscriptSource,
   FreshSource,
+  ObsidianVaultSource,
   parseLine as parseClaudeCodeLine,
+  parseNote as parseObsidianNote,
+  listMarkdownRecursive,
 } from './sources/index.js';
 export type {
   ClaudeCodeTranscriptSourceOptions,
   IngestOptions,
   IngestReport,
+  ObsidianVaultSourceOptions,
   SessionSource,
 } from './sources/index.js';
 

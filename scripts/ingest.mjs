@@ -38,6 +38,7 @@ import { createFileHost } from '../dist/adapters/file/index.js';
 import {
   ClaudeCodeTranscriptSource,
   FreshSource,
+  ObsidianVaultSource,
 } from '../dist/sources/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -115,8 +116,11 @@ function buildSource(spec) {
     case 'claude-code':
       if (!path) throw new Error('claude-code source requires a path');
       return new ClaudeCodeTranscriptSource({ dir: expandTilde(path) });
+    case 'obsidian':
+      if (!path) throw new Error('obsidian source requires a path');
+      return new ObsidianVaultSource({ dir: expandTilde(path) });
     default:
-      throw new Error(`Unknown source kind: "${kind}". Known: fresh, claude-code.`);
+      throw new Error(`Unknown source kind: "${kind}". Known: fresh, claude-code, obsidian.`);
   }
 }
 

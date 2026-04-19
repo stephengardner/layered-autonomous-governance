@@ -26,3 +26,9 @@ export {
   parseLine,
   type ClaudeCodeTranscriptSourceOptions,
 } from './claude-code.js';
+export {
+  ObsidianVaultSource,
+  parseNote,
+  listMarkdownRecursive,
+  type ObsidianVaultSourceOptions,
+} from './obsidian.js';
