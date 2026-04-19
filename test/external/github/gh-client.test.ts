@@ -81,12 +81,19 @@ describe('createGhClient', () => {
     // Query goes through --raw-field so gh does not try to JSON-parse it.
     expect(calls[0]!.args).toContain('--raw-field');
     expect(calls[0]!.args).toContain('query=query { hello }');
-    // Variables go through -F so numbers stay Int, booleans stay Bool, etc.
+    // Strings: --raw-field (bare value; gh sends as JSON string on the wire).
+    // Numbers / booleans / null: -F with bare literal (JSON-typed).
     const args = calls[0]!.args;
-    for (const pair of ['number=1', 'owner="foo"', 'flag=true', 'nothing=null']) {
+    const expectations: ReadonlyArray<{ pair: string; flag: string }> = [
+      { pair: 'number=1', flag: '-F' },
+      { pair: 'owner=foo', flag: '--raw-field' },
+      { pair: 'flag=true', flag: '-F' },
+      { pair: 'nothing=null', flag: '-F' },
+    ];
+    for (const { pair, flag } of expectations) {
       const idx = args.indexOf(pair);
       expect(idx, `expected "${pair}" in args: ${JSON.stringify(args)}`).toBeGreaterThan(-1);
-      expect(args[idx - 1]).toBe('-F');
+      expect(args[idx - 1]).toBe(flag);
     }
   });
 
