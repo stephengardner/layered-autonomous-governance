@@ -207,6 +207,20 @@ export type {
 } from './sources/index.js';
 
 // ---------------------------------------------------------------------------
+// Extraction (Phase 43): L0 raw -> L1 structured claims via LLM judge
+// ---------------------------------------------------------------------------
+export {
+  extractClaimsFromAtom,
+  runExtractionPass,
+} from './extraction/index.js';
+export type {
+  ExtractClaimsOptions,
+  ExtractionPassOptions,
+  ExtractionReport,
+  ExtractionPassReport,
+} from './extraction/index.js';
+
+// ---------------------------------------------------------------------------
 // Plans (Phase 38): intent governance
 // ---------------------------------------------------------------------------
 export {
@@ -241,6 +255,7 @@ export {
   CLASSIFY_ATOM,
   DETECT_ANOMALY,
   DETECT_CONFLICT,
+  EXTRACT_CLAIMS,
   getSchema,
   JUDGE_SCHEMAS,
   SUMMARIZE_DIGEST,
@@ -250,6 +265,7 @@ export type {
   ClassifyAtomOutput,
   DetectAnomalyOutput,
   DetectConflictOutput,
+  ExtractClaimsOutput,
   JudgeSchemaId,
   JudgeSchemaSet,
   SummarizeDigestOutput,
