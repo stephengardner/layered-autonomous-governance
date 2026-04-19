@@ -28,6 +28,57 @@ Format: short context, the decision, why, alternatives we rejected, what breaks 
 
 ---
 
+## D17: `ActorAdapter` as a deliberate second seam; D1 scope narrowed to governance (Phase 53-pre)
+
+**Context**: Phase 53 introduces LAG's first outward-acting agents -- Actors that touch systems outside the governance substrate (GitHub, CI, deploys). D1 says the `Host` interface is the sole boundary between framework logic and implementation, but the current 8-sub-interface `Host` has no reasonable slot for arbitrary external systems, and forcing them in (as a 9th `externalSystems` sub-interface or a typed extension registry) turns `Host` into a god object and loses the "Host is a governance boundary" story.
+
+**Decision**: Narrow D1's scope. `Host` is the sole boundary **for governance primitives** (atoms, canon, LLM, notifications, scheduling, audit, principals, time). A new `ActorAdapter` interface is the boundary for external systems that Actors consume. Actors declare their adapter dependencies at the type level; the `runActor` driver gates every external action through `Host.auditor` + `checkToolPolicy` before the adapter executes.
+
+**Why**:
+- Preserves D1's intent exactly (no framework code reaches past governance), while honestly acknowledging that governance primitives and external-system adapters are different concerns.
+- Keeps `Host` a focused, testable 8-interface contract. Adding GitHub / CI / deploy support never touches `Host`.
+- Each Actor's adapter dependencies are visible at the type level; consumers see what an Actor reaches for without spelunking a registry.
+- Test story stays clean: stub the Host for governance, stub the adapters for external effects, compose both.
+- The gate point where `checkToolPolicy` (52a) lives is inside `runActor`, between `propose` and `apply` -- the exact seam needed for the autonomy dial to actually bite on real external actions.
+
+**Alternatives rejected**:
+- Widen `Host` with a 9th `externalSystems` sub-interface: God-object risk; Host has to be constructable knowing every external system the consumer's actors will ever touch. Scales poorly for orgs with many actors.
+- Actors instantiate their own adapters directly, bypassing Host: violates D1 in letter and spirit; no canonical gate point for policy or audit.
+- Typed extension registry on `Host`: extensible but opaque; documentation and discoverability suffer; still funnels non-governance concerns through Host.
+
+**What breaks if we revisit**:
+- Unifying everything back under Host destroys Actor self-declared adapter surface and makes tests harder to compose.
+- Dropping the `ActorAdapter` seam entirely (Actors free to instantiate anything) loses the gate point where policy and audit live -- the whole reason the governance substrate exists.
+
+**Primary reference**: `design/actors-and-adapters.md` (this phase).
+
+---
+
+## D16: Two agent classes -- inward governance loops and outward actors (Phase 53-pre)
+
+**Context**: Until Phase 53, every autonomous loop in LAG was inward-facing: `LoopRunner` runs decay + TTL + canon application over our own atom store. With pr-landing, deploy-agents, test-triage, docs-refreshers on the roadmap, LAG now has a second class of loop -- **outward** -- that observes and acts on external systems.
+
+**Decision**: Name the two classes explicitly.
+- **Inward Actor**: a governance loop over LAG's own state. `LoopRunner` is the first instance; canon reconciliation and TTL expiration are both inward work. No external adapters required.
+- **Outward Actor**: a loop that takes effects on external systems through `ActorAdapter`s. `PrLandingActor` is the first instance. Every action goes through `checkToolPolicy` + audit; the kill-switch halts unconditionally.
+
+Both classes share the `Actor` interface (`observe -> classify -> propose -> apply -> reflect`, per MAPE-K lineage). The direction is a metadata property, not a separate type hierarchy.
+
+**Why**:
+- Naming the classes now prevents confusion when a reader sees `LoopRunner` alongside `PrLandingActor` and wonders if they are parallel abstractions (answer: they are the same shape, at different directions).
+- The autonomy dial (52a / 52b) applies uniformly to both classes because both go through `runActor`. That's load-bearing.
+- V2 will reframe `LoopRunner` as the canonical `InwardActor` implementation, keeping the current class as a thin adapter over the unified primitive; naming the two classes upfront clears the migration path.
+
+**Alternatives rejected**:
+- Separate type hierarchies for inward vs outward: premature; they share 100% of the loop shape. Differences are which adapters are plugged in.
+- Leave the distinction nameless and let readers figure it out: we have been burned by implicit framework distinctions before (D1 vs actor boundary was the most recent example); naming is cheap.
+
+**What breaks if we revisit**: if we decide outward and inward need different driver semantics (they currently don't), we refactor `runActor` into two drivers with a shared core. Low cost.
+
+**Primary reference**: `design/actors-and-adapters.md` + `design/prior-art-actor-frameworks.md`.
+
+---
+
 ## D15: Terminal wrapper (Phase 51a) as the preferred real-time surface, not OS-level stdin injection
 
 **Context**: To give a running Claude Code terminal real-time Telegram reception (no turn-boundary wait), we needed some layer that owns the child's stdin. Two options were on the table:
@@ -41,7 +92,7 @@ Format: short context, the decision, why, alternatives we rejected, what breaks 
 - Single terminal emulator variance: the wrapper owns the PTY, so iTerm/Alacritty/Windows Terminal/tmux quirks are irrelevant.
 - No ambiguity about *which* `claude` instance is targeted (wrapper spawns its own child).
 - Invisible keystroke injection into an existing terminal is harder to reason about as a framework primitive; an explicit wrapper matches the "pluggable, auditable" discipline.
-- Mid-stream user typing can't collide with injection — wrapper sequences both streams into the PTY.
+- Mid-stream user typing can't collide with injection -- wrapper sequences both streams into the PTY.
 
 **Alternatives considered**:
 - OS-level injection: wow-factor for the user who doesn't want to relaunch, but the trade-off dominates against a framework shipping to other developers.
@@ -51,19 +102,19 @@ Format: short context, the decision, why, alternatives we rejected, what breaks 
 
 ---
 
-## D14: HIL causality — question atoms + reply-to + sent-log, layered (Phase 50a/b/b-live)
+## D14: HIL causality -- question atoms + reply-to + sent-log, layered (Phase 50a/b/b-live)
 
 **Context**: The Notifier's handle-based escalation path (`telegraph` -> disposition via handle) already gives Q-A causal binding for *structured* governance events. But free-form Telegram chat had no such binding: a "Yes" reply bound only to "the most recent question I sent," which races catastrophically under network delay (imagine the operator answers an older question while a newer question is already on the wire).
 
 **Decision**: Three layered primitives, all opt-in:
-1. **Phase 50a signals**: daemon records `tgMessageId` + `tgDate` on inbound, writes `sent-log.jsonl` for outbound with `message_id` + `sentAt`. Stop hook emits a *Causality context* block into the systemMessage — explicit reply-to match when the operator swipes-to-reply, TEMPORAL WARNING when an inbound is older than the most recent outbound.
+1. **Phase 50a signals**: daemon records `tgMessageId` + `tgDate` on inbound, writes `sent-log.jsonl` for outbound with `message_id` + `sentAt`. Stop hook emits a *Causality context* block into the systemMessage -- explicit reply-to match when the operator swipes-to-reply, TEMPORAL WARNING when an inbound is older than the most recent outbound.
 2. **Phase 50b primitive**: `type: 'question'` atom with a `pending | answered | expired | abandoned` state machine. `askQuestion`, `bindAnswer`, `listPendingQuestions`, `expirePastDueQuestions`. Answer atoms carry `provenance.derived_from = [questionId]`.
 3. **Phase 50b-live wiring**: `scripts/tg-ask.mjs` creates a question atom AND queues an outbox message tagged with `questionId`. Daemon's `drainOutbox` captures the Telegram-assigned `message_id` back onto the question's metadata. On an inbound with `reply_to_message.message_id`, daemon looks up `sent-log.jsonl` for a matching `questionId` and calls `bindAnswer` automatically. Hook annotates with "AUTO-BOUND".
 
 **Why layered**: signals alone are insufficient (timestamps don't bind across concurrent pending questions). Primitive alone is insufficient (agent has to remember to bind manually). Wiring closes the loop: the operator swipes-to-reply and the Q-A chain is captured automatically with full provenance.
 
 **Alternatives considered**:
-- **Timestamp heuristic only** (ship what 50a already provides; drop 50b): simple, but fails on concurrent questions — can't tell which one a "Yes" answers.
+- **Timestamp heuristic only** (ship what 50a already provides; drop 50b): simple, but fails on concurrent questions -- can't tell which one a "Yes" answers.
 - **LLM disambiguator first** (Phase 50c before 50b-live): works when explicit reply-to is missing, but adds an LLM call on the hot path. Deferred; reply-to covers the common case.
 - **Force every HIL exchange through the Notifier handle path**: rejected because free-form chat is a first-class modality now (mirror-all, tg-ask, wrapper injection) and shouldn't require structured-event envelope.
 
