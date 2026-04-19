@@ -53,6 +53,7 @@ function parseArgs(argv) {
     canonPath: resolve(REPO_ROOT, 'CLAUDE.md'),
     verbose: false,
     resumeSession: null, // null | 'latest' | '<specific-id>'
+    queueOnly: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -66,8 +67,10 @@ function parseArgs(argv) {
       args.resumeSession = 'latest';
     } else if (a === '--resume-session' && i + 1 < argv.length) {
       args.resumeSession = argv[++i];
+    } else if (a === '--queue-only') {
+      args.queueOnly = true;
     } else if (a === '-h' || a === '--help') {
-      console.log(`Usage: node scripts/daemon.mjs [--root-dir <path>] [--canon-file <path>] [--resume-latest | --resume-session <id>] [--verbose]`);
+      console.log(`Usage: node scripts/daemon.mjs [--root-dir <path>] [--canon-file <path>] [--resume-latest | --resume-session <id>] [--queue-only] [--verbose]`);
       process.exit(0);
     }
   }
@@ -130,6 +133,12 @@ async function main() {
     console.log(`  Resume:       ${resumeSessionId}`);
   }
 
+  if (args.queueOnly) {
+    console.log(`  Mode:         QUEUE-ONLY (terminal-attached)`);
+    console.log(`                Inbox:  ${resolve(args.rootDir, 'tg-queue/inbox')}`);
+    console.log(`                Outbox: ${resolve(args.rootDir, 'tg-queue/outbox')}`);
+  }
+
   const daemon = new LAGDaemon({
     host,
     botToken: token,
@@ -140,6 +149,7 @@ async function main() {
     // history in ~/.claude.json (which leaks other projects' context).
     repoRoot: REPO_ROOT,
     ...(resumeSessionId !== null ? { resumeSessionId } : {}),
+    ...(args.queueOnly ? { queueMode: true, queueDir: resolve(args.rootDir, 'tg-queue') } : {}),
     principalResolver: () => 'lag-self',
     onCallback: async (handle, disposition, responder) => {
       try {
