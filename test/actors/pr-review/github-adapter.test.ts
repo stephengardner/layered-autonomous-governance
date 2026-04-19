@@ -8,7 +8,7 @@
  *   - resolveComment: looks up threadId (cached or via re-list) and
  *     calls the resolveReviewThread mutation
  *   - dryRun mode: writes short-circuit without shelling out; reads still go through
- *   - resolveComment throws when thread cannot be found
+ *   - resolveComment is idempotent: no-ops (does not throw) when no thread is found
  */
 
 import { describe, expect, it } from 'vitest';

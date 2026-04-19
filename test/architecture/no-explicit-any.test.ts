@@ -75,7 +75,16 @@ function stripCommentsAndStrings(source: string): string {
   return out;
 }
 
-const ANY_TYPE_REGEX = /(?::|as|<|,|\|\s*|&\s*)\s*any\b(?!\w|\s*:)/g;
+// Contexts where `any` is a type position that we want to reject:
+//   `: any`        field / param annotation
+//   `as any`       cast
+//   `<any`         generic argument or angle-bracket cast opener
+//   `, any`        next generic arg in a list, or tuple element
+//   `| any`, `& any`  union / intersection with any
+//   `= any`        defaulted generic (`<T = any>`) or aliased (`type X = any`)
+// We also reject `any` on its own line after a return-type arrow / colon at the
+// end of a line (matched via the `:` branch after cleaning).
+const ANY_TYPE_REGEX = /(?::|=|as|<|,|\|\s*|&\s*)\s*any\b(?!\w|\s*:)/g;
 
 function findExplicitAnyMatches(source: string): Array<{ line: number; snippet: string }> {
   const cleaned = stripCommentsAndStrings(source);
