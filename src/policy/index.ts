@@ -80,16 +80,32 @@ interface ParsedPolicy {
 export async function checkToolPolicy(
   host: Host,
   context: PolicyContext,
-  options: { maxPolicies?: number } = {},
+  options: { maxPolicies?: number; pageSize?: number } = {},
 ): Promise<PolicyResult> {
-  const max = options.maxPolicies ?? 500;
-  const page = await host.atoms.query({ layer: ['L3'] }, max);
+  // Paginate through ALL L3 atoms. Partial pagination would mean a
+  // more-specific policy sitting beyond the first page could be silently
+  // missed, producing an incorrect authorization decision (the exact
+  // failure mode CodeRabbit flagged). The loop terminates on nextCursor
+  // = null OR when maxPolicies is reached (defence against unbounded
+  // atom stores).
+  const max = options.maxPolicies ?? Number.POSITIVE_INFINITY;
+  const pageSize = options.pageSize ?? 200;
   const policies: ParsedPolicy[] = [];
-  for (const atom of page.atoms) {
-    const parsed = parsePolicy(atom);
-    if (parsed && parsed.subject === 'tool-use') {
-      policies.push(parsed);
+  let cursor: string | undefined = undefined;
+  let totalSeen = 0;
+  while (true) {
+    const page = await host.atoms.query({ layer: ['L3'] }, pageSize, cursor);
+    for (const atom of page.atoms) {
+      totalSeen++;
+      const parsed = parsePolicy(atom);
+      if (parsed && parsed.subject === 'tool-use') {
+        policies.push(parsed);
+      }
+      if (totalSeen >= max) break;
     }
+    if (totalSeen >= max) break;
+    if (page.nextCursor === null) break;
+    cursor = page.nextCursor;
   }
   if (policies.length === 0) {
     return {

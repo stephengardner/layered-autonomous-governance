@@ -210,6 +210,42 @@ describe('checkToolPolicy', () => {
     expect(result.decision).toBe('allow');
   });
 
+  it('paginates across pages so policies beyond pageSize are not silently missed', async () => {
+    // Regression: previous implementation fetched only the first page
+    // (max 500), so a specific allow sitting beyond page 1 could be
+    // missed, letting a broader deny win. Seed many wildcard allows
+    // and ONE specific deny at the end; pagination must surface it.
+    const host = createMemoryHost();
+    // First, 15 wildcard allow policies (all match Bash loosely).
+    for (let i = 0; i < 15; i++) {
+      await host.atoms.put(policyAtom(`filler-${i}`, {
+        subject: 'tool-use',
+        tool: '*',
+        origin: '*',
+        principal: '*',
+        action: 'allow',
+        reason: `filler ${i}`,
+      }));
+    }
+    // Final policy: specific deny for Bash. Would be missed with
+    // pageSize=10 if pagination wasn't walking nextCursor.
+    await host.atoms.put(policyAtom('specific-deny', {
+      subject: 'tool-use',
+      tool: 'Bash',
+      origin: '*',
+      principal: '*',
+      action: 'deny',
+      reason: 'specific bash deny after many fillers',
+    }));
+    const result = await checkToolPolicy(
+      host,
+      { tool: 'Bash', origin: 'terminal', principal: operator },
+      { pageSize: 10 },
+    );
+    expect(result.decision).toBe('deny');
+    expect(result.matchedAtomId).toBe('specific-deny');
+  });
+
   it('regex policy matches a tool family', async () => {
     const host = createMemoryHost();
     await host.atoms.put(policyAtom('write-ops', {
