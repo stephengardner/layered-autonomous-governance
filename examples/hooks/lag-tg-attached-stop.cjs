@@ -49,6 +49,7 @@ const OUTBOX_DIR = path.join(QUEUE_DIR, 'outbox');
 const MARKER_PATH = path.join(QUEUE_DIR, 'active-turn.json');
 const MIRROR_ALL_SENTINEL = path.join(QUEUE_DIR, 'mirror-all');
 const LAST_MIRRORED_PATH = path.join(QUEUE_DIR, 'last-mirrored-uuid.txt');
+const NO_AUTO_ACK_SENTINEL = path.join(QUEUE_DIR, 'no-auto-ack');
 
 // ---------------------------------------------------------------------------
 // Main.
@@ -185,6 +186,24 @@ const LAST_MIRRORED_PATH = path.join(QUEUE_DIR, 'last-mirrored-uuid.txt');
       process.stderr.write(`[lag-tg-stop] marker write failed: ${err.message}\n`);
     }
 
+    // Auto-ack: push an immediate "received, working on it" message so
+    // the operator knows work has started. Default ON; disable by
+    // creating the no-auto-ack sentinel file. Summarizes the injected
+    // messages without quoting them in full (keeps ack short).
+    if (!fs.existsSync(NO_AUTO_ACK_SENTINEL)) {
+      try {
+        const ackText = formatAck(messages);
+        writeOutbox({
+          text: ackText,
+          at: new Date().toISOString(),
+          origin: 'auto-ack',
+          ...(chatId !== null ? { chatId } : {}),
+        });
+      } catch (err) {
+        process.stderr.write(`[lag-tg-stop] auto-ack write failed: ${err.message}\n`);
+      }
+    }
+
     // Format the systemMessage-style reinject.
     const bodyLines = [];
     bodyLines.push(
@@ -252,6 +271,22 @@ function writeOutbox(payload) {
   const rand = Math.random().toString(36).slice(2, 6);
   const outFile = path.join(OUTBOX_DIR, `${tsSlug}-${rand}.json`);
   fs.writeFileSync(outFile, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+}
+
+/**
+ * Build a short "received, working on it" ack. For a single short
+ * message, echo the first ~80 chars so the operator sees LAG parsed
+ * the right thing. For long or multiple messages, just summarize.
+ */
+function formatAck(messages) {
+  const count = messages.length;
+  const prefix = 'Got it. Working on it now, will respond here when the work settles.';
+  if (count === 0) return prefix;
+  const first = messages[0].trim();
+  if (count === 1 && first.length <= 120) {
+    return `Got it: "${first.replace(/\s+/g, ' ')}". Working on it now; reply incoming.`;
+  }
+  return `Got it (${count} message${count > 1 ? 's' : ''}, ${first.slice(0, 60).replace(/\s+/g, ' ')}...). Working on it now; reply incoming.`;
 }
 
 function persistLastMirrored(uuid) {
