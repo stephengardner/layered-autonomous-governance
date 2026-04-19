@@ -265,28 +265,55 @@ async function main() {
     try { child.resize(cols, rows); } catch { /* ignore */ }
   });
 
-  // Mirror: keep a simple buffer of child output; periodically send
-  // accumulated Claude responses back to Telegram. Cheap heuristic:
-  // flush every 2s if the buffer looks like a complete-ish chunk.
-  const mirrorBuffer = { text: '' };
-  const mirrorTimer = args.mirror
+  // Mirror: accumulate PTY output; flush to Telegram only when the
+  // terminal has been quiet for a sustained window AND the content is
+  // meaningfully different from the last thing we sent. This prevents
+  // the throbber (Braille-pattern spinner redrawing every ~100ms) from
+  // producing one Telegram message per frame.
+  //
+  // Policy:
+  //   - idle window: 5s of no new PTY output triggers a flush
+  //   - minimum content length: 40 chars after cleaning
+  //   - dedup: skip if the cleaned content matches the last flush
+  //   - cleaning strips CSI, OSC, cursor ops, Braille spinner chars,
+  //     and collapses whitespace
+  const mirrorState = {
+    buffer: '',
+    lastWriteAt: 0,
+    lastFlushHash: '',
+  };
+  const mirrorIdleWindowMs = 5_000;
+  const mirrorMinChars = 40;
+
+  const mirrorCheckTimer = args.mirror
     ? setInterval(async () => {
-        const text = stripAnsi(mirrorBuffer.text).trim();
-        if (text.length === 0) return;
-        mirrorBuffer.text = '';
+        if (mirrorState.buffer.length === 0) return;
+        const sinceLastWrite = Date.now() - mirrorState.lastWriteAt;
+        if (sinceLastWrite < mirrorIdleWindowMs) return;
+
+        const cleaned = cleanForMirror(mirrorState.buffer);
+        mirrorState.buffer = '';
+        if (cleaned.length < mirrorMinChars) return;
+
+        const hash = hashString(cleaned);
+        if (hash === mirrorState.lastFlushHash) return;
+        mirrorState.lastFlushHash = hash;
+
         try {
-          await injector.sendMessage(chunkForTelegram(text));
+          await injector.sendMessage(chunkForTelegram(cleaned));
         } catch (err) {
           if (args.verbose) console.error('[tg] mirror send failed:', err.message);
         }
-      }, 2_000)
+      }, 1_000)
     : null;
 
   if (args.mirror) {
     child.onData((data) => {
-      mirrorBuffer.text += data;
-      if (mirrorBuffer.text.length > 12_000) {
-        mirrorBuffer.text = mirrorBuffer.text.slice(-12_000);
+      mirrorState.buffer += data;
+      mirrorState.lastWriteAt = Date.now();
+      // Cap buffer so long streams do not balloon memory.
+      if (mirrorState.buffer.length > 40_000) {
+        mirrorState.buffer = mirrorState.buffer.slice(-40_000);
       }
     });
   }
@@ -324,16 +351,49 @@ async function main() {
 // Helpers.
 // ---------------------------------------------------------------------------
 
-function stripAnsi(s) {
-  // Minimal ANSI escape stripper for the mirror. Not exhaustive; enough
-  // to produce readable Telegram text from typical claude TUI output.
-  // eslint-disable-next-line no-control-regex
-  return s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+/**
+ * Strip terminal control sequences and noisy redraw artifacts so the
+ * mirrored text is readable chat content. Handles:
+ *   - CSI sequences `\x1b[...X` (cursor moves, colors, clears)
+ *   - OSC sequences `\x1b]...\x07` (window titles, hyperlinks)
+ *   - Legacy single-char escapes (`\x1b=`, `\x1b>`, `\x1b<`)
+ *   - Control characters outside \t \n \r
+ *   - Unicode Braille block (U+2800-U+28FF), the go-to spinner glyphs
+ *   - Classic ASCII spinners and scrolls of them
+ *   - Carriage returns -> newlines, redundant blank lines collapsed
+ */
+function cleanForMirror(s) {
+  return s
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')    // CSI
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b[=><#][0-9A-Za-z]?/g, '')    // mode switches, DEC line attrs
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')  // stray control chars
+    .replace(/[\u2800-\u28FF]/g, '')           // Braille spinner block
+    .replace(/[|/\\\-*+oO·]{2,}/g, '')         // multi-char ASCII spinners
+    .replace(/\r+/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Fast 32-bit djb2 hash, enough to dedup identical mirror flushes.
+ */
+function hashString(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  }
+  return String(h);
 }
 
 function chunkForTelegram(text, max = 4000) {
   if (text.length <= max) return text;
-  return text.slice(0, max - 40) + '\n\n…[truncated in mirror]';
+  return text.slice(0, max - 40) + '\n\n...[truncated in mirror]';
 }
 
 main().catch((err) => {
