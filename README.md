@@ -35,65 +35,80 @@ LAG treats memory as a governed substrate. Every stored unit is an **atom** with
 
 ## How it works
 
+### The substrate (what LAG governs)
+
 ```mermaid
-flowchart TB
-  subgraph INGEST["Pluggable session sources (pre-populate .lag state)"]
-    direction LR
-    SRC1["ClaudeCodeTranscriptSource<br/>(.claude/projects/*.jsonl)"]
-    SRC2["FreshSource<br/>(empty)"]
-    SRC3["Roadmap:<br/>ChromaDB, Obsidian,<br/>Git log, Slack, Notion"]
-  end
+flowchart LR
+  SRC["Session sources<br/>(pluggable)"]
+  L0["L0<br/>raw"]
+  L1["L1<br/>extracted"]
+  L2["L2<br/>curated"]
+  L3["L3<br/>canon"]
+  PLAN["Plans<br/>(intent)"]
+  CANON["CLAUDE.md targets<br/>(per scope / role)"]
+  HIL["Human in the loop"]
 
-  subgraph STORE["Atom store (content-hash dedup, full provenance)"]
-    direction LR
-    L0["L0 raw<br/>(untouched input)"]
-    L1["L1 extracted<br/>(claims via LLM judge)"]
-    L2["L2 curated<br/>(consensus + confidence)"]
-    L3["L3 canon<br/>(human-approved,<br/>rollback-able)"]
-    PLAN["Plans<br/>(type=plan,<br/>proposed / approved /<br/>executing / succeeded /<br/>failed / abandoned)"]
-    L0 --> L1 --> L2 --> L3
-  end
+  SRC -->|ingest| L0
+  L0 -->|extract<br/>claims| L1
+  L1 -->|consensus<br/>+ confidence| L2
+  L2 -->|human-gate<br/>+ higher bar| L3
+  L3 -->|render| CANON
+  PLAN -.validate<br/>vs canon.-> L3
+  L3 -.escalate<br/>ties / approvals.-> HIL
+  HIL -.approve /<br/>reject / revert.-> L3
+  PLAN -.escalate.-> HIL
 
-  subgraph GOV["Governance primitives (every loop tick)"]
-    direction TB
-    G1["arbitrate at write time<br/>(detect > source-rank ><br/>temporal > validate > escalate)"]
-    G2["promote by consensus<br/>+ confidence + validation"]
-    G3["validate plan<br/>(arbitrate plan vs L3 canon<br/>before execution)"]
-    G4["decay + TTL expire"]
-    G5["taint cascade<br/>(compromise propagation)"]
-  end
-
-  subgraph RUNTIME["Runtime surfaces (compose freely)"]
-    direction TB
-    RT1["Terminal Claude Code<br/>(head-down, primary)"]
-    RT2["Daemon stateless<br/>(autonomous org default)"]
-    RT3["Daemon resume-shared<br/>(solo dev; shared jsonl)"]
-    RT4["Daemon queue + hook<br/>(terminal is brain,<br/>Telegram is mouth)"]
-  end
-
-  subgraph CANON["Canon targets (multi-target render)"]
-    direction TB
-    T1["ORG-CLAUDE.md (global)"]
-    T2["ENG-CLAUDE.md (project)"]
-    T3["alice.md (user)"]
-  end
-
-  subgraph HIL["Human in the loop (ultimate arbiter)"]
-    direction TB
-    N["Notifier channels (pluggable):<br/>file queue (default),<br/>Telegram (shipped),<br/>Slack / session-inject / email<br/>(roadmap)"]
-    H["Operator"]
-    N --> H
-  end
-
-  INGEST -->|ingest atoms| STORE
-  RUNTIME -->|read / write| STORE
-  GOV -.governs.-> STORE
-  PLAN -.validated by.-> G3
-  L3 -->|"render per<br/>scope / principal filter"| CANON
-  GOV -.escalate.-> HIL
-  HIL -.approve / reject / revert.-> STORE
-  HIL -.dispositions.-> RUNTIME
+  classDef layer fill:#eef,stroke:#557,stroke-width:1px
+  classDef source fill:#efe,stroke:#575,stroke-width:1px
+  classDef human fill:#fee,stroke:#755,stroke-width:1px
+  classDef plan fill:#ffe,stroke:#775,stroke-width:1px
+  class L0,L1,L2,L3 layer
+  class SRC,CANON source
+  class HIL human
+  class PLAN plan
 ```
+
+Every transition is audit-logged. Governance primitives (arbitrate at write time, decay, TTL, taint cascade, promote-by-consensus, validate-plan) run on every loop tick and touch every layer.
+
+### Runtime surfaces (how LAG is driven)
+
+```mermaid
+flowchart LR
+  subgraph SURFACES["Operator surfaces"]
+    direction TB
+    TERM["Terminal<br/>Claude Code"]
+    DAEMON1["Daemon<br/>stateless"]
+    DAEMON2["Daemon<br/>resume-shared"]
+    DAEMON3["Daemon<br/>queue + Stop hook"]
+  end
+
+  LAG[".lag state<br/>(atoms, audit,<br/>plans, canon,<br/>notifier queue)"]
+  TG["Telegram<br/>(your phone)"]
+  SLACK["Slack / email /<br/>session-inject<br/>(roadmap)"]
+
+  TERM -->|read+write| LAG
+  DAEMON1 -->|spawn claude -p<br/>per message| LAG
+  DAEMON2 -->|claude -p --resume<br/>shared jsonl| LAG
+  DAEMON3 -->|write inbox,<br/>drain outbox| LAG
+  LAG -->|escalations| TG
+  LAG -.roadmap.-> SLACK
+  TG -.reply buttons<br/>and messages.-> LAG
+  DAEMON3 -.Stop hook<br/>injects into.-> TERM
+
+  classDef state fill:#eef,stroke:#557,stroke-width:2px
+  classDef channel fill:#efe,stroke:#575,stroke-width:1px
+  classDef future fill:#fff,stroke:#aaa,stroke-width:1px,stroke-dasharray:4 3
+  class LAG state
+  class TG,TERM,DAEMON1,DAEMON2,DAEMON3 channel
+  class SLACK future
+```
+
+All runtime surfaces share the same `.lag/` substrate. Pick modes per context:
+
+- **Terminal** for head-down development
+- **Stateless daemon** for autonomous-org (each agent message independent)
+- **Resume-shared daemon** for solo dev (daemon appends to your terminal's jsonl; bidirectional)
+- **Queue + hook** for "terminal is brain, Telegram is mouth" (the running Claude Code instance answers Telegram via a Stop hook)
 
 Every atom carries an audit-ready provenance chain. Every transition (promote, supersede, taint, expire, approve, reject) is logged. Nothing gets deleted; superseded atoms stay in the store with `superseded_by` set so history is reconstructible.
 
