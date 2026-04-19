@@ -150,7 +150,10 @@ async function main() {
     repoRoot: REPO_ROOT,
     ...(resumeSessionId !== null ? { resumeSessionId } : {}),
     ...(args.queueOnly ? { queueMode: true, queueDir: resolve(args.rootDir, 'tg-queue') } : {}),
-    principalResolver: () => 'lag-self',
+    // Two-principal default: Telegram-origin messages are attributed to
+    // the human operator; the daemon writes the agent's responses
+    // under the agent principal. Override via env for multi-user.
+    principalResolver: () => process.env.LAG_OPERATOR_ID || 'stephen-human',
     onCallback: async (handle, disposition, responder) => {
       try {
         await host.notifier.respond(handle, disposition, responder);

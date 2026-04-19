@@ -187,12 +187,17 @@ const SEED_ATOMS = [
 async function main() {
   await mkdir(STATE_DIR, { recursive: true });
   const host = await createFileHost({ rootDir: STATE_DIR });
-  const principalId = 'lag-self';
 
-  // Register the root principal. Idempotent: put() replaces if it exists.
+  // Two principals: human operator (root) and the agent (signed_by operator).
+  // This repo IS its own first LAG-governed organization (see DECISIONS.md D12).
+  // Changing the operator id is a one-line override per-install.
+  const operatorId = process.env.LAG_OPERATOR_ID || 'stephen-human';
+  const agentId = process.env.LAG_AGENT_ID || 'claude-agent';
+  const principalId = operatorId; // L3 canon is operator-signed by default.
+
   await host.principals.put({
-    id: principalId,
-    name: 'LAG self-bootstrap root',
+    id: operatorId,
+    name: 'Operator (human)',
     role: 'user',
     permitted_scopes: {
       read: ['session', 'project', 'user', 'global'],
@@ -207,6 +212,26 @@ async function main() {
     active: true,
     compromised_at: null,
     signed_by: null, // root
+    created_at: BOOTSTRAP_TIME,
+  });
+
+  await host.principals.put({
+    id: agentId,
+    name: 'Agent (Claude Code instance)',
+    role: 'agent',
+    permitted_scopes: {
+      read: ['session', 'project', 'user', 'global'],
+      write: ['session', 'project', 'user'],
+    },
+    permitted_layers: {
+      read: ['L0', 'L1', 'L2', 'L3'],
+      write: ['L0', 'L1', 'L2'], // agent cannot write L3 directly; only via consensus or operator gate
+    },
+    goals: [],
+    constraints: [],
+    active: true,
+    compromised_at: null,
+    signed_by: operatorId, // depth 1
     created_at: BOOTSTRAP_TIME,
   });
 

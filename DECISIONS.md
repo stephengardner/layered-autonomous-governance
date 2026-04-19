@@ -28,6 +28,26 @@ Format: short context, the decision, why, alternatives we rejected, what breaks 
 
 ---
 
+## D12: This repo is its own first LAG-governed organization
+
+**Context**: While building LAG, we realized our collaboration (one human operator + one AI agent, occasionally calling in subagents or daemons) is itself a small autonomous-org instance operating on LAG's own primitives. The repo is simultaneously the product, the reference implementation, and the lived case study.
+
+**Decision**: Treat the repo's development as a first-class LAG deployment. Concretely:
+
+1. Bootstrap models the real principal hierarchy: `stephen-human` (role=user, signed_by=null, root) and `claude-agent` (role=agent, signed_by=stephen-human). Hierarchy-aware source-rank (Phase 34) now means operator decisions outrank agent decisions at equal layer/provenance.
+2. The daemon's `principalResolver` maps Telegram `from.id` to `stephen-human` for the configured operator chat. Future multi-user setups expand the map.
+3. Generated `CLAUDE.md` canon, DECISIONS.md, and commit history are the substrate LAG governs, not just static docs about LAG.
+4. Every non-trivial choice gets a DECISIONS.md entry with rationale and rejected alternatives so the trajectory is legible to future readers, including future autonomous agents.
+
+**Why**: The point of LAG is to govern the kind of work we're doing right now. If we build a framework that we ourselves would not use to govern our work, the framework has a blind spot. Forcing ourselves to eat our own dogfood catches that gap. And doing it in public, with history intact, means the repo's commit log + DECISIONS.md + canon becomes a reference a new user can scan to see how LAG decisions actually get made over time.
+
+**Alternatives rejected**:
+- Keep `lag-self` as a single placeholder principal. Simpler, but hides the hierarchy story that differentiates LAG from a flat vector store.
+- Don't model the operator as a first-class principal. Fine for a demo; wrong for the autonomous-org north star.
+- Rely on comments and docs to convey "this repo is self-governed". Words are cheap; the principal file and the atoms in `.lag/` are cheap talk's opposite.
+
+**What breaks if we revisit**: Adding multi-user multi-agent principals later (e.g. multiple humans, multiple agents) expands the resolver and the bootstrap, but the hierarchy and source-rank already accommodate it. No data migration for this 2-principal shape since `.lag/` is gitignored and regenerable.
+
 ## D11: Queue mode + hook = terminal-attached runtime (Phase 42)
 
 **Context**: Phase 41's daemon spawns a fresh `claude -p` per message (stateless) or with `--resume` (shared-jsonl). Both are independent processes from the terminal Claude Code instance. The user asked for the Telegram bot to literally be the running terminal instance, so a session persists in-terminal that includes Telegram exchanges.
