@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { mkdir } from 'node:fs/promises';
 import { createFileHost } from '../dist/adapters/file/index.js';
-import { LAGDaemon } from '../dist/daemon/index.js';
+import { LAGDaemon, StubTranscriber, WhisperLocalTranscriber } from '../dist/daemon/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -56,6 +56,7 @@ function parseArgs(argv) {
     queueOnly: false,
     runLoopEveryMs: 0,       // 0 = disabled
     runExtractionEveryMs: 0, // 0 = disabled
+    voiceMode: null,         // null | 'stub' | 'whisper-local'
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -75,6 +76,8 @@ function parseArgs(argv) {
       args.runLoopEveryMs = Number(argv[++i]);
     } else if (a === '--run-extraction-every-ms' && i + 1 < argv.length) {
       args.runExtractionEveryMs = Number(argv[++i]);
+    } else if (a === '--voice' && i + 1 < argv.length) {
+      args.voiceMode = argv[++i];
     } else if (a === '-h' || a === '--help') {
       console.log(`Usage: node scripts/daemon.mjs [options]
 
@@ -175,6 +178,11 @@ async function main() {
     ...(args.queueOnly ? { queueMode: true, queueDir: resolve(args.rootDir, 'tg-queue') } : {}),
     ...(args.runLoopEveryMs > 0 ? { runLoopIntervalMs: args.runLoopEveryMs } : {}),
     ...(args.runExtractionEveryMs > 0 ? { runExtractionIntervalMs: args.runExtractionEveryMs } : {}),
+    ...(args.voiceMode === 'stub'
+      ? { voiceTranscriber: new StubTranscriber() }
+      : args.voiceMode === 'whisper-local'
+        ? { voiceTranscriber: new WhisperLocalTranscriber() }
+        : {}),
     // Two-principal default: Telegram-origin messages are attributed to
     // the human operator; the daemon writes the agent's responses
     // under the agent principal. Override via env for multi-user.

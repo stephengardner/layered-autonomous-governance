@@ -44,6 +44,11 @@ import {
 import { assembleContext, type AssembleContextOptions } from './context.js';
 import { markdownToTelegramHtml, splitMarkdownForTelegram } from './format.js';
 import { invokeClaude, type InvokeClaudeOptions } from './invoke-claude.js';
+import {
+  downloadTelegramFile,
+  type TelegramVoice,
+  type VoiceTranscriber,
+} from './voice.js';
 
 export interface LAGDaemonOptions {
   readonly host: Host;
@@ -102,6 +107,13 @@ export interface LAGDaemonOptions {
    */
   readonly ambientPrincipalId?: PrincipalId;
   /**
+   * Optional voice message transcriber (Phase 48). When set, incoming
+   * Telegram messages with a `voice` field are downloaded, transcribed
+   * to text, and routed through the same handler as text messages.
+   * When undefined, voice messages are ignored.
+   */
+  readonly voiceTranscriber?: VoiceTranscriber;
+  /**
    * Map a Telegram user id to a LAG principal. For V1 you can hardcode
    * one principal; future multi-user daemons will dispatch here.
    */
@@ -135,6 +147,7 @@ interface TelegramUpdate {
     readonly from?: { readonly id: number; readonly username?: string };
     readonly chat: { readonly id: number };
     readonly text?: string;
+    readonly voice?: TelegramVoice;
   };
   readonly callback_query?: {
     readonly id: string;
@@ -370,17 +383,40 @@ export class LAGDaemon {
       }
 
       // Messages first; callback_query handled separately.
-      if (update.message && typeof update.message.text === 'string') {
-        try {
-          await this.handleMessage(update.message);
-          processed += 1;
-        } catch (err) {
-          this.onError(err, `handleMessage(${update.update_id})`);
-          // Best-effort: apologize to the user so they are not left hanging.
+      if (update.message) {
+        const m = update.message;
+        // Voice message path: transcribe first, then reuse the text flow.
+        if (m.voice && this.options.voiceTranscriber) {
           try {
-            await this.sendMessage(update.message.chat.id, 'Sorry, I hit an error processing that message.');
-          } catch (sendErr) {
-            this.onError(sendErr, 'sendMessage(apology)');
+            const text = await this.transcribeVoice(m.voice);
+            if (text && text.trim().length > 0) {
+              const virtualMessage = {
+                ...m,
+                text,
+                voice: m.voice, // keep reference for metadata
+              } as NonNullable<TelegramUpdate['message']>;
+              await this.handleMessage(virtualMessage);
+              processed += 1;
+            }
+          } catch (err) {
+            this.onError(err, `transcribeVoice(${update.update_id})`);
+            try {
+              await this.sendMessage(m.chat.id, 'Sorry, I could not transcribe that voice message.');
+            } catch (sendErr) {
+              this.onError(sendErr, 'sendMessage(voice-apology)');
+            }
+          }
+        } else if (typeof m.text === 'string') {
+          try {
+            await this.handleMessage(m);
+            processed += 1;
+          } catch (err) {
+            this.onError(err, `handleMessage(${update.update_id})`);
+            try {
+              await this.sendMessage(m.chat.id, 'Sorry, I hit an error processing that message.');
+            } catch (sendErr) {
+              this.onError(sendErr, 'sendMessage(apology)');
+            }
           }
         }
       }
@@ -398,6 +434,20 @@ export class LAGDaemon {
   }
 
   // ---- Per-update handlers ------------------------------------------------
+
+  /**
+   * Download + transcribe a Telegram voice message via the configured
+   * transcriber. Returns the text or empty string.
+   */
+  private async transcribeVoice(voice: TelegramVoice): Promise<string> {
+    if (!this.options.voiceTranscriber) return '';
+    const { audio, mime } = await downloadTelegramFile(
+      this.options.botToken,
+      voice.file_id,
+      this.fetch,
+    );
+    return this.options.voiceTranscriber.transcribe(audio, mime);
+  }
 
   private async handleMessage(
     message: NonNullable<TelegramUpdate['message']>,
@@ -600,5 +650,11 @@ export { invokeClaude } from './invoke-claude.js';
 export type { InvokeClaudeOptions, InvokeClaudeResult } from './invoke-claude.js';
 export { assembleContext } from './context.js';
 export type { AssembleContextOptions, AssembledContext } from './context.js';
+export {
+  StubTranscriber,
+  WhisperLocalTranscriber,
+  downloadTelegramFile,
+} from './voice.js';
+export type { VoiceTranscriber, TelegramVoice, WhisperLocalOptions } from './voice.js';
 // Re-export TelegramNotifierOptions for parity; daemons often compose both.
 export type { TelegramNotifierOptions };
