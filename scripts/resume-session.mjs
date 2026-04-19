@@ -17,9 +17,10 @@
  *   node scripts/resume-session.mjs <session-id> --from-cwd <path>
  *   node scripts/resume-session.mjs --list
  *
- * --from-cwd defaults to C:\Users\opens\phx (the common case for
- * migrating a phx-started session into memory-governance). Override
- * for other source directories.
+ * Without --from-cwd, the helper searches every known project dir
+ * under ~/.claude/projects and picks the first match for the given
+ * session id. Pass --from-cwd explicitly when you know exactly which
+ * project a session was started from.
  *
  * After running, launch via:
  *   npm run terminal -- --resume-session <id>
@@ -88,7 +89,7 @@ async function main() {
   if (argv.length === 0 || argv.includes('-h') || argv.includes('--help')) {
     console.log(`Usage:
   node scripts/resume-session.mjs <session-id>                    copy session into current project
-  node scripts/resume-session.mjs <session-id> --from-cwd <path>  override source (default: phx)
+  node scripts/resume-session.mjs <session-id> --from-cwd <path>  override source (default: search all known project dirs)
   node scripts/resume-session.mjs --list                          list all sessions in ~/.claude/projects`);
     process.exit(0);
   }
