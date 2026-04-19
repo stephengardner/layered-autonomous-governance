@@ -43,6 +43,7 @@ LAG treats memory as a governed substrate. Every stored unit is an **atom** with
 A single linear pipeline from session sources to rendered canon, with plans feeding intent governance and a human-in-the-loop gate on the L3 boundary.
 
 ```mermaid
+%%{init: {'flowchart': {'diagramPadding': 40, 'nodeSpacing': 40, 'rankSpacing': 50}}}%%
 flowchart LR
   SRC[Session sources] --> L0[L0 raw]
   L0 -->|extract claims| L1[L1 extracted]
@@ -62,6 +63,7 @@ Around that pipeline, governance primitives run on every loop tick: **arbitrate 
 Three daemon modes plus the terminal Claude Code instance all share the same `.lag/` substrate. Pick one per context, or run them concurrently.
 
 ```mermaid
+%%{init: {'flowchart': {'diagramPadding': 40, 'nodeSpacing': 40, 'rankSpacing': 50}}}%%
 flowchart LR
   TERM[Terminal Claude Code] -->|read + write| LAG[(.lag state)]
   WRAP[Wrapper<br/>lag-terminal.mjs<br/>PTY + TG injector] -->|stdin injection| TERM
