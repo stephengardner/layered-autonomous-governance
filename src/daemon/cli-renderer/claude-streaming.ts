@@ -63,7 +63,7 @@ export interface StreamingExecResult {
 export type StreamingExecutor = (
   args: ReadonlyArray<string>,
   onLine: (line: string) => void | Promise<void>,
-  options: { timeoutMs?: number; cwd?: string },
+  options: { timeoutMs?: number; cwd?: string; signal?: AbortSignal },
 ) => Promise<StreamingExecResult>;
 
 export const defaultClaudeStreamingExecutor: StreamingExecutor = async (
@@ -93,6 +93,14 @@ export interface InvokeClaudeStreamingOptions {
   readonly onEvent?: (event: CliRendererEvent) => void | Promise<void>;
   /** Extra CLI args appended verbatim; escape hatch for advanced callers. */
   readonly extraArgs?: ReadonlyArray<string>;
+  /**
+   * Optional abort signal. When aborted, the spawned Claude CLI is
+   * terminated (SIGTERM, then SIGKILL after a 500ms grace). The call
+   * still resolves with the partial accumulator state; exitCode
+   * reflects termination. Callers detect cancellation via
+   * signal.aborted in the returned promise's continuation.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface InvokeClaudeStreamingResult {
@@ -167,6 +175,7 @@ export async function invokeClaudeStreaming(
     const result = await exec(args, handleLine, {
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
 
     return {
@@ -192,7 +201,7 @@ export async function runSpawnedJsonl(
   command: string,
   args: ReadonlyArray<string>,
   onLine: (line: string) => void | Promise<void>,
-  options: { timeoutMs?: number; cwd?: string },
+  options: { timeoutMs?: number; cwd?: string; signal?: AbortSignal },
 ): Promise<StreamingExecResult> {
   return await new Promise<StreamingExecResult>((resolvePromise, reject) => {
     const child = spawn(command, [...args], {
@@ -209,6 +218,7 @@ export async function runSpawnedJsonl(
     // terminal event.
     let processingPromise: Promise<void> | null = null;
     let timedOut = false;
+    let aborted = false;
 
     // SIGTERM first, then escalate to SIGKILL after a short grace so a
     // child that ignores or delays the term signal cannot hold the
@@ -227,6 +237,27 @@ export async function runSpawnedJsonl(
           killTimer.unref?.();
         }, options.timeoutMs)
       : null;
+
+    // AbortSignal support: caller can cancel the run externally (Stop
+    // button, parent-actor abort, etc.). SIGTERM first, SIGKILL after
+    // a short grace if the child does not exit. Mirrors the timeout
+    // escalation ladder.
+    const abortListener = (): void => {
+      aborted = true;
+      try { child.kill('SIGTERM'); } catch { /* already exited */ }
+      setTimeout(() => {
+        if (!child.killed) {
+          try { child.kill('SIGKILL'); } catch { /* ignore */ }
+        }
+      }, 500).unref();
+    };
+    if (options.signal) {
+      if (options.signal.aborted) {
+        abortListener();
+      } else {
+        options.signal.addEventListener('abort', abortListener, { once: true });
+      }
+    }
 
     const processQueue = (): Promise<void> => {
       if (processingPromise) return processingPromise;
@@ -265,11 +296,17 @@ export async function runSpawnedJsonl(
     child.on('error', (err) => {
       if (timeout) clearTimeout(timeout);
       if (killTimer) clearTimeout(killTimer);
+      if (options.signal) {
+        options.signal.removeEventListener('abort', abortListener);
+      }
       reject(err);
     });
     child.on('close', async (code) => {
       if (timeout) clearTimeout(timeout);
       if (killTimer) clearTimeout(killTimer);
+      if (options.signal) {
+        options.signal.removeEventListener('abort', abortListener);
+      }
       // Flush any trailing partial line (if writer didn't end on \n).
       if (stdoutBuffer.length > 0) {
         lineQueue.push(stdoutBuffer);
@@ -277,7 +314,7 @@ export async function runSpawnedJsonl(
       }
       await processQueue();
       resolvePromise({
-        exitCode: timedOut ? 124 : code ?? 0,
+        exitCode: aborted ? 130 : timedOut ? 124 : code ?? 0,
         stderr,
       });
     });
