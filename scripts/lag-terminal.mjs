@@ -51,6 +51,24 @@ import { homedir } from 'node:os';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+// Markdown->HTML formatter for the Telegram mirror. Imported from the
+// built library so we share the same conversion logic used by the
+// daemon's outbox drain path. `npm run terminal` runs `npm run build`
+// first so dist/ is guaranteed fresh. If the import fails (user ran
+// the script without building), we fall back to plain-text mirroring.
+let markdownToTelegramHtml = null;
+let splitMarkdownForTelegram = null;
+try {
+  const fmt = await import('../dist/daemon/format.js');
+  markdownToTelegramHtml = fmt.markdownToTelegramHtml;
+  splitMarkdownForTelegram = fmt.splitMarkdownForTelegram;
+} catch {
+  // Fallback: plain-text mirror. Log once on startup; do not block boot.
+  // eslint-disable-next-line no-console
+  console.error('[tg] note: dist/daemon/format.js not found; mirror will send plain text.');
+  console.error('[tg]       run `npm run build` to enable markdown -> Telegram HTML.');
+}
+
 // ---------------------------------------------------------------------------
 // .env loader (shared shape with other scripts).
 // ---------------------------------------------------------------------------
@@ -183,13 +201,14 @@ class TelegramInjector {
     }
   }
 
-  async sendMessage(text) {
+  async sendMessage(text, parseMode = null) {
     const url = `https://api.telegram.org/bot${this.botToken}/sendMessage`;
     const body = {
       chat_id: this.chatId,
       text,
       disable_web_page_preview: true,
     };
+    if (parseMode) body.parse_mode = parseMode;
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -200,6 +219,32 @@ class TelegramInjector {
       throw new Error(`sendMessage: ${json.description ?? 'unknown'}`);
     }
     return json.result;
+  }
+}
+
+/**
+ * Mirror a markdown-flavored text block to Telegram with proper
+ * formatting. Splits the raw markdown on safe boundaries first, then
+ * converts each chunk to HTML and sends with parse_mode=HTML so
+ * **bold**, `code`, fenced blocks, and bullets render correctly.
+ *
+ * Falls back to plain text if the formatter module was not loadable
+ * (dist not built). Errors in a single chunk do not stop the run.
+ */
+async function sendMirrorText(injector, text, { verbose = false } = {}) {
+  if (!text || text.length === 0) return;
+  const canFormat = !!(markdownToTelegramHtml && splitMarkdownForTelegram);
+  try {
+    if (canFormat) {
+      for (const chunk of splitMarkdownForTelegram(text, 4000)) {
+        const html = markdownToTelegramHtml(chunk);
+        await injector.sendMessage(html, 'HTML');
+      }
+    } else {
+      await injector.sendMessage(chunkForTelegram(text));
+    }
+  } catch (err) {
+    if (verbose) console.error('[tg] mirror send failed:', err.message);
   }
 }
 
@@ -289,11 +334,7 @@ async function main() {
       resumeSessionId: args.resumeSessionId,
       onText: async (text) => {
         if (text.length < mirrorMinChars) return;
-        try {
-          await injector.sendMessage(chunkForTelegram(text));
-        } catch (err) {
-          if (args.verbose) console.error('[tg] mirror send failed:', err.message);
-        }
+        await sendMirrorText(injector, text, { verbose: args.verbose });
       },
       verbose: args.verbose,
     });

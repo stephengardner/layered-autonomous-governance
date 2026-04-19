@@ -69,8 +69,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "bootstrap": "npm run build && node scripts/bootstrap.mjs",
-    "terminal": "node scripts/lag-terminal.mjs",
-    "terminal:auto": "node scripts/lag-terminal.mjs --claude-args \"--permission-mode auto\"",
+    "terminal": "npm run build --silent && node scripts/lag-terminal.mjs",
+    "terminal:auto": "npm run build --silent && node scripts/lag-terminal.mjs --claude-args \"--permission-mode auto\"",
     "resume-session": "node scripts/resume-session.mjs",
     "clean": "rimraf dist coverage .vitest-cache *.tsbuildinfo .lag"
   },
