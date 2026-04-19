@@ -301,48 +301,35 @@ async function main() {
 
   // The injector: on each Telegram message, write it to the PTY.
   //
-  // How terminals tell a TUI "this is a paste, not keystrokes":
-  // bracketed paste mode (xterm ctlseqs, DEC mode 2004). When the
-  // TUI enables it (by emitting `ESC[?2004h`), any real terminal
-  // wraps pasted text in start/end markers:
+  // Choice of sequence is empirical, not theoretical. scripts/probe-inject.mjs
+  // drives Claude Code's TUI with candidate byte sequences and watches
+  // the session jsonl for a new `user` record to confirm the TUI
+  // actually submitted the draft. Results (fresh claude, ConPTY on
+  // Windows):
   //
-  //   ESC [ 2 0 0 ~                      (paste start, 6 bytes)
-  //   <the pasted body, verbatim>
-  //   ESC [ 2 0 1 ~                      (paste end)
+  //    PASS: text + '\r' (one write)            <- picked
+  //    PASS: text, 150ms delay, '\r'
+  //    PASS: text + '\r\n'
+  //    PASS: chars one-by-one + '\r'
+  //    FAIL: any bracketed-paste (ESC[200~ ... ESC[201~) variant
+  //    FAIL: bare '\n'
   //
-  // Inside the markers, Enter = newline in the input buffer.
-  // Outside, Enter = submit. This is exactly the semantic we want,
-  // and it is deterministic: no timing heuristics, no paste-vs-type
-  // detection based on byte arrival rate.
-  //
-  // Our sequence is therefore:
-  //   1. write ESC[200~
-  //   2. write the body (with any embedded ESC[201~ neutralized so
-  //      malicious or incidental content cannot close the paste early)
-  //   3. write ESC[201~
-  //   4. write '\r' (one Enter keypress, outside paste = submit)
-  //
-  // All four writes go through the same PTY so ordering is preserved
-  // by the child's read side.
-  const PASTE_START = '\x1b[200~';
-  const PASTE_END = '\x1b[201~';
-
+  // Bracketed paste fails because Claude Code does not leave the
+  // mode enabled for programmatic writes. Wrapping text in the
+  // markers makes the TUI render them verbatim or ignore them, and
+  // the trailing '\r' lands in a non-input context. The simplest
+  // passing sequence is sequence A, so that is what we use. Rerun
+  // the probe (node scripts/probe-inject.mjs) to revalidate if the
+  // CLI behavior changes.
   const injector = new TelegramInjector({
     botToken,
     chatId,
     verbose: args.verbose,
     onMessage: async ({ text }) => {
-      // Strip trailing CR/LF the user may have added in TG; submission
-      // is controlled by our explicit '\r' below.
-      const raw = text.replace(/[\r\n]+$/g, '');
-      // Neutralize any accidental paste-end sequences in the body.
-      const body = raw.split(PASTE_END).join('');
-      child.write(PASTE_START);
-      child.write(body);
-      child.write(PASTE_END);
-      child.write('\r');
+      const body = text.replace(/[\r\n]+$/g, '');
+      child.write(body + '\r');
       if (args.verbose) {
-        console.error(`[tg] injected + submitted (${body.length} chars via bracketed paste)`);
+        console.error(`[tg] injected + submitted (${body.length} chars)`);
       }
     },
     onError: (err, ctx) => {
