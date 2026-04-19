@@ -1,21 +1,31 @@
 /**
- * CLI-style Telegram renderer (Phase 56a).
+ * CLI-style Telegram renderer (Phase 56a + 56b).
  *
  * Turns a stream of CliRendererEvents into a coherent, rate-limited,
- * CLI-style message flow on any post/edit-capable channel. The event
- * shape is vendor-neutral so a future DeployActor, PrLandingActor, or
- * anything-Actor can reuse the same renderer.
+ * CLI-session-like message flow on any post/edit-capable channel.
  *
- * Consumers:
- *   - Phase 56b will add a Claude CLI stream-json parser that emits
- *     these events.
- *   - The daemon will wire stream-parser -> renderer -> TelegramChannel
- *     so Telegram messages become CLI-session-like (throbber, compact
- *     tool lines, rate-limited updates, final formatted output).
+ * 56b adds a Claude CLI stream-json parser + a streaming invoke so
+ * Claude's output can be piped through the renderer end-to-end.
  */
 
+// Primitive surface (vendor-neutral). Import telegram channel directly
+// from './telegram-channel.js' if you want that specific transport;
+// keeping it out of the index preserves substrate discipline so the
+// primitive does not pull a specific vendor into every consumer.
+
 export { CliRenderer } from './renderer.js';
-export { createTelegramChannel } from './telegram-channel.js';
+export type {
+  CliRendererChannel,
+  CliRendererEvent,
+  CliRendererOptions,
+  MessageOptions,
+  PostedMessage,
+} from './types.js';
+
+// Claude CLI stream-json parser + streaming invoke. Kept on the same
+// subpath for discoverability; callers who want the generic renderer
+// without the Claude-specific bits can import directly from
+// './renderer.js' + './types.js'.
 export {
   emptyAccumulator,
   parseClaudeStreamLine,
@@ -34,11 +44,3 @@ export type {
   StreamingExecResult,
   StreamingExecutor,
 } from './claude-streaming.js';
-export type {
-  CliRendererChannel,
-  CliRendererEvent,
-  CliRendererOptions,
-  MessageOptions,
-  PostedMessage,
-} from './types.js';
-export type { TelegramChannelOptions } from './telegram-channel.js';
