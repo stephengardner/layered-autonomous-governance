@@ -317,9 +317,27 @@ async function main() {
       metadata: { source: 'self-bootstrap' },
     };
     if (existing) {
-      // No-op update to bump nothing: atoms are content-immutable. We only
-      // need to re-put if the content changed, which is rare. Skip for
-      // determinism.
+      // Atoms are content-immutable per the core model. If a seed's
+      // text has drifted from what was written, silently skipping
+      // would leave the store stale (and the rendered canon with
+      // it). Detect divergence and fail loudly so the operator
+      // either supersedes the atom with a new id or resets .lag
+      // before re-seeding. This is exactly the "fail fast if seed
+      // drifts" discipline for canon.
+      if (
+        existing.content !== atom.content
+        || existing.type !== atom.type
+        || existing.confidence !== atom.confidence
+      ) {
+        throw new Error(
+          `Seed atom '${seed.id}' drifted from bootstrap source.\n`
+          + `  stored content: ${JSON.stringify(existing.content).slice(0, 80)}\n`
+          + `  seed content:   ${JSON.stringify(atom.content).slice(0, 80)}\n`
+          + `Fix by either (a) creating a new seed with a different id and\n`
+          + `marking this one superseded, or (b) resetting .lag before re-running\n`
+          + `bootstrap if the store was never shared.`,
+        );
+      }
       continue;
     }
     await host.atoms.put(atom);
