@@ -14,8 +14,12 @@
  *     tool lines, rate-limited updates, final formatted output).
  */
 
+// Primitive surface (vendor-neutral). Import telegram channel directly
+// from './telegram-channel.js' if you want that specific transport;
+// keeping it out of the index preserves substrate discipline so the
+// primitive does not pull a specific vendor into every consumer.
+
 export { CliRenderer } from './renderer.js';
-export { createTelegramChannel } from './telegram-channel.js';
 export type {
   CliRendererChannel,
   CliRendererEvent,
@@ -23,4 +27,3 @@ export type {
   MessageOptions,
   PostedMessage,
 } from './types.js';
-export type { TelegramChannelOptions } from './telegram-channel.js';
