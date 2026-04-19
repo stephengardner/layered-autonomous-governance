@@ -209,7 +209,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       path: `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/comments`,
       query: { per_page: 100 },
     });
-    for (const c of reviewComments) {
+    for (const c of reviewComments ?? []) {
       const login = c.user?.login;
       if (login && logins.has(login)) return true;
     }
@@ -218,7 +218,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       path: `repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments`,
       query: { per_page: 100 },
     });
-    for (const c of issueComments) {
+    for (const c of issueComments ?? []) {
       const login = c.user?.login;
       if (login && logins.has(login)) return true;
     }
@@ -243,6 +243,9 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       path: `repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments`,
       fields: { body },
     });
+    if (!response) {
+      throw new Error(`GitHubPrReviewAdapter: empty response from POST issue comment on ${pr.owner}/${pr.repo}#${pr.number}`);
+    }
     return { commentId: String(response.id), posted: true };
   }
 
