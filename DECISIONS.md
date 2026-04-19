@@ -28,6 +28,30 @@ Format: short context, the decision, why, alternatives we rejected, what breaks 
 
 ---
 
+## D13: Telegram-as-operator, tools auto-fire on TG-originated prompts (current trade-off)
+
+**Context**: The LAG terminal wrapper (Phase 51a) injects incoming Telegram messages directly into the Claude Code child's stdin. When the child is launched with `--permission-mode auto` (standard Claude Code flag), it auto-approves tool execution. So a Telegram message from the operator can trigger Bash / Edit / Write / etc on the host machine without a second confirmation.
+
+**Decision (current)**: Accept this behavior. Treat Telegram-authenticated messages as operator-authored, equivalent to operator typing in the terminal. The `npm run terminal:auto` script makes this mode explicit and opt-in.
+
+**Why (today)**:
+- The bot token + chat id pair in `.env` is already a delegated operator credential. Anyone who can send messages IS the operator by our current threat model.
+- Asking for double-confirmation on every TG message would defeat the purpose of the remote runtime ("operate in perpetuity from Telegram").
+- The wrapper is explicitly opt-in (user has to launch via the script); autonomous-org setups that want stricter gating simply do not use auto mode.
+
+**Alternatives considered (not shipped today)**:
+- **LAG autonomy dial** layered above Claude Code's permission mode: canon atom asserts "TG-originated prompts require L3 validation before tool execution." Wrapper enforces it by intercepting the injected prompt and running `validatePlan` before forwarding. Correct long-term; adds latency + scope today.
+- **Per-tool auth**: some tools (Bash, Write) gated, others (Read, Grep) auto. Middle ground; requires tool-aware interception.
+- **Double-confirm via TG inline keyboard**: before running a tool call triggered by a TG prompt, bot asks "approve?" back via Telegram. Safest; breaks perpetual-session ergonomics.
+
+**What breaks if we revisit**:
+- If the bot token or chat id leaks, the attacker can auto-run arbitrary code on the host.
+- Revisiting likely adds a LAG autonomy dial (canon-driven) and interception at the wrapper layer, without changing the wrapper's external shape.
+
+**Revisit trigger**: first time a second operator joins (multi-user setup), or first time the wrapper is used on a shared / non-personal machine, or first security incident. Until then, document-and-ship.
+
+---
+
 ## D12: This repo is its own first LAG-governed organization
 
 **Context**: While building LAG, we realized our collaboration (one human operator + one AI agent, occasionally calling in subagents or daemons) is itself a small autonomous-org instance operating on LAG's own primitives. The repo is simultaneously the product, the reference implementation, and the lived case study.
