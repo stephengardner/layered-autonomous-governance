@@ -25,9 +25,11 @@ export interface ManifestUrlInput {
   /** Where GitHub redirects after the operator approves the App. */
   readonly redirectUrl: string;
   /**
-   * Whether the App should be created under a personal account (undef) or
-   * a GitHub organization. When `role.owner` is a user login pass undef;
-   * when it's an org login, pass the org slug.
+   * Whether the App should be created under a personal account (undef)
+   * or a GitHub organization. For personal accounts leave undef and
+   * GitHub creates the App under whoever is logged in at approval time.
+   * For orgs, pass the org slug; `role.organization` is the authoritative
+   * hint and this parameter overrides it when supplied.
    */
   readonly organization?: string;
   /** Setup URL shown post-install; optional. Defaults to redirectUrl. */

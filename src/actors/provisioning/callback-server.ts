@@ -40,6 +40,12 @@ export interface StartCallbackServerOptions {
   /** Expected state value. Reject any callback that doesn't match. */
   readonly expectedState: string;
   /**
+   * Human label shown on the success HTML page (role or App name).
+   * State tokens are random hex; rendering them as the label shows
+   * a meaningless string to the operator. Default: 'your actor'.
+   */
+  readonly successLabel?: string;
+  /**
    * Builds the App manifest JSON. Called once, after the server has
    * bound to a port. Receives the final redirect URL (which embeds
    * the bound port) so the manifest's `redirect_url`/`url` fields are
@@ -187,7 +193,7 @@ export async function startCallbackServer(
 
     res.statusCode = 200;
     res.setHeader('content-type', 'text/html; charset=utf-8');
-    res.end(SUCCESS_HTML(state));
+    res.end(SUCCESS_HTML(opts.successLabel ?? 'your actor'));
     resolver?.({ code, state });
   };
 

@@ -88,6 +88,7 @@ export async function provisionRole(req: ProvisionRoleRequest): Promise<Provisio
   // port) so `url` / `redirect_url` point at the actual callback URL.
   const callback = await startCallbackServer({
     expectedState: state,
+    successLabel: req.role.displayName,
     buildManifestJson: (redirectUrl) => JSON.stringify({
       name: req.role.displayName,
       url: redirectUrl,
@@ -129,17 +130,23 @@ export async function provisionRole(req: ProvisionRoleRequest): Promise<Provisio
     return { kind: 'failed', role: req.role.name, error: `conversion: ${msg}` };
   }
 
-  await req.store.save(
-    {
-      role: req.role.name,
-      appId: conversion.id,
-      slug: conversion.slug,
-      owner: conversion.owner.login,
-      createdAt: new Date().toISOString(),
-      description: req.role.description,
-    },
-    conversion.pem,
-  );
+  progress('saving-credentials');
+  try {
+    await req.store.save(
+      {
+        role: req.role.name,
+        appId: conversion.id,
+        slug: conversion.slug,
+        owner: conversion.owner.login,
+        createdAt: new Date().toISOString(),
+        description: req.role.description,
+      },
+      conversion.pem,
+    );
+  } catch (err) {
+    const msg = (err as Error).message;
+    return { kind: 'failed', role: req.role.name, error: `store.save: ${msg}` };
+  }
   log(`[${req.role.name}] provisioned as ${conversion.slug} (app id ${conversion.id}) under ${conversion.owner.login}`);
 
   return {

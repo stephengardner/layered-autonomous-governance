@@ -239,7 +239,15 @@ async function cmdDemoPr(args) {
     installationId,
   });
 
-  const base = 'main';
+  // Resolve the repo's actual default branch. Hardcoding 'main' breaks
+  // on any repo that still uses 'master' or a custom default.
+  const repoRes = await appFetch(`/repos/${owner}/${repo}`);
+  if (!repoRes.ok) {
+    const body = await repoRes.text();
+    console.error(`get repo failed: ${repoRes.status} ${body}`);
+    process.exit(1);
+  }
+  const base = (await repoRes.json()).default_branch;
   const branch = `lag-actor-demo-${record.slug}-${Date.now()}`;
   const baseSha = await getBranchSha({ fetch: appFetch, owner, repo, branch: base });
   await createBranch({ fetch: appFetch, owner, repo, branch, fromSha: baseSha });
