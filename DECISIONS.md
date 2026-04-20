@@ -28,6 +28,63 @@ Format: short context, the decision, why, alternatives we rejected, what breaks 
 
 ---
 
+## D19: Auth backend is a consumer choice, not a framework mandate (Phase 58)
+
+**Context**: Phase 58 ships per-role GitHub App identity provisioning. An Actor can now talk to GitHub as its own bot (`<slug>[bot]`) instead of as the operator's PAT. But not every consumer wants that overhead: a single-maintainer project is fine having everything show up under one human user; an autonomous-org deployment wants distinct bot identities for audit. The framework must not force a choice.
+
+**Decision**: Authentication is pluggable at the `Actor` boundary. Every Actor that touches GitHub takes a `GhClient`-shaped object in its constructor (D17: ActorAdapter). Consumers wire one of two implementations:
+
+- **PAT mode**: the existing `createGhClient` (shells out to `gh` CLI using the operator's PAT). Zero setup; PRs, reviews, comments all attributed to the human operator.
+- **App-per-role mode**: a `GhClient` adapter over `AppAuthedFetch` (Phase 59). Requires provisioning via `lag-actors sync` once per role. PRs, reviews, comments attributed to `<role-slug>[bot]`.
+
+The Actor code is identical in both modes. Only the client factory changes.
+
+**Why**:
+- "Everything must be a bot" is wrong for solo and small-team projects where a single human identity IS the accountability trail.
+- "Everything must be the human" loses the whole point of a governance substrate that enables autonomous org shape.
+- Pluggability lets the same Actor code graduate with the consumer: start on PAT, adopt role bots when the org grows, without a rewrite.
+- Declaring this at the interface level (GhClient stays the seam) means new auth backends (OAuth Apps, GitHub Enterprise SCIM, future identity systems) drop in without touching Actor logic.
+
+**Alternatives rejected**:
+- Make Apps the only supported backend. Raises the onboarding floor; a new contributor can no longer just paste a PAT and run.
+- Make PAT the only supported backend. Throws away the whole Phase 58 investment; per-role accountability becomes impossible.
+- Branch the Actor code (`if (useApp)`): scatters auth concerns through Actor internals; untestable composition.
+- Two separate Actor classes (`PrLandingActorPat`, `PrLandingActorApp`): duplicates all behavior for one axis of variation. Violates Actor-is-a-shape-not-a-hierarchy (D16).
+
+**What breaks if we revisit**:
+- Removing PAT mode closes the door on zero-setup onboarding and breaks every existing LAG consumer who provisioned against their PAT.
+- Removing App mode strands Phase 58's identity infrastructure and forfeits per-role audit.
+- Picking one as framework default is fine; removing the other is the breaking change.
+
+**Primary reference**: `src/actors/provisioning/` (App-per-role mechanism); Phase 59 will ship the `GhClient` adapter.
+
+---
+
+## D18: Actor identity is one GitHub App per role, not one App for all (Phase 58)
+
+**Context**: Phase 58 introduces a way for LAG actors to have their own GitHub identity. The question: does the framework provision one umbrella App (`lag-bot`) that all actors share, or does each actor (pr-landing, cto, ceo-force, planner, reviewer) get its own App?
+
+**Decision**: One GitHub App per role. A role declaration in `roles.json` generates exactly one App (one slug, one bot username, one private key, one installation). The credential store is keyed by role name; `PrLandingActor` loads `lag-pr-landing` credentials, `CtoActor` loads `lag-cto`, etc. There is no sharing.
+
+**Why**:
+- The bot username (`<slug>[bot]`) is the only identity GitHub surfaces on PRs, reviews, commits, comments. If all actors share one App, they all show up as the same bot and the "who did this" audit trail collapses to a single actor.
+- GitHub scopes permissions per App. A role that needs `contents:write` and a role that only needs `pull_requests:read` can each ask for exactly what they need; a shared App has to grant the UNION of all its actors' permissions, which violates least privilege.
+- Revocation is surgical: if one actor's key leaks, only that role's identity is compromised; revoke the App, re-provision, other actors continue unaffected. Shared App would force a full rotation on every revocation.
+- Future work (LLM-backed CTO approving plans, CEO-force enforcing release windows) expects each role to show up as a distinct identity on timeline events; same-bot muddies that affordance.
+
+**Alternatives rejected**:
+- One App, role encoded in commit-author name: commit author is free-text and lies easily; the PR author (App identity) is the ground truth and can't be spoofed. Relying on commit-author for identity is brittle.
+- One App, multiple installation-level scopes: GitHub doesn't support per-installation scopes on a single App; all installations inherit the App's declared permission set.
+- N Apps auto-multiplexed behind one abstraction ("identity pool"): possible but adds a layer of indirection whose only purpose is to hide the fact that there are N Apps. Better to expose the N-App reality: operators see exactly what bot appears where.
+
+**What breaks if we revisit**:
+- Collapsing to one shared App loses per-role accountability AND forces permission-union; both are load-bearing for organizations > 1 actor.
+- Role provisioning becomes a one-time cost instead of an ongoing maintenance: worth it for the audit shape we get.
+
+**Primary reference**: `src/actors/provisioning/schema.ts` (RoleRegistry), `src/actors/provisioning/provisioner.ts`.
+
+---
+
 ## D17: `ActorAdapter` as a deliberate second seam; D1 scope narrowed to governance (Phase 53-pre)
 
 **Context**: Phase 53 introduces LAG's first outward-acting agents -- Actors that touch systems outside the governance substrate (GitHub, CI, deploys). D1 says the `Host` interface is the sole boundary between framework logic and implementation, but the current 8-sub-interface `Host` has no reasonable slot for arbitrary external systems, and forcing them in (as a 9th `externalSystems` sub-interface or a typed extension registry) turns `Host` into a god object and loses the "Host is a governance boundary" story.

@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "actors": [
+    {
+      "name": "lag-pr-landing",
+      "displayName": "LAG PR Landing",
+      "description": "Lands PRs from review feedback. Opens branches, commits fixups, replies to review threads, re-requests review when CI is clean.",
+      "permissions": {
+        "contents": "write",
+        "pull_requests": "write",
+        "checks": "read",
+        "statuses": "read",
+        "metadata": "read"
+      },
+      "events": []
+    }
+  ]
+}
