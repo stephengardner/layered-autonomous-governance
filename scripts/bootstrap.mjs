@@ -142,6 +142,24 @@ const SEED_ATOMS = [
     confidence: 1.0,
   },
   {
+    id: 'dev-indie-floor-org-ceiling',
+    type: 'directive',
+    content: 'LAG must be useful to a single developer with a default host and a Claude Code session directory, AND to an org running 50+ concurrent actors with BYO adapters. Both are first-class users. Every design decision must articulate how it serves both ends of this spectrum; plans that optimize only for one end are rejected. The solo developer uses zero-config defaults; the org swaps in BYO adapters without the framework changing shape. Indie floor and org ceiling are both load-bearing; either breaking invalidates the substrate story.',
+    confidence: 1.0,
+  },
+  {
+    id: 'dev-no-hacks-without-approval',
+    type: 'directive',
+    content: 'No hacky workarounds, shortcuts, or quick-fixes without explicit operator approval. If a clean path appears blocked, surface the blocker and propose the right route; do not silently ship a workaround. The operator can approve a hack case-by-case as an escape hatch, but the gate is always present in the plan; you raise the dial, you do not remove the gate. Silent hacks are a violation; surfaced trade-offs with the cleaner alternative articulated are the right behaviour.',
+    confidence: 1.0,
+  },
+  {
+    id: 'dev-rigor-tokens-not-constraint',
+    type: 'directive',
+    content: 'Token spend on research before a load-bearing decision is never the constraint. Better to spend on parallel investigation and synthesis than to guess and ship wrong. When a decision is large, run multiple research passes concurrently and synthesize the findings; do not serialize a single thread of inquiry. This directive reinforces dev-extreme-rigor-and-research with an explicit budget posture; research spend pays back through decisions that survive the 3-month-later review.',
+    confidence: 1.0,
+  },
+  {
     id: 'dev-no-premature-stop',
     type: 'directive',
     content: 'Autonomous agents must not stop prematurely. If a turn announces continuation ("proceeding with X", "starting Y now", "continuing with Z", "moving on to W") it MUST execute the claimed action in the same turn via tool calls. Announcing forward motion without taking it is a discipline failure. The Stop-event hook (.claude/hooks/stop-continuation-guard.mjs) catches this mechanically; this atom is the governance-layer rationale so future agents and the PlanningActor inherit the rule from canon. If the work is genuinely complete, say so explicitly ("done", "awaiting direction") instead of announcing an action.',
@@ -312,7 +330,7 @@ async function main() {
       created_at: BOOTSTRAP_TIME,
       last_reinforced_at: BOOTSTRAP_TIME,
       expires_at: null,
-      supersedes: [],
+      supersedes: Array.isArray(seed.supersedes) ? seed.supersedes : [],
       superseded_by: [],
       scope: 'global',
       signals: {
