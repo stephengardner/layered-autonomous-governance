@@ -115,7 +115,13 @@ export type ProvenanceKind =
   | 'agent-observed'
   | 'agent-inferred'
   | 'llm-refined'
-  | 'canon-promoted';
+  | 'canon-promoted'
+  // Atoms written by a bootstrap script at initial seeding time. Distinct
+  // from `user-directive` (which implies a conversational claim from a
+  // live session) because seed atoms are foundational and come from an
+  // operator-authored script. Used by bootstrap-cto-actor-canon,
+  // bootstrap-pr-landing-canon, bootstrap-inbox-canon, and similar.
+  | 'operator-seeded';
 
 export type Action =
   | 'read'

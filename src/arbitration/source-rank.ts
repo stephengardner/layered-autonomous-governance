@@ -32,6 +32,10 @@ const LAYER_RANK: Record<Layer, number> = {
 };
 
 const PROVENANCE_RANK: Record<ProvenanceKind, number> = {
+  // Bootstrap-seeded atoms rank with user-directives: both are operator-
+  // authored claims; 'operator-seeded' comes from a script at init, while
+  // 'user-directive' comes from a live session. Equal authority.
+  'operator-seeded': 100,
   'user-directive': 100,
   'canon-promoted': 80,
   'llm-refined': 60,
