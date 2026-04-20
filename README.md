@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/lag-logo.png" alt="LAG: Layered Autonomous Governance" width="320">
+</p>
+
 # LAG: Layered Autonomous Governance
 
 **The governance substrate for autonomous agent organizations. Memory is the foundation.**
