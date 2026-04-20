@@ -204,6 +204,14 @@ export async function runSpawnedJsonl(
   options: { timeoutMs?: number; cwd?: string; signal?: AbortSignal },
 ): Promise<StreamingExecResult> {
   return await new Promise<StreamingExecResult>((resolvePromise, reject) => {
+    // Early-exit if the caller handed us an already-aborted signal.
+    // Otherwise we would spawn a child just to immediately kill it in
+    // the abort listener; wasted fork + SIGTERM, zero useful work.
+    if (options.signal?.aborted) {
+      resolvePromise({ exitCode: 130, stderr: '' });
+      return;
+    }
+
     const child = spawn(command, [...args], {
       cwd: options.cwd ?? process.cwd(),
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -219,6 +227,12 @@ export async function runSpawnedJsonl(
     let processingPromise: Promise<void> | null = null;
     let timedOut = false;
     let aborted = false;
+    // Tracks whether the child has actually exited. The 'close' event
+    // flips this to true. Used by the SIGKILL escalation so we do NOT
+    // look at child.killed, which Node sets to true as soon as the
+    // SIGTERM kill(2) call returns successfully (even though the
+    // process may still be running and ignoring the signal).
+    let childExited = false;
 
     // SIGTERM first, then escalate to SIGKILL after a short grace so a
     // child that ignores or delays the term signal cannot hold the
@@ -230,7 +244,7 @@ export async function runSpawnedJsonl(
           timedOut = true;
           try { child.kill('SIGTERM'); } catch { /* already exited */ }
           killTimer = setTimeout(() => {
-            if (!child.killed) {
+            if (!childExited) {
               try { child.kill('SIGKILL'); } catch { /* ignore */ }
             }
           }, 500);
@@ -240,23 +254,24 @@ export async function runSpawnedJsonl(
 
     // AbortSignal support: caller can cancel the run externally (Stop
     // button, parent-actor abort, etc.). SIGTERM first, SIGKILL after
-    // a short grace if the child does not exit. Mirrors the timeout
-    // escalation ladder.
+    // a short grace if the child does not exit. Same `childExited`
+    // guard as the timeout ladder: `child.killed` cannot be trusted
+    // because Node flips it on a successful kill(2) return, not on
+    // actual exit, so SIGKILL would never fire for a TERM-ignoring
+    // child.
+    let abortKillTimer: ReturnType<typeof setTimeout> | null = null;
     const abortListener = (): void => {
       aborted = true;
       try { child.kill('SIGTERM'); } catch { /* already exited */ }
-      setTimeout(() => {
-        if (!child.killed) {
+      abortKillTimer = setTimeout(() => {
+        if (!childExited) {
           try { child.kill('SIGKILL'); } catch { /* ignore */ }
         }
-      }, 500).unref();
+      }, 500);
+      abortKillTimer.unref?.();
     };
     if (options.signal) {
-      if (options.signal.aborted) {
-        abortListener();
-      } else {
-        options.signal.addEventListener('abort', abortListener, { once: true });
-      }
+      options.signal.addEventListener('abort', abortListener, { once: true });
     }
 
     const processQueue = (): Promise<void> => {
@@ -294,16 +309,20 @@ export async function runSpawnedJsonl(
       stderr += chunk;
     });
     child.on('error', (err) => {
+      childExited = true;
       if (timeout) clearTimeout(timeout);
       if (killTimer) clearTimeout(killTimer);
+      if (abortKillTimer) clearTimeout(abortKillTimer);
       if (options.signal) {
         options.signal.removeEventListener('abort', abortListener);
       }
       reject(err);
     });
     child.on('close', async (code) => {
+      childExited = true;
       if (timeout) clearTimeout(timeout);
       if (killTimer) clearTimeout(killTimer);
+      if (abortKillTimer) clearTimeout(abortKillTimer);
       if (options.signal) {
         options.signal.removeEventListener('abort', abortListener);
       }

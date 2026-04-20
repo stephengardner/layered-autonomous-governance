@@ -45,6 +45,7 @@ import { assembleContext, type AssembleContextOptions } from './context.js';
 import { markdownToTelegramHtml, splitMarkdownForTelegram } from './format.js';
 import { invokeClaude, type InvokeClaudeOptions } from './invoke-claude.js';
 import { CliRenderer } from './cli-renderer/index.js';
+import type { CliRendererChannel, InlineAction } from './cli-renderer/index.js';
 import { createTelegramChannel } from './cli-renderer/telegram-channel.js';
 import {
   invokeClaudeStreaming,
@@ -56,6 +57,31 @@ import {
   type VoiceTranscriber,
 } from './voice.js';
 import { bindAnswer } from '../questions/index.js';
+
+/**
+ * Transport adapter for the CLI-style streaming response path. The
+ * three methods together hide transport-specific details from
+ * LAGDaemon (channel construction, the Stop button action payload,
+ * and the callback-data protocol used to route a Stop press back to
+ * the active run). Default implementation wires Telegram; any other
+ * transport supplies its own.
+ */
+export interface CliRendererTransport {
+  /** Build a CliRendererChannel bound to the target run. */
+  readonly channel: (args: {
+    readonly chatId: number;
+    readonly replyToMessageId: number;
+  }) => CliRendererChannel;
+  /** InlineAction to attach to the throbber so the operator can Stop. */
+  readonly stopAction: (runToken: string) => InlineAction;
+  /**
+   * Extract a runToken from a raw callback_data string, or null if
+   * this data does not belong to this transport's Stop protocol.
+   * Used by the daemon's callback handler to decide whether to
+   * abort an active run.
+   */
+  readonly matchStopCallback: (callbackData: string) => string | null;
+}
 
 export interface LAGDaemonOptions {
   readonly host: Host;
@@ -140,6 +166,21 @@ export interface LAGDaemonOptions {
    * Default: 'Working' (vendor-neutral).
    */
   readonly cliStyleLabel?: string;
+  /**
+   * Transport adapter for the CLI-style response path. Injects three
+   * things the renderer needs but that are transport-specific:
+   *   - channel: build a CliRendererChannel for the run's target
+   *   - stopAction: build the InlineAction attached to the throbber
+   *   - matchStopCallback: given raw callback data, return the
+   *     runToken if it is a stop callback for us, otherwise null
+   *
+   * Defaults to a Telegram-specific implementation (createTelegramChannel
+   * + `lag-stop:<token>` callback protocol). Passing a custom
+   * implementation keeps LAGDaemon framework-neutral: the notifier
+   * seam already exists in Host.notifier for escalations, and this
+   * option plays the same role for the streaming cli-render path.
+   */
+  readonly cliTransport?: CliRendererTransport;
   /** Max chars per outgoing Telegram message. Default 4000 (Telegram cap is 4096). */
   readonly maxReplyChars?: number;
   /** Context assembler options. Default: k=10, maxChars=16_000. */
@@ -697,11 +738,10 @@ export class LAGDaemon {
     readonly text: string;
     readonly systemPrompt: string;
   }): Promise<string> {
-    const channel = createTelegramChannel({
-      botToken: this.options.botToken,
+    const transport = this.resolveCliTransport();
+    const channel = transport.channel({
       chatId: args.chatId,
       replyToMessageId: args.replyToMessageId,
-      fetchImpl: this.fetch,
     });
     const maxChars = this.options.maxReplyChars ?? 4000;
     const runToken = this.registerRun();
@@ -709,7 +749,7 @@ export class LAGDaemon {
       channel,
       renderFinal: (md) => markdownToTelegramHtml(md),
       splitFinal: (text) => splitMarkdownForTelegram(text, maxChars),
-      action: { label: '⏹ Stop', callbackData: `lag-stop:${runToken}` },
+      action: transport.stopAction(runToken),
     });
 
     await renderer.emit({ type: 'start', label: this.options.cliStyleLabel ?? 'Working' });
@@ -771,6 +811,26 @@ export class LAGDaemon {
     return token;
   }
 
+  /**
+   * Return the injected CLI transport, or a Telegram default. The
+   * default is lazily constructed so consumers that pass their own
+   * transport (or that never take the cli-style path) pay no cost.
+   * The Telegram default preserves the pre-injection behavior
+   * verbatim: createTelegramChannel + `lag-stop:<token>` protocol.
+   */
+  private resolveCliTransport(): CliRendererTransport {
+    if (this.options.cliTransport) return this.options.cliTransport;
+    const botToken = this.options.botToken;
+    const fetchImpl = this.fetch;
+    return {
+      channel: ({ chatId, replyToMessageId }) =>
+        createTelegramChannel({ botToken, chatId, replyToMessageId, fetchImpl }),
+      stopAction: (runToken) => ({ label: '⏹ Stop', callbackData: `lag-stop:${runToken}` }),
+      matchStopCallback: (data) =>
+        data.startsWith('lag-stop:') ? data.slice('lag-stop:'.length) : null,
+    };
+  }
+
   private async handleCallback(
     cq: NonNullable<TelegramUpdate['callback_query']>,
   ): Promise<void> {
@@ -785,7 +845,8 @@ export class LAGDaemon {
     // could cancel a run the operator did not authorize. The token
     // itself is short + opaque so collision is unlikely, but we
     // refuse to rely on that as an authority check.
-    if (cq.data.startsWith('lag-stop:')) {
+    const stopToken = this.resolveCliTransport().matchStopCallback(cq.data);
+    if (stopToken !== null) {
       const cqChat = cq.message?.chat.id;
       if (cqChat === undefined || String(cqChat) !== this.chatIdString) {
         try {
@@ -798,8 +859,7 @@ export class LAGDaemon {
         }
         return;
       }
-      const token = cq.data.slice('lag-stop:'.length);
-      const controller = this.activeRuns.get(token);
+      const controller = this.activeRuns.get(stopToken);
       const found = controller !== undefined;
       if (found) controller.abort();
       try {

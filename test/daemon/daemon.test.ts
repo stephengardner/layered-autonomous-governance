@@ -322,6 +322,7 @@ describe('LAGDaemon.tick', () => {
       principalResolver: () => PRINCIPAL,
       fetchImpl,
       cliStyle: true,
+      cliStyleLabel: 'Claude is working',
       streamingInvokeImpl: streamingInvoke as never,
     });
 

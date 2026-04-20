@@ -233,16 +233,27 @@ export class CliRenderer {
     // tag corruption (tg-spoiler opened in one chunk, closed in the
     // next) and render as noise appended after the answer.
     //
-    // Footer is emitted POST-render as raw HTML. If we passed
-    // `_key=foo_bar.ts_` through renderFinal (the markdown-to-HTML
-    // converter), the converter would not recognize the italic
-    // because the content contains an underscore and escaping it
-    // (\_) leaves the bytes but still confuses the pattern. By
-    // appending HTML after the converter runs, we get a reliable
-    // italic and the meta strings stay literal.
-    const rendered = this.renderFinal(finalText);
+    // Split BEFORE render (markdown splitFinal, then renderFinal each
+    // chunk) so that a split cannot land inside an HTML tag produced
+    // by the converter. The old "render then split" order could cut
+    // inside <b>, <i>, <blockquote>, or paired <tg-spoiler> tags,
+    // which Telegram HTML parse rejects. splitFinal is implemented
+    // against markdown semantics (fenced code + paired spoiler); that
+    // contract only holds when the input is actually markdown.
+    //
+    // Footer is emitted POST-render as raw HTML (see renderFooterHtml
+    // docstring). We append it to the LAST rendered chunk so it
+    // always appears at the end of the final message, and because
+    // it is already a self-contained HTML fragment it cannot be
+    // broken by a split; it sits past the split boundaries entirely.
+    const rawChunks = this.splitFinal(finalText);
+    const renderedChunks = rawChunks.map((c) => this.renderFinal(c));
     const footerHtml = this.renderFooterHtml(meta);
-    const chunks = this.splitFinal(footerHtml.length > 0 ? `${rendered}\n\n${footerHtml}` : rendered);
+    if (footerHtml.length > 0 && renderedChunks.length > 0) {
+      const last = renderedChunks.length - 1;
+      renderedChunks[last] = `${renderedChunks[last]}\n\n${footerHtml}`;
+    }
+    const chunks = renderedChunks;
     if (chunks.length === 0) return;
     // Enqueue onto the serialized chain so any in-flight progress
     // edit finishes before the completion lands.

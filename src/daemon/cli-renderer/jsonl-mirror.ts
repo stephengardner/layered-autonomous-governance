@@ -62,11 +62,6 @@ export interface JsonlMirrorOptions {
   readonly now?: () => number;
   /** Log verbosely to stderr. Default false. */
   readonly verbose?: boolean;
-  /**
-   * Max chars per final message (channel cap). Default 4000. Rendered
-   * finals longer than this are delegated to splitFinal.
-   */
-  readonly maxFinalChars?: number;
 }
 
 export interface JsonlMirrorController {
