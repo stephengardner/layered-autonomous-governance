@@ -156,10 +156,21 @@ export async function runSpawnedJsonl(
     let processing = false;
     let timedOut = false;
 
+    // SIGTERM first, then escalate to SIGKILL after a short grace so a
+    // child that ignores or delays the term signal cannot hold the
+    // promise open past the caller's configured timeout. timeoutMs is
+    // a hard upper bound.
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
     const timeout = options.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
-          child.kill('SIGTERM');
+          try { child.kill('SIGTERM'); } catch { /* already exited */ }
+          killTimer = setTimeout(() => {
+            if (!child.killed) {
+              try { child.kill('SIGKILL'); } catch { /* ignore */ }
+            }
+          }, 500);
+          killTimer.unref?.();
         }, options.timeoutMs)
       : null;
 
@@ -196,10 +207,12 @@ export async function runSpawnedJsonl(
     });
     child.on('error', (err) => {
       if (timeout) clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
       reject(err);
     });
     child.on('close', async (code) => {
       if (timeout) clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
       // Flush any trailing partial line (if writer didn't end on \n).
       if (stdoutBuffer.length > 0) {
         lineQueue.push(stdoutBuffer);
