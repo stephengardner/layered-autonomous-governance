@@ -17,7 +17,7 @@
  */
 
 import type { Host } from '../interface.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../types.js';
+import type { Atom, AtomId, AtomType, PrincipalId, Time } from '../types.js';
 import type { ActorMessageV1, UrgencyTier } from './types.js';
 import type { InvokeResult } from './sub-actor-registry.js';
 
@@ -30,7 +30,7 @@ export interface AuditorPayload {
    */
   readonly filter?: {
     readonly principal_id?: PrincipalId;
-    readonly type?: ReadonlyArray<string>;
+    readonly type?: ReadonlyArray<AtomType>;
   };
 }
 
@@ -68,7 +68,7 @@ export async function runAuditor(
   const page = await host.atoms.query({
     ...(payload.filter?.principal_id ? { principal_id: [payload.filter.principal_id] } : {}),
     ...(payload.filter?.type && payload.filter.type.length > 0
-      ? { type: [...payload.filter.type] as Atom['type'][] }
+      ? { type: [...payload.filter.type] }
       : {}),
   }, 2000);
 
@@ -122,7 +122,22 @@ export async function runAuditor(
       audit: {
         correlation_id: correlationId,
         counts,
-        findings: findings.slice(0, 50), // bound the serialized size
+        // Cap BOTH the number of findings AND the number of atomIds
+        // per finding. A single tainted-atoms / orphan-provenance
+        // entry can legitimately list thousands of ids; serializing
+        // them all blows up the observation atom's size for no
+        // operator value. The omitted_atom_ids counter lets a
+        // consumer re-query for the full list if needed.
+        findings: findings.slice(0, 50).map((f) => {
+          const capped = f.atomIds.slice(0, 50);
+          return capped.length === f.atomIds.length
+            ? { ...f, atomIds: capped }
+            : {
+                ...f,
+                atomIds: capped,
+                omitted_atom_ids: f.atomIds.length - capped.length,
+              };
+        }),
       },
     },
   };
