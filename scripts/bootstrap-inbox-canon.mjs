@@ -149,6 +149,26 @@ const POLICIES = [
     },
   },
   {
+    id: 'pol-plan-auto-approve-low-stakes',
+    subject: 'plan-auto-approve-low-stakes',
+    reason:
+      'Plans that delegate to a read-only sub-actor (v0: auditor-actor only) and '
+      + 'that meet a minimum confidence bar can auto-transition from proposed to '
+      + 'approved without an operator signature. Ships default-deny: empty allowlist = '
+      + 'no auto-approvals. Operators widen the allowlist via canon edit when a new '
+      + 'read-only actor is ready. Never auto-approve a sub-actor that mutates state '
+      + 'beyond atom writes; use the manual plan-approval path for those.',
+    fields: {
+      // v0: only the read-only auditor is pre-allowed. Raising the
+      // dial means appending principal ids here, and it is a
+      // deliberate canon-edit moment each time.
+      allowed_sub_actors: ['auditor-actor'],
+      // Plans below this confidence bar wait for manual operator
+      // approval regardless of the delegation target.
+      min_confidence: 0.55,
+    },
+  },
+  {
     id: 'pol-inbox-poll-cadence',
     subject: 'inbox-poll-cadence',
     reason:
