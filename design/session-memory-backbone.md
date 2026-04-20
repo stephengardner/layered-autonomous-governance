@@ -1,4 +1,4 @@
-# Session-Memory Backbone — V0/V1/V2 Plan
+# Session-Memory Backbone - V0/V1/V2 Plan
 
 _Status: proposed. V0 decisions below are candidates for D-entries and L3 canon once operator-approved._
 
@@ -21,7 +21,7 @@ Same primitives. Same interfaces. Opt-in complexity, opt-out complexity.
 ## Scope (V0)
 
 In-scope:
-1. Watch-location model — one or more named watches, each independent.
+1. Watch-location model - one or more named watches, each independent.
 2. `ClaudeCodeTranscriptSource` as the default SessionSource, already shipping.
 3. `SessionEnd` hook integration so ingestion fires automatically at session boundaries.
 4. Extraction pass triggered after ingest (wiring existing `extractClaimsFromAtom`).
@@ -43,7 +43,7 @@ Explicit non-goals for V0:
 
 A "watch" is `{path, host, principal_scope, budget, filter, extractor?}`. Each watch runs a LoopRunner independently against its own AtomStore. Watches are composed via the registry; the framework does not assume a single cwd or a single host.
 
-```
+```text
 Watch = {
   path: string            // directory being watched
   host: HostConfig        // file:./.lag | file:/abs | bridge:chromadb | byo:<name>
@@ -58,7 +58,7 @@ Rationale: autonomous work happens in many places. A developer may edit here, an
 
 ### D-mbb-2: Opt-in by default, empty default watch set
 
-No directory is watched unless the operator explicitly adds it via `lag watch add <path>`. The initial registry is empty. Privacy floor: LAG never ingests content from a path the operator has not named. This is strict — `~/.claude/projects/` is not a default watch.
+No directory is watched unless the operator explicitly adds it via `lag watch add <path>`. The initial registry is empty. Privacy floor: LAG never ingests content from a path the operator has not named. This is strict - `~/.claude/projects/` is not a default watch.
 
 Rationale: Claude session directories contain whatever the operator has ever typed. Defaulting to "watch everything" is a trust violation we do not ship.
 
@@ -70,7 +70,7 @@ Rationale: a personal side-project must not poison an employer repo's canon. Tru
 
 ### D-mbb-4: Budget per watch, paused on breach
 
-Each watch has `budget_usd_per_day` (default $1.00). LLM extraction tracks cost via the LLM adapter's reported usage. When the daily budget is breached, the watch pauses extraction (but not ingestion — raw L0 atoms still land). Pause emits an Audit event `watch.budget.paused` and optionally notifies the operator via Notifier.
+Each watch has `budget_usd_per_day` (default $1.00). LLM extraction tracks cost via the LLM adapter's reported usage. When the daily budget is breached, the watch pauses extraction (but not ingestion - raw L0 atoms still land). Pause emits an Audit event `watch.budget.paused` and optionally notifies the operator via Notifier.
 
 Rationale: extraction cost is the only unbounded line item. A runaway loop without a budget is an outage.
 
@@ -91,10 +91,10 @@ Rationale: SessionEnd is reliable (fires on clean exit), bounded (one invocation
 ### D-mbb-7: Session lineage carried in provenance
 
 Every atom written by the session-memory pipeline carries:
-- `provenance.source.session_id` — the Claude Code session UUID
-- `provenance.source.tool` — `claude-code` | `claude-agent-sdk` | `<byo>`
-- `provenance.source.file_path` — the transcript path
-- `provenance.derived_from` — for L1 extracted atoms, the L0 source ids
+- `provenance.source.session_id` - the Claude Code session UUID
+- `provenance.source.tool` - `claude-code` | `claude-agent-sdk` | `<byo>`
+- `provenance.source.file_path` - the transcript path
+- `provenance.derived_from` - for L1 extracted atoms, the L0 source ids
 
 This makes the source chain two-hop traversable: `L3 canon → L2 promoted → L1 extracted → L0 ingested → session jsonl on disk`.
 
@@ -109,7 +109,7 @@ Rationale: the north-star dashboard answer "where did this directive come from?"
 ```yaml
 version: 1
 watches:
-  - id: memory-governance
+ - id: memory-governance
     path: /home/stephen/code/memory-governance
     host:
       kind: file
@@ -117,7 +117,7 @@ watches:
     principal_scope: repo-local
     budget_usd_per_day: 1.0
     extractor: default
-  - id: personal-cross
+ - id: personal-cross
     path: ~
     host:
       kind: file
@@ -126,7 +126,7 @@ watches:
     budget_usd_per_day: 0.25
     filter:
       exclude:
-        - ~/code/employer/*
+ - ~/code/employer/*
 ```
 
 CLI: `lag watch add <path>`, `lag watch list`, `lag watch remove <id>`, `lag watch pause <id>`, `lag watch resume <id>`.
@@ -138,13 +138,13 @@ Installed under `.claude/hooks/lag-session-end.mjs` (project-scope) or globally 
 2. Loads the registry, finds watches matching `cwd`.
 3. For each matching watch, calls `lagClient.ingest(watch, transcript_path)`.
 4. Triggers extraction pass (budget-gated) for newly ingested L0 atoms.
-5. Exits 0 regardless of inner errors — hooks never block sessions.
+5. Exits 0 regardless of inner errors - hooks never block sessions.
 
 Hook never runs LLM calls inline; ingest is synchronous (file read + atom write), extraction is dispatched to a short-lived worker (`lag extract --for <watch-id>`) so the hook returns fast.
 
 ### Worthiness classifier
 
-`src/extraction/worthiness.ts` — new module. Interface:
+`src/extraction/worthiness.ts` - new module. Interface:
 
 ```ts
 interface WorthinessClassifier {
@@ -160,11 +160,11 @@ V0 implementation: LLM-backed with a rules-first short-circuit. Rules: conversat
 
 ### Budget tracker
 
-`src/extraction/budget.ts` — per-watch daily budget ledger stored at `<watch>/.lag/budget/<yyyy-mm-dd>.json`. Every LLM call records `{usd_spent, model, session_id}`. Gate checks ledger total before each call.
+`src/extraction/budget.ts` - per-watch daily budget ledger stored at `<watch>/.lag/budget/<yyyy-mm-dd>.json`. Every LLM call records `{usd_spent, model, session_id}`. Gate checks ledger total before each call.
 
 ### Claude-session adapter (already shipping)
 
-`src/sources/claude-code.ts` — `ClaudeCodeTranscriptSource.ingest(host, options)` already does this. V0 wires it into the hook trigger. Minor extension: emit session_id in provenance (verify it's already there; add if not).
+`src/sources/claude-code.ts` - `ClaudeCodeTranscriptSource.ingest(host, options)` already does this. V0 wires it into the hook trigger. Minor extension: emit session_id in provenance (verify it's already there; add if not).
 
 ## V1 Additions
 
@@ -196,7 +196,7 @@ A `FederatedHost` composes multiple per-watch AtomStores into a unified read vie
 
 ### D-mbb-V2-2: Importance-timeline projection
 
-A periodic snapshot (daily or per-promotion-event) records top-N atom importance rankings. Importance = function of (derived_from in-degree, promotion hits, taint fan-out, reinforcement count). Timeline viz shows rank deltas over time: "atom X was #3 on 2026-04-19, #17 on 2026-05-19 — why?"
+A periodic snapshot (daily or per-promotion-event) records top-N atom importance rankings. Importance = function of (derived_from in-degree, promotion hits, taint fan-out, reinforcement count). Timeline viz shows rank deltas over time: "atom X was #3 on 2026-04-19, #17 on 2026-05-19 - why?"
 
 No new data required; all signals already in the AtomStore. Adds: snapshot table, render layer, CLI `lag lineage timeline`.
 
@@ -207,7 +207,7 @@ Pluggable `ExtractionAdapter` registry beyond the default LLM extractor. Regex e
 ## Risks
 
 1. **Classifier false negatives kill high-value atoms.** Mitigation: worthiness classifier emits a confidence; low-confidence candidates land in a "review queue" rather than being discarded. Operator can promote manually.
-2. **Session jsonl schema drift from Claude Code.** Mitigation: `ClaudeCodeTranscriptSource` already does defensive parsing — ignore unknown fields, continue. Add contract tests against a sample corpus of pinned session files.
+2. **Session jsonl schema drift from Claude Code.** Mitigation: `ClaudeCodeTranscriptSource` already does defensive parsing - ignore unknown fields, continue. Add contract tests against a sample corpus of pinned session files.
 3. **Budget breached mid-session leaves partial atoms.** Mitigation: extraction is chunked; each L0 atom is extracted independently with transactional write. Budget breach stops the next chunk; already-written atoms are valid.
 4. **Privacy escape via filter misconfiguration.** Mitigation: `lag watch add` explicitly prints what is in scope; `lag watch diff <id>` shows content sample before ingestion; CI on the CLI validates the filter shape.
 5. **Noisy canon from mid-session atoms.** Mitigation: session-memory atoms land at L1 by default, not L2 or L3. Promotion requires consensus or explicit operator approval. Canon stays clean.
@@ -239,9 +239,10 @@ Per-actor watches (CTO actor, Planning actor, Pr-landing actor, Deploy actor) wi
 
 ## Alignment with existing canon
 
-- `dir-indie-floor-org-ceiling` (proposed): this design serves both ends explicitly via the consumer tier examples.
-- `dir-no-hacks-without-approval` (proposed): the worthiness classifier and budget gate are *right path*, not shortcuts.
-- `dev-rigor-and-research` (existing, amended): research is embedded — the three research passes that produced this plan are cited.
+- `dev-indie-floor-org-ceiling` (seeded): this design serves both ends explicitly via the consumer tier examples.
+- `dev-no-hacks-without-approval` (seeded): the worthiness classifier and budget gate are *right path*, not shortcuts.
+- `dev-extreme-rigor-and-research` (existing, amended): research is embedded - the three research passes that produced this plan are cited.
+- `dev-rigor-tokens-not-constraint` (seeded): research token spend is never the constraint; the three research passes are budgeted accordingly.
 - `dev-substrate-not-prescription`: watch primitive + pluggable adapters, no role names in framework src/.
 - `dev-simple-surface-deep-architecture`: 10-command solo-dev story; org-scale deeply composable via the same primitives.
 - `inv-kill-switch-first`: `lag watch pause`, `touch .lag/STOP` in the watch directory, and per-watch budget auto-pause are three kill-switch tiers.
@@ -253,20 +254,20 @@ Per-actor watches (CTO actor, Planning actor, Pr-landing actor, Deploy actor) wi
 2. Proposal atoms written via `scripts/propose-principles.mjs` for the three new directives.
 3. Telegram approval flow exercised end-to-end.
 4. V0 implementation broken into phases and tasks:
-   - P0: `WatchRegistry` module + CLI (`lag watch add|list|remove|pause`)
-   - P1: `SessionEnd` hook + `lag ingest --for <watch>` entry point
-   - P2: `WorthinessClassifier` primitive + default implementation
-   - P3: `BudgetTracker` + extraction gate
-   - P4: End-to-end integration test against a sample transcript corpus
+ - P0: `WatchRegistry` module + CLI (`lag watch add|list|remove|pause`)
+ - P1: `SessionEnd` hook + `lag ingest --for <watch>` entry point
+ - P2: `WorthinessClassifier` primitive + default implementation
+ - P3: `BudgetTracker` + extraction gate
+ - P4: End-to-end integration test against a sample transcript corpus
 5. V1/V2 items land as their own design docs as they come up.
 
 ## References
 
-- `src/sources/claude-code.ts` — existing SessionSource.
-- `src/extraction/extract.ts` — existing L0 → L1 extraction.
-- `src/promotion/engine.ts` — promotion pipeline with L3 human gate.
-- `src/loop/runner.ts` — tick runner.
-- `src/canon-md/` — canon renderer.
+- `src/sources/claude-code.ts` - existing SessionSource.
+- `src/extraction/extract.ts` - existing L0 → L1 extraction.
+- `src/promotion/engine.ts` - promotion pipeline with L3 human gate.
+- `src/loop/runner.ts` - tick runner.
+- `src/canon-md/` - canon renderer.
 - Research pass 1 (repo audit): ~70% of backbone already built.
 - Research pass 2 (prior decisions): D0, D6, D8, D13, D16, D17 relevant.
 - Research pass 3 (Claude Code mechanics): hook types, session jsonl format, Agent SDK Sessions API.
