@@ -11,7 +11,8 @@
   "bin": {
     "lag-compromise": "./bin/lag-compromise.js",
     "lag-respond": "./bin/lag-respond.js",
-    "lag-run-loop": "./bin/lag-run-loop.js"
+    "lag-run-loop": "./bin/lag-run-loop.js",
+    "lag-actors": "./bin/lag-actors.js"
   },
   "exports": {
     ".": {
@@ -50,9 +51,17 @@
       "import": "./dist/actors/planning/index.js",
       "types": "./dist/actors/planning/index.d.ts"
     },
+    "./actors/provisioning": {
+      "import": "./dist/actors/provisioning/index.js",
+      "types": "./dist/actors/provisioning/index.d.ts"
+    },
     "./external/github": {
       "import": "./dist/external/github/index.js",
       "types": "./dist/external/github/index.d.ts"
+    },
+    "./external/github-app": {
+      "import": "./dist/external/github-app/index.js",
+      "types": "./dist/external/github-app/index.d.ts"
     }
   },
   "files": [
