@@ -127,6 +127,28 @@ const POLICIES = [
     },
   },
   {
+    id: 'pol-inbox-ordering',
+    subject: 'inbox-ordering',
+    reason:
+      'Default pickup ordering for actor-message atoms: deadline-imminent beats '
+      + 'urgency tier beats arrival FIFO. Thresholds and tier weights are tunable '
+      + 'via canon edit rather than a framework release, per dev-substrate-not-'
+      + 'prescription. Deployments that want a fundamentally different ordering '
+      + 'function pass a custom orderingFn to pickNextMessage; this atom only '
+      + 'configures the default function.',
+    fields: {
+      // ms threshold that treats a deadline_ts as "imminent" for priority.
+      // 60s matches the cadence threshold in pol-inbox-poll-cadence.
+      deadline_imminent_threshold_ms: 60_000,
+      // Urgency tier weights. Lower = higher priority.
+      urgency_weights: {
+        high: 0,
+        normal: 1,
+        soft: 2,
+      },
+    },
+  },
+  {
     id: 'pol-inbox-poll-cadence',
     subject: 'inbox-poll-cadence',
     reason:

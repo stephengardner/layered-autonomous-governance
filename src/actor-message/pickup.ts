@@ -21,6 +21,11 @@ import type { Host } from '../interface.js';
 import type { PrincipalId, Time } from '../types.js';
 import type { InboxMessage } from './inbox-reader.js';
 import { emitAck, listUnread } from './inbox-reader.js';
+import {
+  DEFAULT_ORDERING_POLICY,
+  readOrderingPolicy,
+  type OrderingPolicyConfig,
+} from './ordering-policy.js';
 
 export type PickupOutcome =
   | { readonly kind: 'kill-switch' }
@@ -51,12 +56,17 @@ export interface PickupOptions {
    * typically pass `resolve(stateDir, 'STOP')`.
    */
   readonly stopSentinelPath?: string;
-  /** Overrideable ordering; see OrderingFn for the default shape. */
+  /**
+   * Overrideable ordering. When set, fully replaces the default
+   * policy-driven ordering. When unset, the default ordering reads
+   * pol-inbox-ordering from canon and applies threshold + urgency
+   * weights from there.
+   */
   readonly orderingFn?: OrderingFn;
   /**
-   * ms threshold that treats a deadline as "imminent" for ordering.
-   * Default 60_000 (matches pol-inbox-poll-cadence
-   * deadline_imminent_threshold_ms).
+   * Hard override for the imminent-deadline threshold. Use sparingly;
+   * prefer editing pol-inbox-ordering via canon so tuning is a canon
+   * edit, not a caller decision.
    */
   readonly deadlineImminentThresholdMs?: number;
 }
@@ -90,11 +100,15 @@ export async function pickNextMessage(
   const unread = await listUnread(host, principalId);
   if (unread.length === 0) return { kind: 'empty' };
 
-  const orderingFn = options.orderingFn ?? defaultOrdering(
-    options.deadlineImminentThresholdMs ?? 60_000,
-  );
+  let orderingFn = options.orderingFn;
+  if (orderingFn === undefined) {
+    const policy = await readOrderingPolicy(host);
+    const threshold = options.deadlineImminentThresholdMs
+      ?? policy.deadline_imminent_threshold_ms;
+    orderingFn = defaultOrdering(threshold, policy);
+  }
   const nowMs = now();
-  const sorted = [...unread].sort((a, b) => orderingFn(a, b, nowMs));
+  const sorted = [...unread].sort((a, b) => orderingFn!(a, b, nowMs));
   const chosen = sorted[0]!;
 
   const ackAtomId = await emitAck(host, chosen, principalId, { now });
@@ -104,13 +118,16 @@ export async function pickNextMessage(
 /**
  * Default ordering: deadline-imminent first, then urgency tier, then
  * arrival time. Lower return = higher priority.
+ *
+ * When called with only the threshold, urgency weights default to
+ * {high:0, normal:1, soft:2}; pass a full OrderingPolicyConfig to
+ * use canon-configured weights (read via readOrderingPolicy).
  */
-export function defaultOrdering(deadlineImminentThresholdMs: number): OrderingFn {
-  const urgencyRank: Record<'soft' | 'normal' | 'high', number> = {
-    high: 0,
-    normal: 1,
-    soft: 2,
-  };
+export function defaultOrdering(
+  deadlineImminentThresholdMs: number,
+  policy: OrderingPolicyConfig = DEFAULT_ORDERING_POLICY,
+): OrderingFn {
+  const urgencyRank = policy.urgency_weights;
   return (a: InboxMessage, b: InboxMessage, nowMs: number) => {
     const aImminent = isDeadlineImminent(a, nowMs, deadlineImminentThresholdMs) ? 0 : 1;
     const bImminent = isDeadlineImminent(b, nowMs, deadlineImminentThresholdMs) ? 0 : 1;

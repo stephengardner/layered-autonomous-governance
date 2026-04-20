@@ -50,3 +50,9 @@ export {
   ResetAuthorityError,
   ResetShapeError,
 } from './reset-validator.js';
+
+export {
+  readOrderingPolicy,
+  DEFAULT_ORDERING_POLICY,
+} from './ordering-policy.js';
+export type { OrderingPolicyConfig } from './ordering-policy.js';
