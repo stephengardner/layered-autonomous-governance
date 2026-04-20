@@ -95,6 +95,9 @@ async function main() {
   const pendingResets = [];
   for (const reset of resetsPage.atoms) {
     if (reset.taint !== 'clean') continue;
+    // A superseded reset has itself been replaced (e.g. by a revocation
+    // atom); it is no longer actionable and should not be surfaced.
+    if (reset.superseded_by.length > 0) continue;
     const envelope = reset.metadata?.reset;
     if (!envelope || envelope.target_principal !== args.principal) continue;
     const trip = await host.atoms.get(envelope.trip_atom_id);
