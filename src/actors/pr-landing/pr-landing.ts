@@ -201,31 +201,57 @@ export class PrLandingActor implements Actor<
         });
       }
     }
+    // Reply behavior is GATED on composeReply being configured. Without
+    // a compose hook the actor has nothing substantive to say; posting
+    // a canned "Thanks for the review. Addressing in a follow-up"
+    // on every unresolved comment spams the PR and lies about intent
+    // (no follow-up commit materializes without a real LLM-backed
+    // reply + patch). A follow-up phase wires composeReply to an LLM;
+    // until then, the actor only performs actions it can back with
+    // substance: resolving nit threads (a real terminal action) and
+    // surfacing architectural comments through the escalation path.
+    const hasComposer = this.options.composeReply !== undefined;
+
     for (const c of classified.observation.comments) {
       const severity = c.severity ?? heuristicSeverity(c);
-      const body = await this.composeReplyBody(c, ctx);
 
       if (severity === 'architectural' || severity === 'blocking') {
-        actions.push({
-          tool: 'pr-reply-architectural',
-          description: `Surface architectural comment ${c.id} for human review`,
-          payload: { kind: 'reply-architectural', commentId: c.id, body },
-        });
+        if (hasComposer) {
+          const body = await this.composeReplyBody(c, ctx);
+          actions.push({
+            tool: 'pr-reply-architectural',
+            description: `Surface architectural comment ${c.id} for human review`,
+            payload: { kind: 'reply-architectural', commentId: c.id, body },
+          });
+        }
+        // When composeReply is not configured, architectural comments
+        // are surfaced via the audit trail only (policy-decision +
+        // reflection notes). The operator sees them on the PR
+        // directly; the actor does not post chatter.
         continue;
       }
       if (severity === 'suggestion') {
-        actions.push({
-          tool: 'pr-reply-suggestion',
-          description: `Reply to suggestion on comment ${c.id}`,
-          payload: { kind: 'reply-suggestion', commentId: c.id, body },
-        });
+        if (hasComposer) {
+          const body = await this.composeReplyBody(c, ctx);
+          actions.push({
+            tool: 'pr-reply-suggestion',
+            description: `Reply to suggestion on comment ${c.id}`,
+            payload: { kind: 'reply-suggestion', commentId: c.id, body },
+          });
+        }
         continue;
       }
-      actions.push({
-        tool: 'pr-reply-nit',
-        description: `Reply to nit on comment ${c.id}`,
-        payload: { kind: 'reply-nit', commentId: c.id, body },
-      });
+      // Nit: reply only if we have a real composer (real content to
+      // post); always resolve the thread (resolve IS a substantive
+      // terminal action even without a reply).
+      if (hasComposer) {
+        const body = await this.composeReplyBody(c, ctx);
+        actions.push({
+          tool: 'pr-reply-nit',
+          description: `Reply to nit on comment ${c.id}`,
+          payload: { kind: 'reply-nit', commentId: c.id, body },
+        });
+      }
       actions.push({
         tool: 'pr-resolve-nit',
         description: `Resolve nit on comment ${c.id}`,

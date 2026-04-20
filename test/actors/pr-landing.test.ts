@@ -77,11 +77,17 @@ class StubReviewAdapter implements PrReviewAdapter {
 }
 
 describe('PrLandingActor', () => {
-  it('produces reply + resolve for a nit comment on a first pass', async () => {
+  it('with a composeReply, produces reply + resolve for a nit comment', async () => {
     const host = createMemoryHost();
     const comment = mkComment({ id: 'nit1', body: 'nit: small typo', severity: 'nit' });
     const review = new StubReviewAdapter([[comment], []]);
-    const actor = new PrLandingActor({ pr: PR });
+    // composeReply present: the actor has substance to post, so it
+    // both replies AND resolves. Without composeReply the actor stays
+    // silent on replies; see the no-composer tests below.
+    const actor = new PrLandingActor({
+      pr: PR,
+      composeReply: async (c) => `fix applied for ${c.id}`,
+    });
 
     const report = await runActor(actor, {
       host,
@@ -97,7 +103,62 @@ describe('PrLandingActor', () => {
     expect(review.resolvedIds).toEqual(['nit1']);
   });
 
-  it('surfaces architectural comments as a separate tool class', async () => {
+  it('without a composeReply, resolves nits silently (no canned-ack spam)', async () => {
+    // Regression guard for the PR-landing ack-spam loop: without a
+    // real compose hook, the actor must not post "Thanks for the
+    // review. Addressing in a follow-up" replies. It still resolves
+    // nit threads because resolving IS a substantive terminal
+    // action; the reply is the part that lied about intent.
+    const host = createMemoryHost();
+    const comment = mkComment({ id: 'nit1', body: 'nit: small typo', severity: 'nit' });
+    const review = new StubReviewAdapter([[comment], []]);
+    const actor = new PrLandingActor({ pr: PR });
+
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: { review },
+      budget: { maxIterations: 3 },
+      origin: 'scheduled',
+    });
+
+    expect(report.haltReason).toBe('converged');
+    expect(review.replies).toHaveLength(0);
+    expect(review.resolvedIds).toEqual(['nit1']);
+  });
+
+  it('with a composeReply, surfaces architectural comments via pr-reply-architectural', async () => {
+    const host = createMemoryHost();
+    const comment = mkComment({
+      id: 'arch1',
+      body: 'Consider refactoring this architecture to avoid the central registry',
+      severity: 'architectural',
+    });
+    const review = new StubReviewAdapter([[comment], []]);
+    const actor = new PrLandingActor({
+      pr: PR,
+      composeReply: async (c) => `architectural reply for ${c.id}`,
+    });
+
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: { review },
+      budget: { maxIterations: 3 },
+      origin: 'scheduled',
+    });
+
+    // With no policy atoms, architectural reply is default-allowed.
+    // Result: one reply, NO resolve (architectural is not auto-resolved).
+    expect(report.haltReason).toBe('converged');
+    expect(review.replies).toHaveLength(1);
+    expect(review.resolvedIds).toEqual([]);
+  });
+
+  it('without a composeReply, architectural comments generate no reply (operator sees them directly)', async () => {
+    // Regression guard: without a real compose hook, architectural
+    // comments are NOT auto-replied. They remain visible to the
+    // operator on the PR; the actor does not post chatter.
     const host = createMemoryHost();
     const comment = mkComment({
       id: 'arch1',
@@ -115,10 +176,9 @@ describe('PrLandingActor', () => {
       origin: 'scheduled',
     });
 
-    // With no policy atoms, architectural reply is default-allowed.
-    // Result: one reply, NO resolve (architectural is not auto-resolved).
-    expect(report.haltReason).toBe('converged');
-    expect(review.replies).toHaveLength(1);
+    // No reply, no resolve: pure "nothing to do" state. The actor
+    // converges because there are no unresolved in-scope actions.
+    expect(review.replies).toHaveLength(0);
     expect(review.resolvedIds).toEqual([]);
   });
 
@@ -229,7 +289,10 @@ describe('PrLandingActor', () => {
     const c1 = mkComment({ id: 'n1', severity: 'nit' });
     const c2 = mkComment({ id: 'n2', severity: 'nit' });
     const review = new StubReviewAdapter([[c1, c2], [c1], []]);
-    const actor = new PrLandingActor({ pr: PR });
+    const actor = new PrLandingActor({
+      pr: PR,
+      composeReply: async (c) => `reply for ${c.id}`,
+    });
 
     const report = await runActor(actor, {
       host,
