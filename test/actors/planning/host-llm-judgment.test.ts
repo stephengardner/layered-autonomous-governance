@@ -321,7 +321,11 @@ describe('HostLlmPlanningJudgment', () => {
       const plans = await judgment.draft(context, classification);
       expect(plans).toHaveLength(1);
       expect(plans[0]!.title).toMatch(/Clarify/);
-      expect(plans[0]!.derivedFrom).toEqual([]);
+      // The missing-judgment escalation itself must still carry a
+      // provenance chain per canon ("every atom carries a source
+      // chain, no exceptions"); it falls back to the first directive
+      // from the aggregated context.
+      expect(plans[0]!.derivedFrom).toEqual(['dev-extreme-rigor']);
       expect(plans[0]!.confidence).toBeLessThan(0.3);
     });
 

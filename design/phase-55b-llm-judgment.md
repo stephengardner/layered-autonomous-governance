@@ -68,10 +68,12 @@ we implement a new class behind the injection seam.
 ```text
 class HostLlmPlanningJudgment implements PlanningJudgment {
   constructor(host: Host, options: {
-    classifyModel?: string;           # default claude-opus-4-7
-    draftModel?: string;              # default claude-opus-4-7
+    classifyModel: string;            # REQUIRED; caller provides (no src-side default)
+    draftModel: string;               # REQUIRED; caller provides (no src-side default)
     maxBudgetUsdPerCall?: number;     # default 0.50 (classify + draft = $1.00 worst case)
     minConfidence?: number;           # default 0.55
+    temperature?: number;             # default 0.2
+    timeoutMs?: number;               # default DEFAULT_JUDGE_TIMEOUT_MS (180_000)
   });
 
   async classify(context): PlanningClassification {
@@ -88,7 +90,11 @@ class HostLlmPlanningJudgment implements PlanningJudgment {
     #    pass full content.
     # 2. host.llm.judge(PLAN_CLASSIFY.jsonSchema, PLAN_CLASSIFY.systemPrompt, data, opts)
     # 3. Validate with PLAN_CLASSIFY.zodSchema
-    # 4. Return classification; if invalid, escalate "missing judgment"
+    # 4. On LLM failure OR schema-validation failure, return a synthetic
+    #    "ambiguous" classification with rationale=<error>, applicableDirectives=[].
+    #    The draft step sees "ambiguous" and emits a missing-judgment
+    #    escalation plan (confidence 0.15) so the operator sees the failure
+    #    explicitly; we never silently fall back.
   }
 
   async draft(context, classification): ProposedPlan[] {
@@ -122,9 +128,9 @@ uncited plans *inside* the judgment.
 
 Concretely: if `PLAN_DRAFT` returns a plan with empty `derivedFrom`
 or citations that don't exist in the aggregated context, the
-judgment converts that plan into a "missing-context escalation"
-plan with a specific title, explicit "0 citations" marker, and
-confidence=0.2. The operator sees exactly why.
+judgment converts that plan into a missing-judgment escalation plan
+with a specific title, explanation of the failure mode, and
+confidence 0.15. The operator sees exactly why.
 
 ## Cost / budget
 
@@ -178,8 +184,11 @@ When `host.llm.judge` throws (rate limit, timeout, schema validation):
   a "missing-judgment" plan escalating to the operator. Same shape as
   the stub's missing-context escalation.
 - `draft`: return a single "missing-judgment" plan explicitly marking
-  the LLM failure mode. Confidence 0.1. Operator sees the failure and
-  can retry or broaden context caps.
+  the LLM failure mode. Confidence 0.15. derivedFrom is populated
+  from `fallbackDerivedFrom(context)` (first directive, decision,
+  relevant atom, or open plan) so even the failure plan carries a
+  source chain per the provenance canon. Operator sees the failure
+  and can retry or broaden context caps.
 
 Never fall back silently to the stub. Failures must be visible.
 

@@ -1,5 +1,5 @@
 /**
- * HostLlmPlanningJudgment (Phase 55b+).
+ * HostLlmPlanningJudgment.
  *
  * LLM-backed implementation of the PlanningJudgment contract. Uses
  * host.llm.judge() twice per planning run: once to classify the
@@ -8,14 +8,15 @@
  * trail, and every drafted plan is provenance-guarded at this layer
  * so invalid atoms never reach the atom store.
  *
- * Injection seam: swap this for `stubJudgment()` via PlanningActor
- * options. The actor itself does not know whether it is reasoning
- * via LLM or a deterministic stub. Keeps tests pure, keeps the
- * rollback path trivial.
+ * Framework primitive: model ids, atom-truncation policy, and any
+ * other vendor- or instance-specific defaults live in the caller
+ * (scripts, canon, skill config), never here. This module is
+ * mechanism-only.
  *
- * Per operator decision 2026-04-19: Opus for both classify and draft,
- * no per-atom content truncation, plans are the most important thing
- * we build, spare no tokens.
+ * Injection seam: swap this for any other PlanningJudgment via the
+ * PlanningActor options. The actor itself does not know whether it
+ * is reasoning via LLM or a deterministic stub. Keeps tests pure,
+ * keeps the rollback path trivial.
  */
 
 import type { Host } from '../../interface.js';
@@ -72,12 +73,41 @@ export interface HostLlmPlanningJudgmentOptions {
 }
 
 /**
+ * Pick a minimal provenance chain for a fallback plan. Canon says
+ * every atom carries a source chain; a fallback with `derivedFrom:
+ * []` would violate that invariant the moment the actor writes it
+ * to the atom store. Prefer the first directive (enforced
+ * constraint), then a decision (prior precedent), then any relevant
+ * or open-plan atom. Returns empty only if aggregate-context gave
+ * us nothing at all, in which case the caller MUST handle the
+ * zero-citation case explicitly.
+ */
+function fallbackDerivedFrom(context: PlanningContext): ReadonlyArray<AtomId> {
+  const first =
+    context.directives[0] ??
+    context.decisions[0] ??
+    context.relevantAtoms[0] ??
+    context.openPlans[0];
+  return first ? ([first.id] as ReadonlyArray<AtomId>) : [];
+}
+
+/**
  * Compact "failure" plan surfaced when the judgment cannot produce a
  * grounded plan. Operator-visible via the standard HIL escalation
  * path; confidence is deliberately low so the operator sees "this is
  * a meta-signal, not a real plan" and can retry or broaden context.
+ *
+ * `derivedFrom` is REQUIRED to be non-empty in practice (every atom
+ * carries a source chain per canon). Caller passes
+ * fallbackDerivedFrom(context) in most cases. If aggregation really
+ * returned zero atoms, the caller can still pass [] here and handle
+ * the downstream "uncited escalation" case at the actor layer.
  */
-function missingJudgmentPlan(reason: string, request: string): ProposedPlan {
+function missingJudgmentPlan(
+  reason: string,
+  request: string,
+  derivedFrom: ReadonlyArray<AtomId>,
+): ProposedPlan {
   return {
     title: `Clarify: cannot draft a grounded plan (${reason})`,
     body: [
@@ -94,7 +124,7 @@ function missingJudgmentPlan(reason: string, request: string): ProposedPlan {
       '- Schema validation failure: the judgment prompt may need a',
       '  version bump if the failure reproduces.',
     ].join('\n'),
-    derivedFrom: [],
+    derivedFrom,
     principlesApplied: [],
     alternativesRejected: [
       {
@@ -110,10 +140,10 @@ function missingJudgmentPlan(reason: string, request: string): ProposedPlan {
 }
 
 /**
- * Render an atom for the LLM judge. We send the full atom content
- * (operator directive 2026-04-19: plans are the most important thing
- * we build, spare no tokens). Light shape trimming to remove fields
- * the judge does not need.
+ * Render an atom for the LLM judge. Sends the full atom content by
+ * default; truncation policy, if any, is the caller's choice (canon
+ * / skill / script config). Light shape trimming removes fields the
+ * judge does not need.
  */
 function renderAtomForJudge(atom: Atom): {
   id: string;
@@ -267,7 +297,13 @@ export class HostLlmPlanningJudgment implements PlanningJudgment {
       const reason = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
       console.error(`[HostLlmPlanningJudgment.draft] judge failed: ${reason}`);
-      return [missingJudgmentPlan(`LLM draft failed: ${reason}`, context.request)];
+      return [
+        missingJudgmentPlan(
+          `LLM draft failed: ${reason}`,
+          context.request,
+          fallbackDerivedFrom(context),
+        ),
+      ];
     }
 
     const parsed = PLAN_DRAFT.zodSchema.safeParse(rawOutput);
@@ -276,6 +312,7 @@ export class HostLlmPlanningJudgment implements PlanningJudgment {
         missingJudgmentPlan(
           `LLM draft output failed schema validation: ${parsed.error.message}`,
           context.request,
+          fallbackDerivedFrom(context),
         ),
       ];
     }
@@ -349,7 +386,7 @@ export class HostLlmPlanningJudgment implements PlanningJudgment {
           : droppedByConfidence > 0 && droppedByCitation === 0
             ? `all ${droppedByConfidence} drafted plan(s) fell below minConfidence ${this.minConfidence}`
             : `drafted plans dropped: ${droppedByCitation} uncited + ${droppedByConfidence} low-confidence`;
-      return [missingJudgmentPlan(reason, context.request)];
+      return [missingJudgmentPlan(reason, context.request, fallbackDerivedFrom(context))];
     }
 
     return cleaned;
