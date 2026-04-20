@@ -95,14 +95,16 @@ export class PlanningActor implements Actor<
   private classification: PlanningClassification | null = null;
   private planAtomIdsWritten = new Set<AtomId>();
   /**
-   * Plan title (stable identity for one run) -> atom id of the
-   * already-written plan atom. If apply() is invoked a second time
-   * for the same draft (e.g. reflect kept the loop open because the
-   * escalation failed) we reuse this id and skip the atoms.put so a
-   * single logical plan never becomes multiple plan-* atoms with
-   * different timestamp suffixes.
+   * Draft-content key -> atom id of the already-written plan atom.
+   * Keyed on the full action payload (planIndex + plan body fields)
+   * rather than title alone, so two distinct drafts with the same
+   * title do not collapse into one atom. If apply() is invoked a
+   * second time for the same draft (e.g. reflect kept the loop open
+   * because the escalation failed) we reuse this id and skip the
+   * atoms.put so a single logical plan never becomes multiple
+   * plan-* atoms with different timestamp suffixes.
    */
-  private atomIdByPlanTitle = new Map<string, AtomId>();
+  private atomIdByDraftKey = new Map<string, AtomId>();
 
   constructor(private readonly options: PlanningActorOptions) {}
 
@@ -167,7 +169,8 @@ export class PlanningActor implements Actor<
     // kept the loop open) would generate a fresh id from the current
     // clock and write a second plan-* atom for the same logical
     // proposal.
-    const existingAtomId = this.atomIdByPlanTitle.get(plan.title);
+    const draftKey = draftContentKey(action.payload);
+    const existingAtomId = this.atomIdByDraftKey.get(draftKey);
     const planAtomId: AtomId = existingAtomId
       ?? deterministicPlanId(plan.title, principalId, nowFn());
     const now = nowFn();
@@ -226,7 +229,7 @@ export class PlanningActor implements Actor<
         );
       }
       this.planAtomIdsWritten.add(planAtom.id);
-      this.atomIdByPlanTitle.set(plan.title, planAtom.id);
+      this.atomIdByDraftKey.set(draftKey, planAtom.id);
     }
 
     // Surface as an HIL escalation. Operator approves/rejects via
@@ -282,6 +285,25 @@ export class PlanningActor implements Actor<
       note: `Proposed ${applied}/${total} plan(s), ${escalated} escalated; operator approval pending`,
     };
   }
+}
+
+/**
+ * Collision-safe key for the retry-reuse map. Drafts are identified
+ * by their full action payload so two plans that happen to share a
+ * title do not collapse to the same key. planIndex pins iteration
+ * order; the content fields make two semantically different drafts
+ * produce different keys even when titles match verbatim.
+ */
+function draftContentKey(payload: PlanningActionPayload): string {
+  const p = payload.plan;
+  return JSON.stringify({
+    i: payload.planIndex,
+    t: p.title,
+    b: p.body,
+    d: [...p.derivedFrom],
+    pr: [...p.principlesApplied],
+    w: p.whatBreaksIfRevisit,
+  });
 }
 
 /**
