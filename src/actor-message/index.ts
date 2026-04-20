@@ -68,3 +68,12 @@ export type { AuditorPayload, AuditFinding } from './auditor-actor.js';
 
 export { runDispatchTick } from './plan-dispatch.js';
 export type { DelegationEnvelope, DispatchTickResult } from './plan-dispatch.js';
+
+export {
+  runAutoApprovePass,
+  FALLBACK_AUTO_APPROVE,
+} from './auto-approve.js';
+export type {
+  AutoApprovePolicyConfig,
+  AutoApproveTickResult,
+} from './auto-approve.js';
