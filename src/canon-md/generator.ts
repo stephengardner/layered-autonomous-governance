@@ -31,6 +31,14 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   'question',
   'observation',
   'ephemeral',
+  // Inbox runtime types are L0/L1; the canon applier filters to L3 so
+  // these never appear in CLAUDE.md. Included here for deterministic
+  // ordering if a caller explicitly renders a non-L3 atom set (e.g. a
+  // debugging dump or the `lag inbox` CLI).
+  'actor-message',
+  'actor-message-ack',
+  'circuit-breaker-trip',
+  'circuit-breaker-reset',
 ];
 
 const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
@@ -42,6 +50,10 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   question: 'Questions',
   observation: 'Observations',
   ephemeral: 'Ephemeral',
+  'actor-message': 'Actor Messages',
+  'actor-message-ack': 'Actor Message Acks',
+  'circuit-breaker-trip': 'Circuit Breaker Trips',
+  'circuit-breaker-reset': 'Circuit Breaker Resets',
 };
 
 export interface RenderOptions {

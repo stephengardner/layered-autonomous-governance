@@ -54,7 +54,15 @@ export type AtomType =
   | 'reference'
   | 'ephemeral'
   | 'plan'
-  | 'question';
+  | 'question'
+  // Proactive-CTO inbox primitives (ship in PRs A-E of the inbox V1
+  // sequence; listed here so later PRs don't churn the type union).
+  // See design/inbox-v1-load-test-commitment.md and
+  // plan-revised-inbox-hybrid-wake-write-time-rat-* for shape.
+  | 'actor-message'
+  | 'actor-message-ack'
+  | 'circuit-breaker-trip'
+  | 'circuit-breaker-reset';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite
