@@ -21,6 +21,7 @@ interface Call {
   readonly text: string;
   readonly parseMode?: string;
   readonly disableNotification?: boolean;
+  readonly actions?: ReadonlyArray<{ label: string; callbackData: string }>;
 }
 
 function mkStubChannel(): { channel: CliRendererChannel; calls: Call[] } {
@@ -35,6 +36,7 @@ function mkStubChannel(): { channel: CliRendererChannel; calls: Call[] } {
           text: message.text,
           ...(message.parseMode === undefined ? {} : { parseMode: message.parseMode }),
           ...(message.disableNotification === undefined ? {} : { disableNotification: message.disableNotification }),
+          ...(message.actions === undefined ? {} : { actions: message.actions }),
         });
         return { messageId: String(nextId++) };
       },
@@ -45,6 +47,7 @@ function mkStubChannel(): { channel: CliRendererChannel; calls: Call[] } {
           text: message.text,
           ...(message.parseMode === undefined ? {} : { parseMode: message.parseMode }),
           ...(message.disableNotification === undefined ? {} : { disableNotification: message.disableNotification }),
+          ...(message.actions === undefined ? {} : { actions: message.actions }),
         });
       },
     },
@@ -137,19 +140,30 @@ describe('CliRenderer', () => {
     await renderer.dispose();
   });
 
-  it('complete folds thinking into a tg-spoiler block (Telegram-safe HTML)', async () => {
+  it('thinking shows live in the throbber but is stripped from the final message', async () => {
     let t = 1_000_000;
     const { channel, calls } = mkStubChannel();
     const renderer = new CliRenderer({ channel, now: () => t, editRateLimitMs: 0 });
     await renderer.emit({ type: 'start' });
+    t += 1;
     await renderer.emit({ type: 'thinking', text: 'considering approaches' });
+
+    // Intermediate edit must surface the thinking indicator.
+    const intermediate = calls.filter((c) => c.kind === 'edit');
+    expect(intermediate.length).toBeGreaterThanOrEqual(1);
+    const lastMid = intermediate[intermediate.length - 1]!;
+    expect(lastMid.text).toContain('💭');
+    expect(lastMid.text).toContain('considering approaches');
+
+    t += 1;
     await renderer.emit({ type: 'complete', finalText: 'Answer.' });
 
     const final = calls[calls.length - 1]!;
     expect(final.text).toContain('Answer.');
-    expect(final.text).toContain('considering approaches');
-    expect(final.text).toContain('<tg-spoiler>');
-    // Must NOT use <details>: Telegram HTML rejects that tag.
+    // Thinking must NOT be embedded in the final message; it lives in
+    // the live throbber only.
+    expect(final.text).not.toContain('considering approaches');
+    expect(final.text).not.toContain('<tg-spoiler>');
     expect(final.text).not.toContain('<details>');
     await renderer.dispose();
   });
@@ -285,6 +299,162 @@ describe('CliRenderer', () => {
     await renderer.emit({ type: 'tool-call', tool: 'Read', summary: 'x' });
     await renderer.emit({ type: 'complete', finalText: 'done' });
     expect(postAttempts).toBeGreaterThan(0);
+    await renderer.dispose();
+  });
+
+  it('attaches action button on start and clears it on complete', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+      action: { label: 'Stop', callbackData: 'run-1' },
+    });
+    await renderer.emit({ type: 'start' });
+    const start = calls.find((c) => c.kind === 'post')!;
+    expect(start.actions).toEqual([{ label: 'Stop', callbackData: 'run-1' }]);
+
+    t += 10;
+    await renderer.emit({ type: 'complete', finalText: 'done' });
+    const final = calls[calls.length - 1]!;
+    expect(final.kind).toBe('edit');
+    // Terminal edit must clear the button.
+    expect(final.actions).toEqual([]);
+    await renderer.dispose();
+  });
+
+  it('every intermediate edit re-sends the action (Telegram strips reply_markup on omit)', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+      action: { label: 'Stop', callbackData: 'run-9' },
+    });
+    await renderer.emit({ type: 'start' });
+    t += 1;
+    await renderer.emit({ type: 'tool-call', tool: 'Read', summary: 'a' });
+    t += 1;
+    await renderer.emit({ type: 'tool-call', tool: 'Read', summary: 'b' });
+    t += 1;
+    await renderer.emit({ type: 'text-delta', text: 'hello world' });
+    // Intermediate edits are fired through the serialized edit chain;
+    // drain it so the test sees all of them before asserting.
+    await renderer.waitForIdle();
+
+    const intermediateEdits = calls.filter((c) => c.kind === 'edit');
+    expect(intermediateEdits.length).toBeGreaterThanOrEqual(2);
+    for (const e of intermediateEdits) {
+      expect(e.actions).toEqual([{ label: 'Stop', callbackData: 'run-9' }]);
+    }
+    await renderer.dispose();
+  });
+
+  it('clears action button on error', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+      action: { label: 'Stop', callbackData: 'run-2' },
+    });
+    await renderer.emit({ type: 'start' });
+    t += 5;
+    await renderer.emit({ type: 'error', message: 'nope' });
+    const final = calls[calls.length - 1]!;
+    expect(final.kind).toBe('edit');
+    expect(final.actions).toEqual([]);
+    await renderer.dispose();
+  });
+
+  it('text-delta surfaces a live preview blockquote in the throbber', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+      livePreviewLines: 2,
+      livePreviewMaxChars: 100,
+    });
+    await renderer.emit({ type: 'start' });
+    t += 1;
+    await renderer.emit({ type: 'text-delta', text: 'line one\nline two\nline three' });
+    const edits = calls.filter((c) => c.kind === 'edit');
+    expect(edits.length).toBeGreaterThanOrEqual(1);
+    const latest = edits[edits.length - 1]!;
+    expect(latest.text).toContain('<blockquote>');
+    expect(latest.text).toContain('line two');
+    expect(latest.text).toContain('line three');
+    // Only the last two lines are previewed.
+    expect(latest.text).not.toContain('line one');
+    await renderer.dispose();
+  });
+
+  it('livePreviewMaxChars=0 suppresses the preview block entirely', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+      livePreviewMaxChars: 0,
+    });
+    await renderer.emit({ type: 'start' });
+    t += 1;
+    await renderer.emit({ type: 'text-delta', text: 'anything' });
+    const edits = calls.filter((c) => c.kind === 'edit');
+    for (const e of edits) {
+      expect(e.text).not.toContain('<blockquote>');
+    }
+    await renderer.dispose();
+  });
+
+  it('footer meta uses markdown italic so a markdown->HTML renderFinal does not escape it', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    // renderFinal stub: simulate the real markdown->HTML converter by
+    // escaping ANY remaining <...> in free text. A footer that already
+    // contains raw <i> would get escaped to &lt;i&gt;.
+    const renderFinal = (md: string): string => md.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+      renderFinal,
+    });
+    await renderer.emit({ type: 'start' });
+    await renderer.emit({
+      type: 'complete',
+      finalText: 'Done.',
+      meta: { elapsed: '2s', cost: '$0.0001' },
+    });
+    const final = calls[calls.length - 1]!;
+    // Must NOT contain an escaped literal tag like `&lt;i&gt;`.
+    expect(final.text).not.toContain('&lt;i&gt;');
+    // Meta content still present.
+    expect(final.text).toContain('elapsed=2s');
+    expect(final.text).toContain('cost=$0.0001');
+    await renderer.dispose();
+  });
+
+  it('second complete is a no-op (parser + daemon dedupe)', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+    });
+    await renderer.emit({ type: 'start' });
+    await renderer.emit({ type: 'complete', finalText: 'first' });
+    const editCountAfterFirst = calls.filter((c) => c.kind === 'edit').length;
+    await renderer.emit({ type: 'complete', finalText: 'second' });
+    const editCountAfterSecond = calls.filter((c) => c.kind === 'edit').length;
+    expect(editCountAfterSecond).toBe(editCountAfterFirst);
     await renderer.dispose();
   });
 

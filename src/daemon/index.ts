@@ -44,12 +44,44 @@ import {
 import { assembleContext, type AssembleContextOptions } from './context.js';
 import { markdownToTelegramHtml, splitMarkdownForTelegram } from './format.js';
 import { invokeClaude, type InvokeClaudeOptions } from './invoke-claude.js';
+import { CliRenderer } from './cli-renderer/index.js';
+import type { CliRendererChannel, InlineAction } from './cli-renderer/index.js';
+import { createTelegramChannel } from './cli-renderer/telegram-channel.js';
+import {
+  invokeClaudeStreaming,
+  type InvokeClaudeStreamingOptions,
+} from './cli-renderer/claude.js';
 import {
   downloadTelegramFile,
   type TelegramVoice,
   type VoiceTranscriber,
 } from './voice.js';
 import { bindAnswer } from '../questions/index.js';
+
+/**
+ * Transport adapter for the CLI-style streaming response path. The
+ * three methods together hide transport-specific details from
+ * LAGDaemon (channel construction, the Stop button action payload,
+ * and the callback-data protocol used to route a Stop press back to
+ * the active run). Default implementation wires Telegram; any other
+ * transport supplies its own.
+ */
+export interface CliRendererTransport {
+  /** Build a CliRendererChannel bound to the target run. */
+  readonly channel: (args: {
+    readonly chatId: number;
+    readonly replyToMessageId: number;
+  }) => CliRendererChannel;
+  /** InlineAction to attach to the throbber so the operator can Stop. */
+  readonly stopAction: (runToken: string) => InlineAction;
+  /**
+   * Extract a runToken from a raw callback_data string, or null if
+   * this data does not belong to this transport's Stop protocol.
+   * Used by the daemon's callback handler to decide whether to
+   * abort an active run.
+   */
+  readonly matchStopCallback: (callbackData: string) => string | null;
+}
 
 export interface LAGDaemonOptions {
   readonly host: Host;
@@ -127,6 +159,28 @@ export interface LAGDaemonOptions {
   readonly onCallback?: (handle: string, disposition: Disposition, responder: PrincipalId) => Promise<void>;
   /** Poll interval in ms. Default 2000. */
   readonly pollIntervalMs?: number;
+  /**
+   * Label shown on the CLI-style throbber header (e.g. "Claude is
+   * working"). Instance/vendor-specific by design. Framework code
+   * stays mechanism-focused, so the label comes from the caller.
+   * Default: 'Working' (vendor-neutral).
+   */
+  readonly cliStyleLabel?: string;
+  /**
+   * Transport adapter for the CLI-style response path. Injects three
+   * things the renderer needs but that are transport-specific:
+   *   - channel: build a CliRendererChannel for the run's target
+   *   - stopAction: build the InlineAction attached to the throbber
+   *   - matchStopCallback: given raw callback data, return the
+   *     runToken if it is a stop callback for us, otherwise null
+   *
+   * Defaults to a Telegram-specific implementation (createTelegramChannel
+   * + `lag-stop:<token>` callback protocol). Passing a custom
+   * implementation keeps LAGDaemon framework-neutral: the notifier
+   * seam already exists in Host.notifier for escalations, and this
+   * option plays the same role for the streaming cli-render path.
+   */
+  readonly cliTransport?: CliRendererTransport;
   /** Max chars per outgoing Telegram message. Default 4000 (Telegram cap is 4096). */
   readonly maxReplyChars?: number;
   /** Context assembler options. Default: k=10, maxChars=16_000. */
@@ -137,6 +191,21 @@ export interface LAGDaemonOptions {
   readonly fetchImpl?: typeof fetch;
   /** Invoke-claude impl. Default: invokeClaude. Tests inject a mock. */
   readonly invokeImpl?: typeof invokeClaude;
+  /**
+   * When true, the daemon uses the CLI-style streaming renderer for
+   * Telegram replies: a single message is posted as a throbber, then
+   * edited with compact tool-call lines as Claude progresses, and
+   * finally replaced with the full response. Default: false (preserve
+   * existing behaviour). Requires Claude CLI to support
+   * `--output-format stream-json --verbose` (which is the default for
+   * modern Claude Code builds).
+   */
+  readonly cliStyle?: boolean;
+  /**
+   * Streaming-invoke impl. Default: invokeClaudeStreaming. Tests
+   * inject a stub that feeds canned events via options.executor.
+   */
+  readonly streamingInvokeImpl?: typeof invokeClaudeStreaming;
   /** Error sink. Default: console.error. */
   readonly onError?: (err: unknown, context: string) => void;
 }
@@ -175,6 +244,7 @@ export class LAGDaemon {
   private readonly options: LAGDaemonOptions;
   private readonly fetch: typeof fetch;
   private readonly invoke: typeof invokeClaude;
+  private readonly invokeStreaming: typeof invokeClaudeStreaming;
   private readonly onError: (err: unknown, ctx: string) => void;
 
   private updateOffset: number = 0;
@@ -183,11 +253,19 @@ export class LAGDaemon {
   private loopTimer: ReturnType<typeof setTimeout> | null = null;
   private extractionTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly chatIdString: string;
+  /**
+   * Active cli-style runs keyed by a short opaque token. The token is
+   * embedded in the Stop button's callback_data; when Telegram posts
+   * the callback back we look up the AbortController here and abort.
+   */
+  private readonly activeRuns = new Map<string, AbortController>();
+  private runCounter = 0;
 
   constructor(options: LAGDaemonOptions) {
     this.options = options;
     this.fetch = options.fetchImpl ?? globalThis.fetch;
     this.invoke = options.invokeImpl ?? invokeClaude;
+    this.invokeStreaming = options.streamingInvokeImpl ?? invokeClaudeStreaming;
     this.onError = options.onError ?? ((err, ctx) => {
       // eslint-disable-next-line no-console
       console.error(`[LAGDaemon] ${ctx}:`, err);
@@ -255,6 +333,16 @@ export class LAGDaemon {
     if (this.extractionTimer) {
       clearTimeout(this.extractionTimer);
       this.extractionTimer = null;
+    }
+    // Abort any in-flight cli-style reply streams. Without this, a
+    // shutdown (SIGTERM, lifecycle stopService, terminal takeover)
+    // would leave the underlying invokeClaudeStreaming child running
+    // AND continuing to edit Telegram messages after the daemon
+    // process no longer considers itself active. Aborting propagates
+    // through runSpawnedJsonl's signal handler and kills the child.
+    for (const [token, controller] of this.activeRuns) {
+      try { controller.abort(); } catch { /* already aborted */ }
+      this.activeRuns.delete(token);
     }
   }
 
@@ -487,7 +575,7 @@ export class LAGDaemon {
         }
       }
 
-      if (update.callback_query && this.options.onCallback && typeof update.callback_query.data === 'string') {
+      if (update.callback_query && typeof update.callback_query.data === 'string') {
         try {
           await this.handleCallback(update.callback_query);
           processed += 1;
@@ -577,13 +665,46 @@ export class LAGDaemon {
       ...(this.options.contextOptions ?? {}),
     });
 
-    // 3. Invoke claude -p. If it fails transiently, apologize; if it
-    //    succeeds, relay the response.
+    // 3-4. Invoke claude and deliver the response. Two paths:
+    //  - cliStyle=true: stream events through CliRenderer for a
+    //    CLI-session-like Telegram experience (throbber -> tool
+    //    lines -> final).
+    //  - cliStyle=false (default): preserve the original batch path.
+    let replyText: string;
+    if (this.options.cliStyle) {
+      replyText = await this.replyCliStyle({
+        chatId,
+        replyToMessageId: message.message_id,
+        text,
+        systemPrompt: context.prompt,
+      });
+    } else {
+      replyText = await this.replyBatch({
+        chatId,
+        text,
+        systemPrompt: context.prompt,
+      });
+    }
+
+    // 5. Record the assistant response as an L0 atom.
+    await this.writeConversationAtom(replyText, 'agent-observed', principal);
+  }
+
+  /**
+   * Batch response path (original behaviour): invoke, wait for full
+   * response, split + HTML-render + send. Returns the raw markdown
+   * reply for the L0 atom write.
+   */
+  private async replyBatch(args: {
+    readonly chatId: number;
+    readonly text: string;
+    readonly systemPrompt: string;
+  }): Promise<string> {
     let replyText: string;
     try {
       const result = await this.invoke({
-        userMessage: text,
-        systemPrompt: context.prompt,
+        userMessage: args.text,
+        systemPrompt: args.systemPrompt,
         ...(this.options.repoRoot !== undefined ? { cwd: this.options.repoRoot } : {}),
         ...(this.options.resumeSessionId !== undefined ? { resumeSessionId: this.options.resumeSessionId } : {}),
         ...(this.options.invokeOptions ?? {}),
@@ -593,25 +714,166 @@ export class LAGDaemon {
       this.onError(err, 'invokeClaude');
       replyText = 'I could not generate a response right now. Please try again.';
     }
-
-    // 4. Send reply(s), splitting if needed. Split on raw markdown first
-    //    so each chunk is independently valid; then format per chunk so
-    //    HTML tag pairs never span a chunk boundary.
     const maxChars = this.options.maxReplyChars ?? 4000;
     for (const chunk of splitMarkdownForTelegram(replyText, maxChars)) {
       const html = markdownToTelegramHtml(chunk);
-      await this.sendMessage(chatId, html, 'HTML');
+      await this.sendMessage(args.chatId, html, 'HTML');
     }
+    return replyText;
+  }
 
-    // 5. Record the assistant response as an L0 atom.
-    await this.writeConversationAtom(replyText, 'agent-observed', principal);
+  /**
+   * CLI-style response path: stream Claude events through a
+   * CliRenderer bound to a Telegram channel. One message is posted
+   * with a throbber, then edited with compact tool-call lines as
+   * Claude works, then edited to the final formatted response.
+   *
+   * A Stop button is attached to the throbber; pressing it aborts the
+   * spawned claude process. Whatever text accumulated before abort
+   * becomes the reply, tagged as stopped by the operator.
+   */
+  private async replyCliStyle(args: {
+    readonly chatId: number;
+    readonly replyToMessageId: number;
+    readonly text: string;
+    readonly systemPrompt: string;
+  }): Promise<string> {
+    const transport = this.resolveCliTransport();
+    const channel = transport.channel({
+      chatId: args.chatId,
+      replyToMessageId: args.replyToMessageId,
+    });
+    const maxChars = this.options.maxReplyChars ?? 4000;
+    const runToken = this.registerRun();
+    const renderer = new CliRenderer({
+      channel,
+      renderFinal: (md) => markdownToTelegramHtml(md),
+      splitFinal: (text) => splitMarkdownForTelegram(text, maxChars),
+      action: transport.stopAction(runToken),
+    });
+
+    await renderer.emit({ type: 'start', label: this.options.cliStyleLabel ?? 'Working' });
+    let replyText = '';
+    const controller = this.activeRuns.get(runToken)!;
+    try {
+      // Pick up operator-configured invoke options (model, verbose,
+      // timeoutMs, maxBudgetUsd) so CLI-style replies honor the same
+      // runtime knobs as batch replies. Without this, toggling
+      // cliStyle silently dropped invokeOptions on the floor.
+      // InvokeClaudeOptions is a superset that includes fields the
+      // streaming path does not consume (e.g. output-format flags);
+      // we cherry-pick the fields that apply to both.
+      const cfg = this.options.invokeOptions ?? {};
+      const streamingOpts: InvokeClaudeStreamingOptions = {
+        userMessage: args.text,
+        systemPrompt: args.systemPrompt,
+        onEvent: (ev) => renderer.emit(ev),
+        signal: controller.signal,
+        ...(cfg.model !== undefined ? { model: cfg.model } : {}),
+        ...(cfg.maxBudgetUsd !== undefined ? { maxBudgetUsd: cfg.maxBudgetUsd } : {}),
+        ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
+        ...(cfg.verbose !== undefined ? { verbose: cfg.verbose } : {}),
+        ...(this.options.repoRoot !== undefined ? { cwd: this.options.repoRoot } : {}),
+        ...(this.options.resumeSessionId !== undefined ? { resumeSessionId: this.options.resumeSessionId } : {}),
+      };
+      const result = await this.invokeStreaming(streamingOpts);
+      const partial = result.text.trim();
+      if (controller.signal.aborted) {
+        // Operator stopped the run; surface what Claude produced up to
+        // that point, tagged so the operator knows it was truncated.
+        replyText = partial
+          ? `${partial}\n\n*(stopped by operator)*`
+          : '_Stopped by operator before Claude produced any text._';
+      } else {
+        replyText = partial || '(empty response from model)';
+      }
+      await renderer.emit({ type: 'complete', finalText: replyText, meta: result.meta });
+    } catch (err) {
+      this.onError(err, 'invokeClaudeStreaming');
+      replyText = 'I could not generate a response right now. Please try again.';
+      await renderer.emit({ type: 'error', message: replyText });
+    } finally {
+      this.activeRuns.delete(runToken);
+      await renderer.dispose();
+    }
+    return replyText;
+  }
+
+  /**
+   * Allocate a short opaque token for a new cli-style run and register
+   * an AbortController under it. Token fits inside Telegram's 64-byte
+   * callback_data cap with room for the `lag-stop:` prefix.
+   */
+  private registerRun(): string {
+    this.runCounter += 1;
+    const token = `${Date.now().toString(36)}-${this.runCounter}`;
+    this.activeRuns.set(token, new AbortController());
+    return token;
+  }
+
+  /**
+   * Return the injected CLI transport, or a Telegram default. The
+   * default is lazily constructed so consumers that pass their own
+   * transport (or that never take the cli-style path) pay no cost.
+   * The Telegram default preserves the pre-injection behavior
+   * verbatim: createTelegramChannel + `lag-stop:<token>` protocol.
+   */
+  private resolveCliTransport(): CliRendererTransport {
+    if (this.options.cliTransport) return this.options.cliTransport;
+    const botToken = this.options.botToken;
+    const fetchImpl = this.fetch;
+    return {
+      channel: ({ chatId, replyToMessageId }) =>
+        createTelegramChannel({ botToken, chatId, replyToMessageId, fetchImpl }),
+      stopAction: (runToken) => ({ label: '⏹ Stop', callbackData: `lag-stop:${runToken}` }),
+      matchStopCallback: (data) =>
+        data.startsWith('lag-stop:') ? data.slice('lag-stop:'.length) : null,
+    };
   }
 
   private async handleCallback(
     cq: NonNullable<TelegramUpdate['callback_query']>,
   ): Promise<void> {
-    if (!this.options.onCallback) return;
     if (typeof cq.data !== 'string') return;
+
+    // Stop button: abort the matching active run. Handled in-daemon;
+    // does not go through the escalation onCallback path.
+    //
+    // Chat-binding: we honor lag-stop ONLY when the callback
+    // originates from the configured chat. Without this, a callback
+    // query from any other chat that happens to have a live token
+    // could cancel a run the operator did not authorize. The token
+    // itself is short + opaque so collision is unlikely, but we
+    // refuse to rely on that as an authority check.
+    const stopToken = this.resolveCliTransport().matchStopCallback(cq.data);
+    if (stopToken !== null) {
+      const cqChat = cq.message?.chat.id;
+      if (cqChat === undefined || String(cqChat) !== this.chatIdString) {
+        try {
+          await this.callTelegram('answerCallbackQuery', {
+            callback_query_id: cq.id,
+            text: 'Unauthorized',
+          });
+        } catch (err) {
+          this.onError(err, 'answerCallbackQuery(stop-unauthorized)');
+        }
+        return;
+      }
+      const controller = this.activeRuns.get(stopToken);
+      const found = controller !== undefined;
+      if (found) controller.abort();
+      try {
+        await this.callTelegram('answerCallbackQuery', {
+          callback_query_id: cq.id,
+          text: found ? 'Stopping…' : 'Run already finished',
+        });
+      } catch (err) {
+        this.onError(err, 'answerCallbackQuery(stop)');
+      }
+      return;
+    }
+
+    if (!this.options.onCallback) return;
     const parsed = parseCallbackData(cq.data);
     if (!parsed) return;
     const responder = this.options.principalResolver(cq.from.id, cq.from.username);

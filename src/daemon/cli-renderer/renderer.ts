@@ -36,6 +36,7 @@ import type {
   CliRendererChannel,
   CliRendererEvent,
   CliRendererOptions,
+  InlineAction,
 } from './types.js';
 
 const DEFAULT_SPINNER = ['🟡', '🟠', '🔴', '🟣', '🔵', '🟢'] as const;
@@ -43,6 +44,8 @@ const DEFAULT_EDIT_RATE_MS = 1500;
 const DEFAULT_HEARTBEAT_MS = 3000;
 const DEFAULT_ACTIVITY_WINDOW = 8;
 const DEFAULT_MAX_CHARS = 4000;
+const DEFAULT_LIVE_PREVIEW_MAX_CHARS = 220;
+const DEFAULT_LIVE_PREVIEW_LINES = 4;
 
 interface ActivityLine {
   readonly icon: string;
@@ -58,6 +61,9 @@ export class CliRenderer {
   private readonly activityWindow: number;
   private readonly renderFinal: (markdown: string) => string;
   private readonly splitFinal: (text: string) => ReadonlyArray<string>;
+  private readonly action: InlineAction | null;
+  private readonly livePreviewMaxChars: number;
+  private readonly livePreviewLines: number;
 
   private messageId: string | null = null;
   private startedAtMs = 0;
@@ -97,6 +103,9 @@ export class CliRenderer {
     this.activityWindow = options.activityWindow ?? DEFAULT_ACTIVITY_WINDOW;
     this.renderFinal = options.renderFinal ?? ((s) => s);
     this.splitFinal = options.splitFinal ?? defaultSplit;
+    this.action = options.action ?? null;
+    this.livePreviewMaxChars = options.livePreviewMaxChars ?? DEFAULT_LIVE_PREVIEW_MAX_CHARS;
+    this.livePreviewLines = options.livePreviewLines ?? DEFAULT_LIVE_PREVIEW_LINES;
   }
 
   /**
@@ -126,11 +135,17 @@ export class CliRenderer {
         this.thinkingBuffer = this.thinkingBuffer
           ? this.thinkingBuffer + '\n' + event.text
           : event.text;
-        // Thinking doesn't appear in the progress view (too noisy).
-        // It's folded into the final message as a spoiler.
+        // Surface thinking live in the throbber so the operator sees
+        // the model's reasoning arc. It's NEVER embedded into the
+        // final message (long thinking blocks would bust Telegram's
+        // 4096-char split or render as noise after the answer).
+        this.scheduleEdit();
         return;
       case 'text-delta':
         this.accumulatedText += event.text;
+        // Live preview: show the tail of what Claude has typed so the
+        // operator sees what's in flight, not just tool calls.
+        this.scheduleEdit();
         return;
       case 'complete':
         await this.handleComplete(event.finalText, event.meta);
@@ -156,6 +171,27 @@ export class CliRenderer {
     }
   }
 
+  /**
+   * Wait for any pending serialized edits to drain. Exposed for tests
+   * that need to observe intermediate channel traffic synchronously.
+   * Production callers do not need this: they already await terminal
+   * emits which chain through the serialized queue.
+   *
+   * If scheduleEdit armed a rate-limited pendingEditTimer but the
+   * timer has not fired yet, editChain alone is not enough to
+   * guarantee idleness: the timer's flushEdit callback has not run,
+   * so the next edit is still queued on the timer wheel. Force the
+   * flush here before awaiting the chain.
+   */
+  async waitForIdle(): Promise<void> {
+    if (this.pendingEditTimer !== null) {
+      clearTimeout(this.pendingEditTimer);
+      this.pendingEditTimer = null;
+      await this.flushEdit();
+    }
+    await this.editChain;
+  }
+
   private async handleStart(label?: string, hint?: string): Promise<void> {
     if (this.messageId !== null) return;
     if (label) this.label = label;
@@ -167,6 +203,7 @@ export class CliRenderer {
         text: body,
         parseMode: 'HTML',
         disableNotification: true,
+        ...(this.action ? { actions: [this.action] } : {}),
       });
       this.messageId = posted.messageId;
       this.lastEditMs = this.now();
@@ -180,6 +217,9 @@ export class CliRenderer {
     finalText: string,
     meta?: Readonly<Record<string, string | number>>,
   ): Promise<void> {
+    // Parser + daemon may both emit `complete`. Idempotent-guard so the
+    // second one doesn't re-edit the message.
+    if (this.completed) return;
     // Mark terminal FIRST so any racing scheduleEdit short-circuits
     // before it can enqueue a progress edit behind the completion.
     this.completed = true;
@@ -188,16 +228,32 @@ export class CliRenderer {
       clearTimeout(this.pendingEditTimer);
       this.pendingEditTimer = null;
     }
-    // Thinking is folded into a tg-spoiler block (Telegram HTML whitelist
-    // supports <tg-spoiler>; <details> is NOT supported and would be
-    // stripped or rejected).
-    const withThinking = this.thinkingBuffer
-      ? `${finalText}\n\n<b>thinking</b>\n<tg-spoiler>${escapeHtml(this.thinkingBuffer)}</tg-spoiler>`
-      : finalText;
-    const footer = this.renderFooter(meta);
-    const composed = footer ? `${withThinking}\n\n${footer}` : withThinking;
-    const rendered = this.renderFinal(composed);
-    const chunks = this.splitFinal(rendered);
+    // Thinking is surfaced live in the throbber only; it never lands
+    // in the final message. Long thinking blocks cause split-at-HTML-
+    // tag corruption (tg-spoiler opened in one chunk, closed in the
+    // next) and render as noise appended after the answer.
+    //
+    // Split BEFORE render (markdown splitFinal, then renderFinal each
+    // chunk) so that a split cannot land inside an HTML tag produced
+    // by the converter. The old "render then split" order could cut
+    // inside <b>, <i>, <blockquote>, or paired <tg-spoiler> tags,
+    // which Telegram HTML parse rejects. splitFinal is implemented
+    // against markdown semantics (fenced code + paired spoiler); that
+    // contract only holds when the input is actually markdown.
+    //
+    // Footer is emitted POST-render as raw HTML (see renderFooterHtml
+    // docstring). We append it to the LAST rendered chunk so it
+    // always appears at the end of the final message, and because
+    // it is already a self-contained HTML fragment it cannot be
+    // broken by a split; it sits past the split boundaries entirely.
+    const rawChunks = this.splitFinal(finalText);
+    const renderedChunks = rawChunks.map((c) => this.renderFinal(c));
+    const footerHtml = this.renderFooterHtml(meta);
+    if (footerHtml.length > 0 && renderedChunks.length > 0) {
+      const last = renderedChunks.length - 1;
+      renderedChunks[last] = `${renderedChunks[last]}\n\n${footerHtml}`;
+    }
+    const chunks = renderedChunks;
     if (chunks.length === 0) return;
     // Enqueue onto the serialized chain so any in-flight progress
     // edit finishes before the completion lands.
@@ -212,7 +268,14 @@ export class CliRenderer {
         }
       } else {
         try {
-          await this.channel.edit(this.messageId, { text: chunks[0]!, parseMode: 'HTML' });
+          await this.channel.edit(this.messageId, {
+            text: chunks[0]!,
+            parseMode: 'HTML',
+            // Clear the action button on the terminal edit; without
+            // this Telegram keeps the Stop button attached to the
+            // final reply.
+            ...(this.action ? { actions: [] } : {}),
+          });
         } catch (err) {
           logChannelError('edit', err);
         }
@@ -230,6 +293,7 @@ export class CliRenderer {
   private async handleError(message: string): Promise<void> {
     // Same terminal-flag discipline as complete: no further progress
     // edits may run after an error banner lands.
+    if (this.completed) return;
     this.completed = true;
     this.stopHeartbeat();
     if (this.pendingEditTimer) {
@@ -247,7 +311,13 @@ export class CliRenderer {
         return;
       }
       try {
-        await this.channel.edit(this.messageId, { text, parseMode: 'HTML' });
+        await this.channel.edit(this.messageId, {
+          text,
+          parseMode: 'HTML',
+          // Clear the Stop button on a terminal error edit so the
+          // action button does not linger on a failed reply.
+          ...(this.action ? { actions: [] } : {}),
+        });
       } catch (err) {
         logChannelError('edit', err);
       }
@@ -322,6 +392,11 @@ export class CliRenderer {
           text: body,
           parseMode: 'HTML',
           disableNotification: true,
+          // Telegram's editMessageText strips reply_markup when the
+          // field is omitted; re-send the action on every intermediate
+          // edit to keep the Stop button visible until a terminal
+          // state (handleComplete / handleError clear it).
+          ...(this.action ? { actions: [this.action] } : {}),
         });
       } catch (err) {
         logChannelError('edit', err);
@@ -344,13 +419,67 @@ export class CliRenderer {
     const activityLines = this.activity.length === 0
       ? ''
       : '\n\n' + this.activity.map((a) => `${a.icon} ${escapeHtml(a.text)}`).join('\n');
-    return head + hintLine + activityLines;
+    const thinking = this.renderLiveThinking();
+    const thinkingBlock = thinking.length === 0 ? '' : `\n\n${thinking}`;
+    const preview = this.renderLivePreview();
+    const previewBlock = preview.length === 0 ? '' : `\n\n${preview}`;
+    return head + hintLine + activityLines + thinkingBlock + previewBlock;
   }
 
-  private renderFooter(meta: Readonly<Record<string, string | number>> | undefined): string {
+  /**
+   * Render the tail of accumulated assistant text as a blockquote so
+   * the operator sees what Claude is typing. Returns empty string when
+   * there's nothing to preview or previews are disabled.
+   */
+  private renderLivePreview(): string {
+    if (this.livePreviewMaxChars <= 0 || this.livePreviewLines <= 0) return '';
+    const raw = this.accumulatedText.trimEnd();
+    if (raw.length === 0) return '';
+    const lines = raw.split('\n');
+    const tail = lines.slice(-this.livePreviewLines).join('\n');
+    const clipped = tail.length <= this.livePreviewMaxChars
+      ? tail
+      : '…' + tail.slice(tail.length - this.livePreviewMaxChars + 1);
+    return `<blockquote>${escapeHtml(clipped)}</blockquote>`;
+  }
+
+  /**
+   * Render the tail of accumulated thinking as a compact italic block
+   * prefixed with a 💭. Thinking shows only while the turn is live; it
+   * never enters the final message (see handleComplete).
+   */
+  private renderLiveThinking(): string {
+    if (this.livePreviewMaxChars <= 0) return '';
+    const raw = this.thinkingBuffer.trimEnd();
+    if (raw.length === 0) return '';
+    const lines = raw.split('\n');
+    const tailLines = Math.max(1, Math.min(this.livePreviewLines, 3));
+    const tail = lines.slice(-tailLines).join(' ');
+    const maxThinkingChars = Math.min(this.livePreviewMaxChars, 180);
+    const clipped = tail.length <= maxThinkingChars
+      ? tail
+      : '…' + tail.slice(tail.length - maxThinkingChars + 1);
+    return `💭 <i>${escapeHtml(clipped)}</i>`;
+  }
+
+  /**
+   * Render the footer as Telegram-ready HTML for POST-render append.
+   *
+   * Handing the footer to renderFinal() as markdown (`_..._`) fails
+   * whenever a meta value contains an underscore (file paths, atom
+   * ids, commit shas), because markdownToTelegramHtml's `_..._`
+   * italic pattern requires NO underscores inside the content. The
+   * fix: render the main body through renderFinal, then concatenate
+   * this function's HTML output directly. That way the `<i>` wrapper
+   * is literal HTML and the meta values are HTML-escaped characters,
+   * not subject to any markdown parsing.
+   */
+  private renderFooterHtml(meta: Readonly<Record<string, string | number>> | undefined): string {
     if (!meta || Object.keys(meta).length === 0) return '';
-    const parts = Object.entries(meta).map(([k, v]) => `${k}=${String(v)}`);
-    return `<i>${escapeHtml(parts.join(' · '))}</i>`;
+    const parts = Object.entries(meta).map(
+      ([k, v]) => `${escapeHtml(k)}=${escapeHtml(String(v))}`,
+    );
+    return `<i>${parts.join(' · ')}</i>`;
   }
 }
 

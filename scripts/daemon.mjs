@@ -48,6 +48,13 @@ async function loadDotEnv() {
 }
 
 function parseArgs(argv) {
+  // LAG_CLI_STYLE env var controls the default for cliStyle.
+  // Unset or "true" / "1" / "yes" -> true (new UX is the default).
+  // "false" / "0" / "no" -> false (preserve old batch path).
+  // Explicit --cli-style / --no-cli-style on argv always wins.
+  const envCliStyleRaw = (process.env.LAG_CLI_STYLE ?? '').trim().toLowerCase();
+  const envCliStyleExplicitFalse = ['false', '0', 'no', 'off'].includes(envCliStyleRaw);
+  const defaultCliStyle = !envCliStyleExplicitFalse;
   const args = {
     rootDir: resolve(REPO_ROOT, '.lag'),
     canonPath: resolve(REPO_ROOT, 'CLAUDE.md'),
@@ -57,6 +64,7 @@ function parseArgs(argv) {
     runLoopEveryMs: 0,       // 0 = disabled
     runExtractionEveryMs: 0, // 0 = disabled
     voiceMode: null,         // null | 'stub' | 'whisper-local'
+    cliStyle: defaultCliStyle,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -78,6 +86,10 @@ function parseArgs(argv) {
       args.runExtractionEveryMs = Number(argv[++i]);
     } else if (a === '--voice' && i + 1 < argv.length) {
       args.voiceMode = argv[++i];
+    } else if (a === '--cli-style') {
+      args.cliStyle = true;
+    } else if (a === '--no-cli-style') {
+      args.cliStyle = false;
     } else if (a === '-h' || a === '--help') {
       console.log(`Usage: node scripts/daemon.mjs [options]
 
@@ -89,6 +101,8 @@ Options:
   --queue-only                    write to inbox/outbox; hook handles the rest
   --run-loop-every-ms <ms>        ambient LoopRunner tick (decay, promote, canon)
   --run-extraction-every-ms <ms>  ambient L0 to L1 extraction pass
+  --cli-style                     force CLI-style Telegram UX (throbber + tool lines). Default: on unless LAG_CLI_STYLE env is 'false'/'0'/'no'/'off'.
+  --no-cli-style                  force the batch Telegram path (one message per response, no throbber).
   --verbose                       log claude-cli command lines`);
       process.exit(0);
     }
@@ -158,6 +172,8 @@ async function main() {
     console.log(`                Outbox: ${resolve(args.rootDir, 'tg-queue/outbox')}`);
   }
 
+  console.log(`  UX:           ${args.cliStyle ? 'CLI-STYLE (throbber + tool lines + streaming edits)' : 'BATCH (single message per response)'}`);
+
   if (args.runLoopEveryMs > 0) {
     console.log(`  Ambient loop:  every ${args.runLoopEveryMs}ms (decay, promote, canon)`);
   }
@@ -176,6 +192,10 @@ async function main() {
     repoRoot: REPO_ROOT,
     ...(resumeSessionId !== null ? { resumeSessionId } : {}),
     ...(args.queueOnly ? { queueMode: true, queueDir: resolve(args.rootDir, 'tg-queue') } : {}),
+    // Instance-level label for the CLI-style throbber. Framework code
+    // stays vendor-neutral; the actual vendor name lives here at the
+    // caller (scripts/canon/skill layer).
+    cliStyleLabel: 'Claude is working',
     ...(args.runLoopEveryMs > 0 ? { runLoopIntervalMs: args.runLoopEveryMs } : {}),
     ...(args.runExtractionEveryMs > 0 ? { runExtractionIntervalMs: args.runExtractionEveryMs } : {}),
     ...(args.voiceMode === 'stub'
@@ -197,6 +217,7 @@ async function main() {
     invokeOptions: {
       verbose: args.verbose,
     },
+    cliStyle: args.cliStyle,
     onError: (err, ctx) => {
       console.error(`[daemon] ${ctx}:`, err?.message || err);
     },
