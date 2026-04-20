@@ -145,4 +145,29 @@ describe('emitAck', () => {
     const allAcks = await host.atoms.query({ type: ['actor-message-ack'] }, 100);
     expect(allAcks.atoms.length).toBe(1);
   });
+
+  it('concurrent emitAck calls converge on a single ack atom (race guard)', async () => {
+    // Regression guard for the CR-flagged race on #38: with a timestamp-
+    // suffixed ack id two concurrent writers would both pass the initial
+    // findExistingAck check and both write distinct ack atoms. The fix is
+    // a deterministic ack id keyed on the message id; the second writer
+    // hits ConflictError and returns the existing id.
+    const host = createMemoryHost();
+    await host.atoms.put(messageAtom('m1', 'alice', 'bob'));
+    const [msg] = await listUnread(host, 'alice' as PrincipalId);
+
+    // Fire N acks concurrently. All should return the same id; the
+    // store should have exactly one ack atom.
+    const N = 8;
+    const results = await Promise.all(
+      Array.from({ length: N }, () =>
+        emitAck(host, msg!, 'alice' as PrincipalId),
+      ),
+    );
+    const unique = new Set(results.map(String));
+    expect(unique.size).toBe(1);
+
+    const allAcks = await host.atoms.query({ type: ['actor-message-ack'] }, 100);
+    expect(allAcks.atoms.length).toBe(1);
+  });
 });

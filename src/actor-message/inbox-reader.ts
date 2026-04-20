@@ -91,11 +91,19 @@ export async function emitAck(
   options: { readonly now?: () => number } = {},
 ): Promise<AtomId> {
   const now = options.now ?? (() => Date.now());
+  // Deterministic ack id keyed on the message atom id so concurrent
+  // emitAck calls for the same message converge on the same id. An
+  // actor-message has exactly one recipient, so exactly one ack is
+  // meaningful, and a `ConflictError` on put is the idempotency
+  // signal.
+  const ackId = `ama-${String(message.atom.id)}` as unknown as AtomId;
+
+  // Fast path: if the ack already exists, return it without trying
+  // to write.
   const existingAckId = await findExistingAck(host, message.atom.id);
   if (existingAckId !== null) return existingAckId;
 
   const nowIso = new Date(now()).toISOString() as Time;
-  const ackId = `ama-${String(message.atom.id)}-${now()}` as unknown as AtomId;
   const envelope: ActorMessageAckV1 = {
     message_atom_id: message.atom.id,
     acked_by: ackedBy,
@@ -130,7 +138,19 @@ export async function emitAck(
     taint: 'clean',
     metadata: { ack: envelope },
   };
-  await host.atoms.put(atom);
+  try {
+    await host.atoms.put(atom);
+  } catch (err) {
+    // ConflictError signals another writer wrote the same id between
+    // our findExistingAck and our put. That's the exact concurrent-
+    // emitAck race we guard against; the competing writer won, and
+    // the stored ack is definitionally correct (same deterministic
+    // id, same envelope shape). Return the id; do not rethrow.
+    const existingAck = await host.atoms.get(ackId);
+    if (existingAck !== null) return ackId;
+    // Not a conflict (or the store is misbehaving) - surface the error.
+    throw err;
+  }
   return ackId;
 }
 
