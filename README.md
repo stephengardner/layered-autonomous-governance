@@ -10,7 +10,7 @@ A framework for multi-agent systems where memory has to stay true over time, aut
 
 > **If RAG brings knowledge into an agent, LAG governs knowledge across agents.** Retrieval makes one agent smarter; governance keeps a hundred agents coherent.
 
-Node 22+. TypeScript. Three host adapters, five operator surfaces (terminal, three daemon modes, hook-attached), three embedders, pluggable session sources, a canon-driven tool-use policy primitive, and an Actor primitive for governed outward-acting agents. **568+ unit tests + 30 gated integration tests** (count grows as open PRs land), GitHub Actions CI on Ubuntu + Windows.
+Node 22+. TypeScript. Three host adapters, five operator surfaces (terminal, three daemon modes, hook-attached), three embedders, pluggable session sources, a canon-driven tool-use policy primitive, an Actor primitive for governed outward-acting agents, and an inbox V1 for actor-to-actor messaging with sub-actor delegation. **776+ unit tests + 30 gated integration tests** (count grows as open PRs land), GitHub Actions CI on Ubuntu + Windows.
 
 ---
 
@@ -181,6 +181,21 @@ import { PrLandingActor } from 'layered-autonomous-governance/actors/pr-landing'
 import { GitHubPrReviewAdapter } from 'layered-autonomous-governance/actors/pr-review';
 import { createGhClient } from 'layered-autonomous-governance/external/github';
 
+// Actor-to-actor messaging (Inbox V1): write-time rate limiter, circuit
+// breaker, pickup handler, hybrid-wake seam, sub-actor registry,
+// auditor, plan-dispatch loop, auto-approve pass. See
+// `arch-actor-message-inbox-primitive` in canon for the design decision.
+import {
+  ActorMessageRateLimiter,
+  pickNextMessage,
+  runInboxPoller,
+  SubActorRegistry,
+  runAuditor,
+  runDispatchTick,
+  runAutoApprovePass,
+  validateResetWrite,
+} from 'layered-autonomous-governance/actor-message';
+
 // Per-role GitHub App identity + pluggable auth (see "Actor identities" below):
 import {
   loadRoleRegistry,
@@ -247,6 +262,7 @@ Actors are outward-acting autonomous loops; the things they touch (GitHub, CI, d
 - **`external/github-app` -> `createAppBackedGhClient`** - the same `GhClient` shape, but backed by a provisioned GitHub App installation (JWT + installation token over HTTP, no `gh` CLI). Same Actor code; auth backend is a caller choice (see D19 in DECISIONS.md).
 - **`actors/pr-review` -> `GitHubPrReviewAdapter`** - full `PrReviewAdapter` implementation (GraphQL review threads, REST reply, GraphQL resolve mutation, first-class dry-run). Accepts either `GhClient` implementation unchanged.
 - **`actors/provisioning`** - declarative role schema + provisioning orchestrator for per-Actor App identities. See "Actor identities" below.
+- **`actor-message` -> inbox V1** - inter-actor messaging primitive built on the AtomStore. Write-time rate limiter + circuit breaker, inbox reader, pickup handler with kill-switch + canon-tunable ordering, hybrid-wake capability seam (poll or NOTIFY), circuit-breaker-reset validator, SubActorRegistry for plan-dispatch to registered sub-actors, AuditorActor (read-only introspection), plan-dispatch loop with claim-before-invoke, and a low-stakes auto-approval policy. See `arch-actor-message-inbox-primitive` in canon and `docs/bot-identities.md` for how this composes with the bot-identity model below.
 
 ## Actor identities
 
@@ -334,6 +350,20 @@ Under the hood: localhost callback server binds a random port; generates a GitHu
 **High-risk roles** (anything asking for `contents:write`, `workflows:write`, or `administration`) gate on operator approval before the browser ever opens. The default is a terminal y/N prompt; swap in a Telegram notifier for remote approval.
 
 After provisioning, the App still needs to be installed on the target repos (one more browser click per repo). `lag-actors demo-pr --role lag-pr-landing --repo <owner>/<repo>` validates the full chain by opening a trivial test PR as the bot.
+
+### Runtime use from session scripts
+
+Two thin wrappers route any `gh` CLI call through a provisioned bot identity, so session automation operates as `lag-cto[bot]` / `lag-pr-landing[bot]` / etc. instead of under the operator's personal `gh auth`:
+
+```bash
+# Wrap a gh command under a bot identity:
+node scripts/gh-as.mjs lag-cto pr create --title "feat: ..." --body "..."
+
+# Or mint a bare installation token for non-gh consumers:
+GH_TOKEN=$(node scripts/gh-token-for.mjs lag-cto) gh api ...
+```
+
+Tokens are short-lived (~1 hour per GitHub), minted fresh per invocation, set in a child process env only, never written to disk. Parent shell `gh auth` state is untouched. Full operator guide: `docs/bot-identities.md`.
 
 ### Why one App per role (not one shared App)
 
