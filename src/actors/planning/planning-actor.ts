@@ -204,12 +204,11 @@ export class PlanningActor implements Actor<
       principal_id: principalId,
       taint: 'clean',
       // plan_state is a TOP-LEVEL field on the Atom interface (see
-      // src/types.ts), not a metadata key. Prior versions wrote it
-      // into metadata where the dispatch + auto-approve loops
-      // (which read atom.plan_state) could not see it - plans sat
-      // forever with an undefined top-level plan_state and never
-      // participated in the inbox V1 flow. Surfaced by the first
-      // live self-audit run of the autonomous loop.
+      // src/types.ts), not a metadata key. Callers that filter by
+      // plan state (e.g., dispatch loops, auto-approve passes) read
+      // the top-level field; writing it in metadata would leave
+      // plan_state undefined to those readers and the plan atom
+      // would never surface.
       plan_state: 'proposed',
       metadata: {
         planning_actor_version: this.version,

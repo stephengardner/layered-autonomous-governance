@@ -22,7 +22,15 @@ import {
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
 
-const OPERATOR = process.env.LAG_OPERATOR_ID || 'stephen-human';
+const OPERATOR = process.env.LAG_OPERATOR_ID;
+if (!OPERATOR) {
+  console.error(
+    '[self-audit-continue] ERROR: LAG_OPERATOR_ID is not set. Export your\n'
+    + 'operator principal id before running this script:\n\n'
+    + '  export LAG_OPERATOR_ID=<your-operator-id>\n',
+  );
+  process.exit(2);
+}
 const AUDITOR = 'auditor-actor';
 const CTO = 'cto-actor';
 
@@ -117,7 +125,14 @@ async function main() {
 
   console.log('');
   console.log('===== CTO SELF-CRITIQUE PLAN =====');
-  console.log(finalPlan.content);
+  // finalPlan could be null if the plan was deleted or supersede-
+  // cascaded between the fetch above and this render. Guard
+  // explicitly so a race cannot crash the script.
+  if (finalPlan !== null) {
+    console.log(finalPlan.content);
+  } else {
+    console.log('(plan not found; may have been superseded since fetch)');
+  }
   console.log('===== END =====');
 }
 

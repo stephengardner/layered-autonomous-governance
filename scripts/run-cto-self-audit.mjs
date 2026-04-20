@@ -54,7 +54,16 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
 const STOP_SENTINEL = resolve(STATE_DIR, 'STOP');
 
-const OPERATOR = process.env.LAG_OPERATOR_ID || 'stephen-human';
+const OPERATOR = process.env.LAG_OPERATOR_ID;
+if (!OPERATOR) {
+  console.error(
+    '[self-audit] ERROR: LAG_OPERATOR_ID is not set. Export your operator\n'
+    + 'principal id before running this script:\n\n'
+    + '  export LAG_OPERATOR_ID=<your-operator-id>\n\n'
+    + 'Matches the no-fallback convention in bootstrap-inbox-canon.mjs.',
+  );
+  process.exit(2);
+}
 const CTO = 'cto-actor';
 const AUDITOR = 'auditor-actor';
 
