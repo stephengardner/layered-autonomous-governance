@@ -297,7 +297,7 @@ Actor identities are declared, not coded. Drop a `roles.json` at your project ro
 
 `lag-actors sync` walks the registry and provisions any un-provisioned role:
 
-```
+```text
 $ lag-actors sync
 [lag-pr-landing] risk=high: contents:write allows direct commits
 [lag-pr-landing] awaiting operator approval...
