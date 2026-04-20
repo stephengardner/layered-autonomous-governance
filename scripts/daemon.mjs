@@ -192,6 +192,10 @@ async function main() {
     repoRoot: REPO_ROOT,
     ...(resumeSessionId !== null ? { resumeSessionId } : {}),
     ...(args.queueOnly ? { queueMode: true, queueDir: resolve(args.rootDir, 'tg-queue') } : {}),
+    // Instance-level label for the CLI-style throbber. Framework code
+    // stays vendor-neutral; the actual vendor name lives here at the
+    // caller (scripts/canon/skill layer).
+    cliStyleLabel: 'Claude is working',
     ...(args.runLoopEveryMs > 0 ? { runLoopIntervalMs: args.runLoopEveryMs } : {}),
     ...(args.runExtractionEveryMs > 0 ? { runExtractionIntervalMs: args.runExtractionEveryMs } : {}),
     ...(args.voiceMode === 'stub'

@@ -2,7 +2,7 @@
  * ensureServiceRunning: a generic, framework-agnostic primitive that
  * keeps a background service alive across invocations.
  *
- * Intended use case: a Claude Code SessionStart hook, or any periodic
+ * Intended use case: a session-start lifecycle hook, or any periodic
  * trigger, that wants to guarantee "process X is up" without having
  * to think about whether it already started.
  *
@@ -94,7 +94,7 @@ export async function ensureServiceRunning(
 
   // Atomic lock-or-bust. `openSync(..., 'wx')` throws EEXIST if the
   // lock file is already there. Without this guard, two concurrent
-  // callers (e.g. two SessionStart hooks firing at the same millisecond)
+  // callers (e.g. two lifecycle hooks firing at the same millisecond)
   // both observe a missing pidFile, both spawn a detached child, and
   // whichever writes the pidFile last wins. We'd end up with a
   // double-started service and a leaked process. The lockfile makes
@@ -226,7 +226,20 @@ export async function stopService(
   }
   try {
     killImpl(pid, signal);
-  } catch (err) {
+  } catch (err: unknown) {
+    // ESRCH means "no such process": the pid died in the window
+    // between our isAlive check and the kill call. That is an
+    // idempotent-success case, not a failure. The caller's intent
+    // ("make sure this is not running") is already satisfied.
+    // Clear the stale pidFile so the next caller sees a clean slot.
+    const code =
+      err && typeof err === 'object' && 'code' in err
+        ? (err as { code?: string }).code
+        : undefined;
+    if (code === 'ESRCH') {
+      await rm(options.pidFile, { force: true });
+      return { status: 'not-running' };
+    }
     return {
       status: 'failed',
       reason: err instanceof Error ? err.message : String(err),

@@ -133,6 +133,13 @@ export interface LAGDaemonOptions {
   readonly onCallback?: (handle: string, disposition: Disposition, responder: PrincipalId) => Promise<void>;
   /** Poll interval in ms. Default 2000. */
   readonly pollIntervalMs?: number;
+  /**
+   * Label shown on the CLI-style throbber header (e.g. "Claude is
+   * working"). Instance/vendor-specific by design. Framework code
+   * stays mechanism-focused, so the label comes from the caller.
+   * Default: 'Working' (vendor-neutral).
+   */
+  readonly cliStyleLabel?: string;
   /** Max chars per outgoing Telegram message. Default 4000 (Telegram cap is 4096). */
   readonly maxReplyChars?: number;
   /** Context assembler options. Default: k=10, maxChars=16_000. */
@@ -705,7 +712,7 @@ export class LAGDaemon {
       action: { label: '⏹ Stop', callbackData: `lag-stop:${runToken}` },
     });
 
-    await renderer.emit({ type: 'start', label: 'Claude is working' });
+    await renderer.emit({ type: 'start', label: this.options.cliStyleLabel ?? 'Working' });
     let replyText = '';
     const controller = this.activeRuns.get(runToken)!;
     try {
