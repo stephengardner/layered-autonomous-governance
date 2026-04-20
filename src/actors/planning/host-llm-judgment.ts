@@ -30,12 +30,40 @@ import type {
 } from './types.js';
 
 /**
- * Default per-call LLM timeout. Exported so drivers can size their
- * run deadline against the worst-case wait (maxIterations * 2 calls
- * per iteration * this value + slack) and not force a
- * `budget-deadline` halt mid-run.
+ * Default per-call LLM timeout. 30 minutes. Per canon directive
+ * "spare no tokens, maximum effort to get to the perfect setup,"
+ * the default should never be the thing that stops a legitimate
+ * run. 30 min leaves comfortable headroom for Opus rich drafts
+ * that explore multiple tool_use attempts (denied, retried)
+ * before producing structured output. Rollback: override via
+ * HostLlmPlanningJudgmentOptions.timeoutMs per call site if
+ * genuinely needed.
+ *
+ * Debugging note: when a judge call fails with `exit=undefined
+ * stdout= stderr=`, three root causes share this signature:
+ * (1) argv limit (pre-stdin-pipe; fixed), (2) wallclock timeout
+ * kill, (3) CLI crash. Always check `endedAt - startedAt` against
+ * `timeoutMs` first.
  */
-export const DEFAULT_JUDGE_TIMEOUT_MS = 180_000;
+export const DEFAULT_JUDGE_TIMEOUT_MS = 1_800_000;
+
+/**
+ * Default per-call budget cap. The Claude CLI's
+ * `--max-budget-usd` is a synthetic effort counter, NOT actual
+ * subscription billing (Claude Code Pro/Max is flat-billed; the
+ * CLI's self-reported cost is an effort-index proxy, not a
+ * charge). Setting this high means the CLI will not give up
+ * prematurely on rich planning runs. $50 is effectively "never
+ * throttle" for Opus use; a complex draft reports $0.60-$2 in
+ * CLI-synthetic cost; $50 leaves 25x headroom. Per canon: spare
+ * no tokens.
+ *
+ * This is NOT a spending limit; there is no spending on
+ * subscription. It is the "how hard should the CLI try before
+ * giving up on one call" knob. For free-tier / API-billed
+ * consumers, override via HostLlmPlanningJudgmentOptions.
+ */
+export const DEFAULT_MAX_BUDGET_USD_PER_CALL = 50.0;
 
 export interface HostLlmPlanningJudgmentOptions {
   /**
@@ -52,8 +80,10 @@ export interface HostLlmPlanningJudgmentOptions {
    */
   readonly draftModel: string;
   /**
-   * Per-call budget cap passed to host.llm.judge. Per-run worst case
-   * is 2x this value (classify + draft). Default 0.50 USD.
+   * Per-call budget cap passed to host.llm.judge. This is the CLI's
+   * synthetic effort counter, NOT subscription billing. Default
+   * $50 (DEFAULT_MAX_BUDGET_USD_PER_CALL). Override downward only
+   * for API-billed deployments where real cost matters.
    */
   readonly maxBudgetUsdPerCall?: number;
   /**
@@ -66,8 +96,10 @@ export interface HostLlmPlanningJudgmentOptions {
   /** Temperature for the judge calls. Default 0.2 (mostly deterministic). */
   readonly temperature?: number;
   /**
-   * Optional override for the timeout on each judge call (ms). Plans
-   * can take longer than an extract-claims call; default 180_000.
+   * Optional override for the timeout on each judge call (ms).
+   * Default DEFAULT_JUDGE_TIMEOUT_MS (30 minutes). Per canon,
+   * default is generous so it is never the thing stopping a
+   * legitimate run.
    */
   readonly timeoutMs?: number;
 }
@@ -210,7 +242,7 @@ export class HostLlmPlanningJudgment implements PlanningJudgment {
     this.host = host;
     this.classifyModel = options.classifyModel;
     this.draftModel = options.draftModel;
-    this.maxBudgetUsdPerCall = options.maxBudgetUsdPerCall ?? 0.5;
+    this.maxBudgetUsdPerCall = options.maxBudgetUsdPerCall ?? DEFAULT_MAX_BUDGET_USD_PER_CALL;
     this.minConfidence = options.minConfidence ?? 0.55;
     this.temperature = options.temperature ?? 0.2;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS;

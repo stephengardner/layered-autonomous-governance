@@ -106,7 +106,7 @@ function parseArgs(argv) {
         '  --stub                   Use the deterministic stub judgment (no LLM call).',
         '  --classify-model <name>  Override the classify-step model. Default claude-opus-4-7.',
         '  --draft-model <name>     Override the draft-step model. Default claude-opus-4-7.',
-        '  --max-budget-usd <n>     Per-call budget cap. Default 0.50.',
+        '  --max-budget-usd <n>     Per-call budget cap (synthetic effort counter, NOT subscription billing). Default 50.00.',
         '  --min-confidence <n>     Drop plans below this confidence. Default 0.55.',
         '  --max-iterations <n>     runActor iteration cap. Default 2.',
         '  --principal <id>         Principal to run as. Default cto-actor.',
