@@ -16,7 +16,7 @@
  * the full review surface. It is intentionally scoped to the CodeRabbit
  * format: if GitHub's own review UI or a future reviewer bot posts a
  * similarly-structured body, they would need their own parser (or a
- * shared abstraction that sees two concrete instances first — no
+ * shared abstraction that sees two concrete instances first; no
  * premature abstraction).
  *
  * Parsing strategy: targeted regex on known landmarks
@@ -90,7 +90,7 @@ export function parseCodeRabbitReviewBody(body: string): ParsedCodeRabbitReview 
  * Given a `<details>` opener position, return the index just past its
  * matching `</details>`. Walks through the text balancing nested pairs.
  * Returns src.length if no match is found (degraded parse rather than
- * throwing — the parser is best-effort by design).
+ * throwing; the parser is best-effort by design).
  */
 function findBalancedDetailsEnd(src: string, openIdx: number): number {
   let depth = 0;

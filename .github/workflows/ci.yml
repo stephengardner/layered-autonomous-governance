@@ -74,10 +74,16 @@ jobs:
         # emdash slipped past CI and was caught by a reviewer; the design
         # directory is as much canon as docs/ and must be held to the same
         # bar.
+        #
+        # --exclude-dir=fixtures: test fixtures capture external output
+        # verbatim (e.g., CodeRabbit review bodies the parser must handle).
+        # Rewriting emdashes in fixtures would make format-drift tests
+        # lie about what the real format looks like. Our content must not
+        # contain emdashes; external content we ingest can.
         shell: bash
         run: |
           set -e
-          if grep -rP $'\u2014' src/ test/ docs/ design/ README.md examples/ 2>/dev/null; then
+          if grep -rP --exclude-dir=fixtures $'\u2014' src/ test/ docs/ design/ README.md examples/ 2>/dev/null; then
             echo "FAIL: emdash(es) found; replace with , ; . or normal -"
             exit 1
           fi

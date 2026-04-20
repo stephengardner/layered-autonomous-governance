@@ -197,7 +197,7 @@ describe('sendOperatorEscalation', () => {
 
     const { atoms } = await host.atoms.query({ type: ['actor-message'] }, 10);
     // put() for the same id is an overwrite in memory host, not a
-    // duplicate — so we expect exactly one atom.
+    // duplicate, so we expect exactly one atom.
     expect(atoms.length).toBe(1);
   });
 

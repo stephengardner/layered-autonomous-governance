@@ -4,7 +4,7 @@
  * When an Actor halts with anything other than `converged`, OR leaves
  * the loop with items it could not act on (escalations, body-scoped
  * nits the reviewer posted inside a review body rather than as
- * replyable line comments), the operator needs to know — otherwise
+ * replyable line comments), the operator needs to know; otherwise
  * the escalation dies in the CI log and the PR sits waiting forever.
  *
  * This helper writes a single `actor-message` atom from the halting
@@ -274,7 +274,7 @@ function renderCommentLine(c: ReviewComment): string {
       : `comment \`${c.id}\``;
   const author = c.author;
   const title = firstLineOf(c.body);
-  return `- ${loc} — ${author}: ${title}`;
+  return `- ${loc} - ${author}: ${title}`;
 }
 
 function firstLineOf(body: string): string {

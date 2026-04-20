@@ -236,7 +236,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
    * Synthetic ids have the form `body-nit:<reviewId>:<path>:<lineStart>`
    * so they're stable across iterations (important for de-dup and
    * escalation-message idempotency). Body-nits have no threadId and
-   * must not be fed into reply/resolve paths — pr-landing enforces
+   * must not be fed into reply/resolve paths; pr-landing enforces
    * this via the `kind` check.
    *
    * Only CodeRabbit reviews are parsed today. A second reviewer format

@@ -59,7 +59,7 @@ describe('parseCodeRabbitReviewBody', () => {
     const out = parseCodeRabbitReviewBody(fixture('coderabbit-review-body-pr48.md'));
     const byPath = new Map(out.nitpicks.map((n) => [n.path, n]));
 
-    // docs/bot-identities.md nit has NO proposed fix — it's a wording suggestion.
+    // docs/bot-identities.md nit has NO proposed fix; it's a wording suggestion.
     expect(byPath.get('docs/bot-identities.md')!.proposedFix).toBeUndefined();
 
     // scripts/gh-as.mjs nit DOES have a proposed fix with the try/catch wrapper.

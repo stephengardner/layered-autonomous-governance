@@ -22,7 +22,7 @@ export type ReviewCommentSeverity = 'nit' | 'suggestion' | 'architectural' | 'bl
  * 'line': a threaded line-level review comment. Replyable + resolvable.
  * 'body-nit': an item extracted from a reviewer's review-body markdown
  *   (e.g., CodeRabbit's `🧹 Nitpick comments (N)` collapsible block).
- *   NOT replyable or resolvable individually — the body is a single
+ *   NOT replyable or resolvable individually: the body is a single
  *   review object on GitHub's side; items inside it are observed-only.
  *   Consumers (including pr-landing) must branch on `kind` before
  *   proposing reply/resolve actions against a body-nit.
