@@ -4,9 +4,9 @@ Hook scripts wired into Claude Code via `.claude/settings.json`.
 
 ## stop-continuation-guard.mjs
 
-Stop-event hook that catches premature agent stops — turns where the
-last assistant message said "proceeding with X", "starting Y",
-"continuing with Z" but produced zero tool calls.
+Stop-event hook that catches premature agent stops (turns where the
+last assistant message said "proceeding with X", "starting Y", or
+"continuing with Z" but produced zero tool calls).
 
 ### To enable
 
