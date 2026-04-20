@@ -38,7 +38,23 @@ export interface AuditFinding {
   readonly severity: 'info' | 'warn' | 'critical';
   readonly kind: string;
   readonly detail: string;
+  /**
+   * Child / in-scope atom ids the finding refers to. Consumers can
+   * re-query these via host.atoms.get to materialize the full atoms.
+   * For the 'orphan-provenance' finding these are the CHILDREN with
+   * a broken derived_from pointer; the missing parent ids live in
+   * `orphanRefs` instead so `atomIds` stays usable as actual atom
+   * identifiers.
+   */
   readonly atomIds: ReadonlyArray<string>;
+  /**
+   * Only populated by 'orphan-provenance'. Pairs the child atom
+   * with the parent id it references but the store cannot resolve.
+   */
+  readonly orphanRefs?: ReadonlyArray<{
+    readonly childId: string;
+    readonly missingParentId: string;
+  }>;
 }
 
 /**
@@ -60,38 +76,58 @@ export async function runAuditor(
   const now = options.now ?? (() => Date.now());
   const nowIso = new Date(now()).toISOString() as Time;
 
-  // Scan: pull a bounded slice of atoms matching the filter. The
-  // auditor is not designed to walk an unbounded store; at scale
-  // the operator chunks audits via smaller filters. Both
-  // principal_id AND type from the payload flow into the query so
-  // type-scoped audits do not silently fan out to the whole store.
+  // Scan: page through matching atoms with both the adapter filter
+  // AND an in-code re-scope. `superseded: true` is load-bearing
+  // because the default query excludes superseded atoms but the
+  // auditor reports on them.
   //
-  // `superseded: true` is load-bearing: the default query excludes
-  // superseded atoms (see AtomFilter), but the auditor's counts
-  // surface superseded atoms explicitly. Without this flag, the
-  // 'superseded' count was always 0 regardless of store state.
-  const page = await host.atoms.query({
+  // Why page instead of one 2000-row fetch: AtomFilter enforcement
+  // varies across adapters (a predicate may silently no-op on some
+  // backing stores). If the backing store ignored principal_id and
+  // the first 2000 rows were all out-of-scope, a scoped audit would
+  // report clean while matching atoms sat on later pages. We page
+  // until exhaustion or a hard cap (MAX_SCAN) to bound the worst
+  // case; if the cap trips the result is marked as `is_sample:true`
+  // so the operator sees the audit was bounded, not exhaustive.
+  const MAX_SCAN = 10_000;
+  const PAGE_SIZE = 2000;
+  const filter = {
     superseded: true,
     ...(payload.filter?.principal_id ? { principal_id: [payload.filter.principal_id] } : {}),
     ...(payload.filter?.type && payload.filter.type.length > 0
       ? { type: [...payload.filter.type] }
       : {}),
-  }, 2000);
+  };
 
-  // Defense-in-depth: AtomFilter enforcement varies across adapters
-  // (a predicate may silently no-op on some backing stores). Re-apply
-  // the filter in code so a scoped audit is guaranteed-scoped.
-  const scopedAtoms = page.atoms.filter((atom) =>
+  const inScope = (atom: Atom) =>
     (!payload.filter?.principal_id
       || String(atom.principal_id) === String(payload.filter.principal_id))
     && (!payload.filter?.type
       || payload.filter.type.length === 0
-      || payload.filter.type.includes(atom.type)),
-  );
+      || payload.filter.type.includes(atom.type));
+
+  const scopedAtoms: Atom[] = [];
+  let totalRowsSeen = 0;
+  let cursor: string | undefined;
+  let isSample = false;
+  do {
+    const page = await host.atoms.query(filter, PAGE_SIZE, cursor);
+    for (const atom of page.atoms) {
+      if (inScope(atom)) scopedAtoms.push(atom);
+    }
+    totalRowsSeen += page.atoms.length;
+    cursor = page.nextCursor === null ? undefined : page.nextCursor;
+    if (totalRowsSeen >= MAX_SCAN) {
+      isSample = true;
+      break;
+    }
+  } while (cursor !== undefined);
 
   const findings = await collectFindings(host, scopedAtoms);
   const counts = {
     scanned: scopedAtoms.length,
+    rows_seen: totalRowsSeen,
+    is_sample: isSample,
     tainted: scopedAtoms.filter((a) => a.taint !== 'clean').length,
     superseded: scopedAtoms.filter((a) => a.superseded_by.length > 0).length,
     open_circuit_breaker_trips: scopedAtoms.filter(
@@ -261,7 +297,12 @@ async function collectFindings(
   // doesn't exist in the store. An in-slice miss + out-of-store
   // means broken chain (critical); an in-slice miss + in-store hit
   // is just the scope boundary (not a finding).
-  const orphanProvenance: string[] = [];
+  //
+  // Output shape: `atomIds` holds the CHILD ids (valid atom ids you
+  // can host.atoms.get). The missing-parent side of the edge lives
+  // in a parallel `orphanRefs` array so the AuditFinding contract
+  // stays clean: atomIds are always real atom ids.
+  const orphanRefs: Array<{ childId: string; missingParentId: string }> = [];
   const checked = new Map<string, boolean>(); // parentId -> exists
   for (const atom of atoms) {
     for (const parentId of atom.provenance.derived_from) {
@@ -274,19 +315,23 @@ async function collectFindings(
         checked.set(pid, exists);
       }
       if (!exists) {
-        orphanProvenance.push(`${String(atom.id)}->${pid}`);
+        orphanRefs.push({ childId: String(atom.id), missingParentId: pid });
       }
     }
   }
-  if (orphanProvenance.length > 0) {
+  if (orphanRefs.length > 0) {
+    // Children may appear multiple times (multiple missing parents);
+    // dedupe for atomIds so the list stays usable.
+    const childIds = Array.from(new Set(orphanRefs.map((r) => r.childId)));
     findings.push({
       severity: 'critical',
       kind: 'orphan-provenance',
       detail:
-        `${orphanProvenance.length} atoms reference a provenance.derived_from id `
-        + 'that does not exist anywhere in the atom store. The provenance chain '
-        + 'is broken and must be repaired.',
-      atomIds: orphanProvenance,
+        `${orphanRefs.length} broken provenance edge(s) across ${childIds.length} atom(s). `
+        + 'The referenced parent atoms do not exist anywhere in the store; '
+        + 'the provenance chain is broken and must be repaired.',
+      atomIds: childIds,
+      orphanRefs,
     });
   }
 
