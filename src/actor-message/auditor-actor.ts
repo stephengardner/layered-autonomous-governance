@@ -111,7 +111,17 @@ export async function runAuditor(
   let cursor: string | undefined;
   let isSample = false;
   do {
-    const page = await host.atoms.query(filter, PAGE_SIZE, cursor);
+    const remaining = MAX_SCAN - totalRowsSeen;
+    if (remaining <= 0) {
+      isSample = true;
+      break;
+    }
+    // Size this page against the remaining budget so the loop cannot
+    // exceed MAX_SCAN by an extra page of rows. Without this, the
+    // upper-bound check runs AFTER consuming a full PAGE_SIZE, so
+    // the cap can be breached by up to PAGE_SIZE-1 rows.
+    const thisPageLimit = Math.min(PAGE_SIZE, remaining);
+    const page = await host.atoms.query(filter, thisPageLimit, cursor);
     for (const atom of page.atoms) {
       if (inScope(atom)) scopedAtoms.push(atom);
     }
@@ -182,14 +192,23 @@ export async function runAuditor(
         // operator value. The omitted_atom_ids counter lets a
         // consumer re-query for the full list if needed.
         findings: findings.slice(0, 50).map((f) => {
-          const capped = f.atomIds.slice(0, 50);
-          return capped.length === f.atomIds.length
-            ? { ...f, atomIds: capped }
-            : {
-                ...f,
-                atomIds: capped,
-                omitted_atom_ids: f.atomIds.length - capped.length,
-              };
+          const cappedIds = f.atomIds.slice(0, 50);
+          const cappedRefs = f.orphanRefs ? f.orphanRefs.slice(0, 50) : undefined;
+          const omittedIds = f.atomIds.length - cappedIds.length;
+          const omittedRefs = f.orphanRefs
+            ? f.orphanRefs.length - (cappedRefs?.length ?? 0)
+            : 0;
+          const base: AuditFinding & {
+            omitted_atom_ids?: number;
+            omitted_orphan_refs?: number;
+          } = {
+            ...f,
+            atomIds: cappedIds,
+            ...(cappedRefs !== undefined ? { orphanRefs: cappedRefs } : {}),
+          };
+          if (omittedIds > 0) base.omitted_atom_ids = omittedIds;
+          if (omittedRefs > 0) base.omitted_orphan_refs = omittedRefs;
+          return base;
         }),
       },
     },
