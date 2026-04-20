@@ -257,14 +257,19 @@ describe('validateResetWrite', () => {
     await expect(validateResetWrite(host, reset)).rejects.toBeInstanceOf(ResetShapeError);
   });
 
-  it('tiny or blank reset_reason -> ShapeError', async () => {
+  it.each([
+    ['empty string', ''],
+    ['only whitespace', '   '],
+    ['tiny string', 'ok'],
+    ['only three chars', 'xyz'],
+  ])('reset_reason rejection: %s -> ShapeError', async (_label, reason) => {
     const host = await hostWithAuthority({ authorized: ['root-operator'] });
     await host.principals.put(principal('root-operator'));
     await host.atoms.put(tripAtom('trip-1', 'victim'));
     const reset = resetAtom('reset-1', 'root-operator', {
       target_principal: 'victim' as PrincipalId,
       trip_atom_id: 'trip-1' as AtomId,
-      reset_reason: 'ok',
+      reset_reason: reason,
     });
     await expect(validateResetWrite(host, reset)).rejects.toBeInstanceOf(ResetShapeError);
   });
