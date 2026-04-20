@@ -44,7 +44,18 @@ async function main() {
     process.exit(2);
   }
   const store = createCredentialsStore(STATE_DIR);
-  const loaded = await store.load(role);
+  // store.load() can throw for a malformed .lag/apps/<role>.json, a
+  // missing PEM, or an assertSafeRole violation. Keep the error
+  // surface uniform with the mint step below so operators always see
+  // a `[gh-token-for] ...` one-liner instead of a raw V8
+  // unhandled-rejection stack depending on which step failed.
+  let loaded;
+  try {
+    loaded = await store.load(role);
+  } catch (err) {
+    console.error(`[gh-token-for] failed to load credentials for '${role}': ${err?.message ?? err}`);
+    process.exit(1);
+  }
   if (loaded === null) {
     console.error(`[gh-token-for] no credentials for role '${role}'.`);
     console.error(`Run: node bin/lag-actors.js sync`);

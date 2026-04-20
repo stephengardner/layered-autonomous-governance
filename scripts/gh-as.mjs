@@ -55,15 +55,33 @@ async function main() {
     process.exit(2);
   }
 
-  const token = await fetchInstallationToken({
-    appId: loaded.record.appId,
-    privateKey: loaded.privateKey,
-    installationId: loaded.record.installationId,
-  });
+  // Wrap the mint in the same error shape as gh-token-for.mjs so
+  // operators see one consistent `[gh-as] ...` one-liner on failure
+  // instead of a raw V8 unhandled-rejection stack trace.
+  let token;
+  try {
+    token = await fetchInstallationToken({
+      appId: loaded.record.appId,
+      privateKey: loaded.privateKey,
+      installationId: loaded.record.installationId,
+    });
+  } catch (err) {
+    console.error(`[gh-as] token mint failed: ${err?.message ?? err}`);
+    process.exit(1);
+  }
 
   // Exec gh with GH_TOKEN overridden for this child only. GH_TOKEN
   // beats any cached `gh auth` state; the parent shell is unaffected.
-  // On Windows, spawning "gh" resolves gh.exe via PATH.
+  //
+  // shell:true ONLY on win32: the gh distribution on Windows ships as
+  // a .cmd/.bat shim (gh.cmd, not gh.exe in every install). Node's
+  // `spawn` with shell:false does NOT resolve .cmd/.bat via PATH, so
+  // on Windows the invocation fails with ENOENT. shell:true hands the
+  // lookup to cmd.exe which DOES resolve the shim. On Linux/macOS we
+  // keep shell:false to avoid the shell-metacharacter injection
+  // surface that shell:true would open up; the forwarded GH_TOKEN
+  // argv is safe but user-passed args flow through unchecked.
+  const isWindows = process.platform === 'win32';
   const child = spawn('gh', ghArgs, {
     env: {
       ...process.env,
@@ -72,10 +90,23 @@ async function main() {
       GITHUB_TOKEN: token.token,
     },
     stdio: 'inherit',
-    shell: false,
+    shell: isWindows,
   });
 
-  child.on('exit', (code) => {
+  // A process can terminate two ways: normal exit (code is a number,
+  // signal is null) or killed by a signal (code is null, signal is a
+  // string like 'SIGTERM'). Forwarding only `code` here masked signal
+  // terminations as exit 0; CI would treat a killed gh child as
+  // success. Translate a signal termination to a non-zero exit so the
+  // downstream check (GitHub Actions, make, shell && chain) fails
+  // loudly. 128 + (Unix signal number) is the POSIX convention; we
+  // don't have the signal number in Node's callback, so use a single
+  // stable non-zero (1) with the signal name surfaced on stderr.
+  child.on('exit', (code, signal) => {
+    if (signal !== null) {
+      console.error(`[gh-as] gh child terminated by signal ${signal}`);
+      process.exit(1);
+    }
     process.exit(code ?? 0);
   });
   child.on('error', (err) => {
