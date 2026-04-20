@@ -31,6 +31,19 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   // machine (pending -> answered | expired | abandoned). A long
   // half-life keeps stated confidence stable during their lifetime.
   question: 365 * 24 * 60 * 60 * 1000,    // ~1 year
+  // Inbox V1 runtime atoms. These are transient records of sends, acks,
+  // trips, and resets -- operational data, not canon. Short half-lives
+  // so the atom store does not accumulate stale inbox traffic. Final
+  // TTL policy is an operational tuning concern that can move to an
+  // explicit policy atom in a follow-up; 7 days matches the existing
+  // `ephemeral` floor.
+  'actor-message': 7 * 24 * 60 * 60 * 1000,         // ~1 week
+  'actor-message-ack': 7 * 24 * 60 * 60 * 1000,     // ~1 week
+  // Trips and resets are audit evidence; retained longer so a
+  // postmortem on a runaway sender can still see the trip + reset
+  // pair after a few months.
+  'circuit-breaker-trip': 180 * 24 * 60 * 60 * 1000,   // ~6 months
+  'circuit-breaker-reset': 180 * 24 * 60 * 60 * 1000,  // ~6 months
 });
 
 export interface LoopOptions {

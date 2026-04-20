@@ -36,6 +36,12 @@ coverage/
 # produces it, gitignored so the repo stays portable.
 /.lag/
 
+# Local CTO actor run logs (operational, not repo state).
+/.cto-runs/
+
+# Local harness lockfiles.
+/.claude/scheduled_tasks.lock
+
 # Secrets. .env holds real tokens; .env.example is the committed template.
 .env
 .env.local

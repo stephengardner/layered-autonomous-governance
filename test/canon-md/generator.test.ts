@@ -75,4 +75,28 @@ describe('renderCanonMarkdown', () => {
     const md = renderCanonMarkdown([], { now: '2030-05-05T05:05:05.505Z' });
     expect(md).toContain('2030-05-05T05:05:05.505Z');
   });
+
+  it('renders new inbox V1 runtime atom types under distinct headings', () => {
+    // Regression guard for the proactive-CTO inbox V1 type additions.
+    // The canon applier filters to layer=L3 so these types never actually
+    // reach CLAUDE.md in production, but renderCanonMarkdown is a pure
+    // function callable by tools like a `lag inbox` CLI. The generator
+    // must handle every declared AtomType without falling through the
+    // capitalize() branch -- otherwise the section heading for, e.g.,
+    // "actor-message" ends up as "Actor-message" instead of the
+    // deliberate "Actor Messages".
+    const md = renderCanonMarkdown([
+      sampleAtom({ id: 'm1' as AtomId, type: 'actor-message', content: 'am1' }),
+      sampleAtom({ id: 'a1' as AtomId, type: 'actor-message-ack', content: 'ack1' }),
+      sampleAtom({ id: 't1' as AtomId, type: 'circuit-breaker-trip', content: 'trip1' }),
+      sampleAtom({ id: 'r1' as AtomId, type: 'circuit-breaker-reset', content: 'reset1' }),
+    ]);
+    expect(md).toContain('## Actor Messages');
+    expect(md).toContain('## Actor Message Acks');
+    expect(md).toContain('## Circuit Breaker Trips');
+    expect(md).toContain('## Circuit Breaker Resets');
+    // And none of the capitalize() fallback variants should appear.
+    expect(md).not.toContain('## Actor-message');
+    expect(md).not.toContain('## Circuit-breaker-reset');
+  });
 });

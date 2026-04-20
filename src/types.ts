@@ -54,7 +54,15 @@ export type AtomType =
   | 'reference'
   | 'ephemeral'
   | 'plan'
-  | 'question';
+  | 'question'
+  // Inter-actor messaging primitives. actor-message and
+  // actor-message-ack model the send/ack pair; circuit-breaker-trip
+  // and circuit-breaker-reset model a write-time back-pressure surface
+  // any consumer wrapping AtomStore can produce.
+  | 'actor-message'
+  | 'actor-message-ack'
+  | 'circuit-breaker-trip'
+  | 'circuit-breaker-reset';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite
@@ -107,7 +115,13 @@ export type ProvenanceKind =
   | 'agent-observed'
   | 'agent-inferred'
   | 'llm-refined'
-  | 'canon-promoted';
+  | 'canon-promoted'
+  // Atoms written by a bootstrap script at initial seeding time. Distinct
+  // from `user-directive` (which implies a conversational claim from a
+  // live session) because seed atoms are foundational and come from an
+  // operator-authored script. Used by bootstrap-cto-actor-canon,
+  // bootstrap-pr-landing-canon, bootstrap-inbox-canon, and similar.
+  | 'operator-seeded';
 
 export type Action =
   | 'read'
