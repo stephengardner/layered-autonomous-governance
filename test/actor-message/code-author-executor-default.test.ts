@@ -16,6 +16,7 @@
  */
 
 import { describe, expect, it, beforeEach } from 'vitest';
+import type { execa } from 'execa';
 import { createMemoryHost, type MemoryHost } from '../../src/adapters/memory/index.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
 import type { GhClient } from '../../src/external/github/index.js';
@@ -116,8 +117,7 @@ function stubGitExeca(replies: ReadonlyArray<StubReply>) {
     const r = replies[i++];
     if (!r) throw new Error(`stubGitExeca: no reply for call #${i}; args=${args.join(' ')}`);
     return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', exitCode: r.exitCode };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  }) as any;
+  }) as unknown as typeof execa;
   return { impl, calls };
 }
 
