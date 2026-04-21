@@ -200,14 +200,29 @@ export class GraphService {
    * Directly advance the simulation by one tick and notify
    * subscribers. The React hook calls this from rAF; tests can call
    * it synchronously.
+   *
+   * Returns true iff more ticks are needed.
+   *
+   * Critical: after `settled`, this is a no-op — NO sim.tick, NO
+   * bumpVersion. Before this guard, any unrelated version bump (the
+   * user selects a node, a filter is toggled and short-circuits,
+   * etc.) made the React hook's rAF-restart useEffect re-fire and
+   * schedule a frame; that frame called tick(), which ticked the
+   * sim + bumped version, which re-fired the effect, ad infinitum.
+   * A settled sim that gets "pinged" by a selection change now
+   * stays still.
    */
   tick(): boolean {
-    if (!this.sim) return false;
+    if (!this.sim || this.settled) return false;
     this.sim.tick();
     const a = this.sim.alpha();
-    if (a < 0.02) this.settled = true;
+    if (a < 0.02) {
+      this.settled = true;
+      this.bumpVersion(); // final bump to announce settled=true
+      return false;
+    }
     this.bumpVersion();
-    return !this.settled;
+    return true;
   }
 
   /*

@@ -172,6 +172,33 @@ describe('GraphService', () => {
     expect(s.bounds!.maxX).toBeGreaterThan(s.bounds!.minX);
   });
 
+  it('tick is a no-op after settlement — no wasted sim ticks, no spurious version bumps', () => {
+    /*
+     * Regression for the rAF re-entry bug (H2 in the audit): before
+     * this guard, select() would bumpVersion, which made the React
+     * hook's rAF-effect re-fire and schedule a frame. That frame
+     * called tick() → ticked the sim + bumped version → re-fired
+     * the effect → infinite 60fps background churn for a settled
+     * graph. tick() must no-op when settled.
+     */
+    svc.setAtoms([atom({ id: 'a' }), atom({ id: 'b', provenance: { derived_from: ['a'] } })]);
+    expect(svc.getSnapshot().settled).toBe(true);
+    const v = svc.getSnapshot().version;
+    const posA = pos(svc, 'a');
+
+    const result = svc.tick();
+    expect(result).toBe(false);
+    // No version bump.
+    expect(svc.getSnapshot().version).toBe(v);
+    // No sim advancement — positions are pixel-stable.
+    expect(pos(svc, 'a')).toEqual(posA);
+
+    // Multiple back-to-back tick() calls remain no-ops.
+    svc.tick();
+    svc.tick();
+    expect(svc.getSnapshot().version).toBe(v);
+  });
+
   it('does not pre-settle on subsequent setAtoms (keeps existing layout continuity)', () => {
     /*
      * Once the graph has been populated once, later atom additions

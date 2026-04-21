@@ -53,9 +53,17 @@ export function useGraphService(
     service.setAtoms(atoms);
   }, [service, atoms]);
 
-  // Drive ticks via rAF while the sim is unsettled. The service
-  // tick() returns false when settled, which ends the loop.
+  /*
+   * Drive ticks via rAF while the sim is unsettled. Skip scheduling
+   * entirely when the snapshot is already settled — a mere version
+   * bump from select()/toggleKind()/etc. should not kick off a
+   * wasted frame that calls tick() (which also needs to no-op when
+   * settled, see GraphService.tick). The effect re-fires on every
+   * version change so that genuine re-sims (new atoms, filter
+   * rebuild) restart the animation.
+   */
   useEffect(() => {
+    if (service.getSnapshot().settled) return;
     let raf = 0;
     let running = true;
     const loop = () => {
@@ -72,9 +80,6 @@ export function useGraphService(
       running = false;
       cancelAnimationFrame(raf);
     };
-    // Restart the tick loop whenever the snapshot version bumps
-    // (new atoms, filter change, selection). A settled sim stops
-    // producing ticks, so restarting is cheap.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [service, service.getSnapshot().version]);
 
