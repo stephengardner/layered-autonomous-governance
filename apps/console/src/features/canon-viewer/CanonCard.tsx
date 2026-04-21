@@ -2,7 +2,11 @@ import { useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, AlertTriangle, Archive } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
+import { ConfidenceBar } from '@/components/confidence-bar/ConfidenceBar';
+import { CopyLinkButton } from '@/components/copy-link/CopyLinkButton';
+import { RawJson } from '@/components/raw-json/RawJson';
 import { asAlternative, type CanonAtom } from '@/services/canon.service';
+import { routeForAtomId, routeHref } from '@/state/router.store';
 import styles from './CanonCard.module.css';
 
 interface Props {
@@ -49,7 +53,7 @@ export function CanonCard({ atom }: Props) {
         <span className={styles.metaDot} aria-hidden="true">•</span>
         <span className={styles.meta}>
           <span className={styles.metaLabel}>conf</span>
-          {atom.confidence.toFixed(2)}
+          <ConfidenceBar value={atom.confidence} compact />
         </span>
         <span className={styles.metaDot} aria-hidden="true">•</span>
         <span className={styles.meta}>
@@ -164,6 +168,11 @@ function DetailsPanel({ atom }: { atom: CanonAtom }) {
           </ul>
         </Section>
       )}
+
+      <div className={styles.actionsRow}>
+        <CopyLinkButton href={routeHref(routeForAtomId(atom.id), atom.id)} />
+        <RawJson value={atom} testId={`raw-json-${atom.id}`} />
+      </div>
     </>
   );
 }

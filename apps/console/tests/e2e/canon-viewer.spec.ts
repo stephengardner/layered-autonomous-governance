@@ -59,24 +59,29 @@ test.describe('canon viewer', () => {
     expect(text).toContain('atomstore');
   });
 
-  test('theme toggle cycles through supported themes', async ({ page }) => {
-    const seen = new Set<string>();
-    const initial = await page.evaluate(() => document.body.className);
-    expect(initial).toMatch(/theme-(dark|light|sunset)/);
-    seen.add(initial);
-    // Three clicks should yield three distinct body classNames and
-    // then return to the starting state on the third.
+  test('theme toggle cycles through supported themes', async ({ page, context }) => {
+    // Reset persisted theme so every run starts from a known state.
+    await context.clearCookies();
+    await page.addInitScript(() => { localStorage.removeItem('lag-console.theme'); });
+    await page.goto('/');
+    const seen: string[] = [];
+    const read = () =>
+      page.evaluate(() => {
+        const cls = document.body.className.split(/\s+/).find((c) => c.startsWith('theme-'));
+        return cls ?? 'none';
+      });
+    seen.push(await read());
+    expect(seen[0]).toMatch(/^theme-(dark|light|sunset)$/);
     for (let i = 0; i < 3; i++) {
+      const last = seen[seen.length - 1]!;
       await page.getByTestId('theme-toggle').click();
-      await expect
-        .poll(async () => page.evaluate(() => document.body.className))
-        .not.toBe(Array.from(seen).pop());
-      const next = await page.evaluate(() => document.body.className);
-      expect(next).toMatch(/theme-(dark|light|sunset)/);
-      seen.add(next);
+      await expect.poll(read).not.toBe(last);
+      seen.push(await read());
     }
-    // After 3 clicks we should have cycled through all three themes
-    // at least once (order depends on starting theme, but set size is 3).
-    expect(seen.size).toBe(3);
+    // After 3 clicks we have four observations (initial + 3 toggles)
+    // and must have seen all three themes at least once, and looped
+    // back to the starting theme on the third toggle.
+    expect(new Set(seen).size).toBe(3);
+    expect(seen[seen.length - 1]).toBe(seen[0]);
   });
 });

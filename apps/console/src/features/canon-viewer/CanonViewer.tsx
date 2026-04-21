@@ -71,10 +71,11 @@ export function CanonViewer() {
           <input
             type="search"
             className={styles.searchInput}
-            placeholder="Search canon..."
+            placeholder="Search canon... (/)"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             data-testid="canon-search"
+            data-global-search=""
             aria-label="Search canon"
           />
         </div>

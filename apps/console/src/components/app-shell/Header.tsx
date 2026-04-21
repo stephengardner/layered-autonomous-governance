@@ -1,5 +1,6 @@
-import { Moon, Sun } from 'lucide-react';
+import { Moon, Sun, Flame } from 'lucide-react';
 import { useThemeStore } from '@/state/theme.store';
+import { DensityToggle } from '@/components/density-toggle/DensityToggle';
 import type { Route } from '@/state/router.store';
 import styles from './Header.module.css';
 
@@ -43,14 +44,18 @@ export function Header({ route }: { route: Route }) {
         <span className={styles.subtitle}>{meta.subtitle}</span>
       </div>
       <div className={styles.actions}>
+        <DensityToggle />
         <button
           type="button"
           className={styles.themeToggle}
           onClick={toggle}
           aria-label="Cycle theme"
           data-testid="theme-toggle"
+          data-theme={theme}
         >
-          {theme === 'dark' ? <Sun size={16} strokeWidth={1.75} /> : <Moon size={16} strokeWidth={1.75} />}
+          {theme === 'dark' && <Sun size={16} strokeWidth={1.75} />}
+          {theme === 'light' && <Flame size={16} strokeWidth={1.75} />}
+          {theme === 'sunset' && <Moon size={16} strokeWidth={1.75} />}
         </button>
       </div>
     </header>

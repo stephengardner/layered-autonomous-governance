@@ -1,23 +1,29 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { AppShell } from '@/components/app-shell/AppShell';
+import { ShortcutsHelp } from '@/components/shortcuts-help/ShortcutsHelp';
 import { CanonViewer } from '@/features/canon-viewer/CanonViewer';
 import { PrincipalsView } from '@/features/principals-viewer/PrincipalsView';
 import { ActivitiesView } from '@/features/activities-viewer/ActivitiesView';
 import { PlansView } from '@/features/plans-viewer/PlansView';
 import { useRoute, type Route } from '@/state/router.store';
 import { useThemeStore } from '@/state/theme.store';
+import { useDensityStore } from '@/state/density.store';
+import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 
 /**
- * App root. Responsibilities:
- *   - Mirror theme state onto <body> class so CSS theme selectors
- *     fire. This is the ONE useEffect that genuinely is a DOM side
- *     effect, not a data fetch. (Permitted per canon directive
- *     dev-web-services-over-useeffect.)
- *   - Render the active route's view inside the AppShell.
+ * App root. Three responsibilities:
+ *   - Mirror theme + density state onto <body> class so CSS
+ *     selectors fire. These are the ONLY useEffects that genuinely
+ *     are DOM side effects, not data fetches. (Permitted per
+ *     directive dev-web-services-over-useeffect.)
+ *   - Register global keyboard shortcuts.
+ *   - Render the active route inside the AppShell.
  */
 export function App() {
   const theme = useThemeStore((s) => s.theme);
+  const density = useDensityStore((s) => s.density);
   const route = useRoute();
+  const [helpOpen, setHelpOpen] = useState(false);
 
   useEffect(() => {
     const body = document.body;
@@ -25,10 +31,23 @@ export function App() {
     body.classList.add(`theme-${theme}`);
   }, [theme]);
 
+  useEffect(() => {
+    const body = document.body;
+    body.classList.remove('density-comfortable', 'density-compact');
+    body.classList.add(`density-${density}`);
+  }, [density]);
+
+  useKeyboardShortcuts({
+    toggleHelp: () => setHelpOpen((x) => !x),
+  });
+
   return (
-    <AppShell route={route}>
-      {renderRoute(route)}
-    </AppShell>
+    <>
+      <AppShell route={route}>
+        {renderRoute(route)}
+      </AppShell>
+      <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+    </>
   );
 }
 

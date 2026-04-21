@@ -168,6 +168,13 @@
   color: var(--text-primary);
   letter-spacing: -0.02em;
   line-height: var(--line-height-tight);
+  /*
+   * Plan titles can be anything — including one long string of text
+   * with no spaces (e.g. stringified JSON in a clarification plan).
+   * `overflow-wrap: anywhere` breaks at any character when no soft
+   * break fits, so titles never blow past the card edge.
+   */
+  overflow-wrap: anywhere;
 }
 
 .content {
