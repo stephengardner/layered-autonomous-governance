@@ -46,6 +46,7 @@ import { createGhClient } from '../dist/external/github/index.js';
 import {
   sendOperatorEscalation,
   shouldEscalate,
+  renderEscalationBody,
 } from '../dist/actor-message/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -242,14 +243,60 @@ async function main() {
     }
 
     if (shouldEscalate(report, observation)) {
-      const atomId = await sendOperatorEscalation({
+      const escalationCtx = {
         host,
         report,
         pr: { owner, repo, number: args.prNumber },
         origin: args.origin,
         ...(observation ? { observation } : {}),
-      });
-      console.log(`[pr-landing] escalation written as atom ${atomId}`);
+      };
+      const { atomId, alreadyExisted } = await sendOperatorEscalation(escalationCtx);
+      if (alreadyExisted) {
+        console.log(`[pr-landing] escalation atom ${atomId} already existed (deduped)`);
+      } else {
+        console.log(`[pr-landing] escalation written as atom ${atomId}`);
+      }
+
+      // Also deliver the escalation as a PR comment WHEN THE ATOM
+      // WAS NEWLY WRITTEN. The atom goes to whatever AtomStore the
+      // Host is configured with; in CI that is an ephemeral runner
+      // filesystem that disappears 30 seconds after the job ends.
+      // The PR comment is the synchronous operator-visible surface:
+      // GitHub's normal notification stack pings the operator, the
+      // comment persists in the PR's discussion history, and no
+      // extra secret or daemon is needed.
+      //
+      // Gating on `!alreadyExisted` keeps us idempotent: a repeat
+      // run on the same halt (same actor + PR + haltReason + iter)
+      // does not repost. The atom's deterministic id is the dedup
+      // key. A genuinely new halt (e.g., different haltReason on
+      // the same PR) produces a distinct atom id and posts a fresh
+      // comment.
+      //
+      // Adapter's dry-run short-circuits postPrComment internally,
+      // so dry-run runs log the intent but do not call GitHub.
+      if (alreadyExisted) {
+        console.log('[pr-landing] skipping PR comment (escalation already surfaced)');
+      } else {
+        try {
+          const body = renderEscalationBody(escalationCtx);
+          const outcome = await review.postPrComment(
+            { owner, repo, number: args.prNumber },
+            body,
+          );
+          if (outcome.posted) {
+            console.log(
+              `[pr-landing] escalation posted as PR comment ${outcome.commentId ?? '(id unknown)'}`,
+            );
+          } else if (outcome.dryRun) {
+            console.log('[pr-landing] (dry-run) would have posted escalation as PR comment');
+          }
+        } catch (commentErr) {
+          console.warn(
+            `[pr-landing] escalation PR comment failed: ${commentErr?.message ?? commentErr}`,
+          );
+        }
+      }
     }
   } catch (escErr) {
     // Escalation is best-effort: a failure to write the message must
