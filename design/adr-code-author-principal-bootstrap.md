@@ -19,8 +19,9 @@ Matches the pattern `scripts/bootstrap-pr-landing-canon.mjs` uses for `pr-landin
   id: 'code-author',
   name: 'Code Author',
   role: 'agent',
-  signed_by: 'claude-agent',       // depth 3 from operator root:
+  signed_by: 'claude-agent',       // edge-depth 2 from operator root:
                                    //   operator -> claude-agent -> code-author
+                                   //   (two edges; three nodes including root)
   permitted_scopes: {
     read:  ['project'],            // project canon + plans; no session/user/global
     write: ['project'],            // writes only into the shared project store
@@ -48,20 +49,21 @@ Matches the pattern `scripts/bootstrap-pr-landing-canon.mjs` uses for `pr-landin
 
 ## Authority chain
 
-```
+```text
 operator (root principal, role=user)
   -> claude-agent (role=agent, signed_by=operator)
     -> code-author (role=agent, signed_by=claude-agent)
 ```
 
-Depth 3 matches the `cto-actor` and `pr-landing-agent` depth. Arbitration's source-rank tiebreaker uses principal-hierarchy depth, so a code-author write does NOT outrank a CTO-authored plan; it is peer-depth and loses on the confidence tiebreaker when contested.
+Edge-depth 2 from the operator root (two signed-by edges); same as the `cto-actor` and `pr-landing-agent` principals (their existing bootstrap scripts document this as `depth 2 from the operator root`). Arbitration's source-rank tiebreaker uses principal-hierarchy edge-depth, so a code-author write does NOT outrank a CTO-authored plan; it is peer-depth and loses on the confidence tiebreaker when contested.
 
 ## What the bootstrap script will do (when it ships)
 
 `scripts/bootstrap-code-author-canon.mjs` (not in this PR) will:
 
-1. Ensure parent principals (`operator`, `claude-agent`) exist; re-assert if missing, matching the pattern of `bootstrap-pr-landing-canon.mjs`.
-2. Seed the `code-author` principal with the shape above if missing; skip if an identical record exists (drift check on `signed_by`, `permitted_scopes`, `permitted_layers` fails loud per the `diffAtom` pattern already in `bootstrap-decisions-canon.mjs`).
+0. **Require `LAG_OPERATOR_ID` in the environment.** Fail fast with `process.exit(2)` and a single actionable error line (`[bootstrap-code-author] ERROR: LAG_OPERATOR_ID is not set. Export it and re-run.`) if missing or empty. NO hardcoded personal fallback is permitted; the other bootstrap scripts (`bootstrap-decisions-canon.mjs`, `bootstrap-inbox-canon.mjs`) already enforce this and `bootstrap-code-author-canon.mjs` MUST match the stricter form. The code-author is a principal that can push commits; a silent-default operator id would make the write's provenance unverifiable.
+1. Ensure parent principals (`operator`, `claude-agent`) exist; re-assert if missing, matching the pattern of `bootstrap-pr-landing-canon.mjs`. Parent-principal creation uses the validated `LAG_OPERATOR_ID` from step 0, never a fallback.
+2. Seed the `code-author` principal with the shape above if missing; skip if an identical record exists. Drift check on `signed_by`, `permitted_scopes`, `permitted_layers`, AND `provenance` integrity (kind + source) fails loud per the `diffAtom` pattern in `bootstrap-decisions-canon.mjs`. Identity/provenance fields are load-bearing for a commit-pushing principal; a rewritten provenance under unchanged payload is exactly the class of silent re-attribution we must catch at bootstrap time.
 3. Seed the four `pol-code-author-*` policy atoms from `adr-code-author-blast-radius-fence.md` - but ONLY if the other graduation criteria in that ADR are met. If any are outstanding, the script exits non-zero with a list of missing prerequisites, so the operator sees the gap.
 
 That conditional-seed branch is the mechanism that enforces the fence ADR's "do NOT seed atoms whose principal has no bootstrap script" rule: atoms and principal always ship together.
