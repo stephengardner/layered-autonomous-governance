@@ -56,10 +56,24 @@ describe('createDraftPr', () => {
     })).rejects.toMatchObject({ name: 'PrCreationError', reason: 'missing-owner-repo' });
   });
 
+  it('whitespace-only owner -> missing-owner-repo', async () => {
+    const client = stubClient((async () => undefined) as GhClient['rest']);
+    await expect(createDraftPr({
+      client, owner: '   ', repo: 'r', title: 't', body: 'b', head: 'h',
+    })).rejects.toMatchObject({ name: 'PrCreationError', reason: 'missing-owner-repo' });
+  });
+
   it('missing repo -> missing-owner-repo', async () => {
     const client = stubClient((async () => undefined) as GhClient['rest']);
     await expect(createDraftPr({
       client, owner: 'o', repo: '', title: 't', body: 'b', head: 'h',
+    })).rejects.toMatchObject({ name: 'PrCreationError', reason: 'missing-owner-repo' });
+  });
+
+  it('whitespace-only repo -> missing-owner-repo', async () => {
+    const client = stubClient((async () => undefined) as GhClient['rest']);
+    await expect(createDraftPr({
+      client, owner: 'o', repo: '\t\n', title: 't', body: 'b', head: 'h',
     })).rejects.toMatchObject({ name: 'PrCreationError', reason: 'missing-owner-repo' });
   });
 
@@ -121,9 +135,9 @@ describe('renderPrBody', () => {
       modelUsed: 'claude-opus-4-7',
       touchedPaths: ['README.md', 'package.json'],
     });
-    expect(body).toContain('plan_id: plan-test-1');
-    expect(body).toContain('commit_sha: deadbeefcafe0011223344556677889900aabbcc');
-    expect(body).toContain('observation_atom_id: code-author-invoked-plan-test-1-2026-04-21T00:00:00Z-abc123');
+    expect(body).toContain('plan_id: "plan-test-1"');
+    expect(body).toContain('commit_sha: "deadbeefcafe0011223344556677889900aabbcc"');
+    expect(body).toContain('observation_atom_id: "code-author-invoked-plan-test-1-2026-04-21T00:00:00Z-abc123"');
     expect(body).toContain('Bumped the version.');
     expect(body).toContain('README.md');
     expect(body).toContain('package.json');
@@ -131,7 +145,7 @@ describe('renderPrBody', () => {
     expect(body).toContain('claude-opus-4-7');
   });
 
-  it('truncates plan content at 4000 chars', () => {
+  it('truncates plan content at 4000 chars and bounds overall body length', () => {
     const long = 'a'.repeat(5000);
     const body = renderPrBody({
       planId: 'p', planContent: long,
@@ -141,5 +155,55 @@ describe('renderPrBody', () => {
       touchedPaths: [],
     });
     expect(body).toContain('...(plan truncated at 4000 chars)...');
+    // The plan body slice is bounded at 4000 chars, so no run of
+    // 4001 'a' should ever land in the rendered body. The entire body
+    // must also fit inside a generous header/footer budget on top of
+    // the 4000-char plan slice, which rules out runaway slicing.
+    expect(body.match(/a{4001}/)).toBeNull();
+    expect(body.length).toBeLessThan(4000 + 2000);
+  });
+
+  it('does not truncate when trailing whitespace makes raw length exceed cap but trimmed fits', () => {
+    // 3900 real chars + 200 chars of trailing whitespace: raw length
+    // 4100 > 4000, trimmed length 3900 <= 4000. The old code added a
+    // spurious truncation marker; the fix checks the trimmed length.
+    const padded = 'b'.repeat(3900) + ' '.repeat(200);
+    const body = renderPrBody({
+      planId: 'p', planContent: padded,
+      draftNotes: '', draftConfidence: 0.5,
+      observationAtomId: 'o', commitSha: 'c',
+      costUsd: 0, modelUsed: 'm',
+      touchedPaths: [],
+    });
+    expect(body).not.toContain('plan truncated');
+  });
+
+  it('machine-parseable footer survives ids containing newlines / colons / quotes', () => {
+    // JSON.stringify on each scalar is what keeps the YAML valid if a
+    // caller ever passes a malformed id. Without that defensive
+    // quoting, a newline in the plan_id would break the YAML block
+    // into two documents and silently lose the footer for downstream
+    // observers.
+    const body = renderPrBody({
+      planId: 'plan: "1"\nmalicious: value',
+      planContent: '',
+      draftNotes: '',
+      draftConfidence: 0,
+      observationAtomId: 'obs\nwith\nnewlines',
+      commitSha: 'sha: with colon',
+      costUsd: 0, modelUsed: 'm',
+      touchedPaths: [],
+    });
+    // The footer values must be JSON-encoded (quoted + backslash-escaped).
+    expect(body).toContain('plan_id: "plan: \\"1\\"\\nmalicious: value"');
+    expect(body).toContain('observation_atom_id: "obs\\nwith\\nnewlines"');
+    expect(body).toContain('commit_sha: "sha: with colon"');
+    // No literal newline inside the plan_id scalar.
+    const footerIdx = body.indexOf('```yaml');
+    const footerBlock = body.slice(footerIdx, body.indexOf('```', footerIdx + 7));
+    // Raw newline inside a scalar would break the YAML block into
+    // multiple lines per key; three keys must still be three lines.
+    const nonEmptyLines = footerBlock.split('\n').filter((l) => l.trim().length > 0);
+    expect(nonEmptyLines.length).toBe(4); // ```yaml + 3 keys
   });
 });

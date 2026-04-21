@@ -70,7 +70,10 @@ export interface CreatePrResult {
 export async function createDraftPr(
   inputs: CreatePrInputs,
 ): Promise<CreatePrResult> {
-  if (!inputs.owner || !inputs.repo) {
+  // Trim-aware check: a whitespace-only owner or repo would URL-encode
+  // to `%20` and produce a nonsense `repos/ /r/pulls` path that the gh
+  // REST client would happily POST to. Reject those client-side.
+  if (!inputs.owner?.trim() || !inputs.repo?.trim()) {
     throw new PrCreationError(
       'owner + repo required',
       'missing-owner-repo',
@@ -163,7 +166,18 @@ export interface PrBodyInputs {
   readonly touchedPaths: ReadonlyArray<string>;
 }
 
+const PLAN_CONTENT_CAP = 4000;
+
 export function renderPrBody(inputs: PrBodyInputs): string {
+  // Compute the trimmed plan once so the length check and the slice
+  // agree. Comparing the untrimmed length against the cap while
+  // slicing the trimmed value added false truncation markers when
+  // trailing whitespace pushed the raw length over the cap but the
+  // body fit.
+  const trimmedPlan = inputs.planContent.trim();
+  const planTruncated = trimmedPlan.length > PLAN_CONTENT_CAP;
+  const planBody = planTruncated ? trimmedPlan.slice(0, PLAN_CONTENT_CAP) : trimmedPlan;
+
   const lines: string[] = [];
   lines.push('## Summary');
   lines.push('');
@@ -171,8 +185,8 @@ export function renderPrBody(inputs: PrBodyInputs): string {
   lines.push('');
   lines.push('## Plan context');
   lines.push('');
-  lines.push(inputs.planContent.trim().slice(0, 4000));
-  if (inputs.planContent.length > 4000) lines.push('\n...(plan truncated at 4000 chars)...');
+  lines.push(planBody);
+  if (planTruncated) lines.push(`\n...(plan truncated at ${PLAN_CONTENT_CAP} chars)...`);
   lines.push('');
   lines.push('## Drafter metadata');
   lines.push('');
@@ -184,10 +198,15 @@ export function renderPrBody(inputs: PrBodyInputs): string {
   lines.push('');
   lines.push('## Machine-parseable provenance footer');
   lines.push('');
+  // JSON.stringify preserves the scalar as a quoted string even if
+  // the value contains newlines, colons, or leading/trailing
+  // whitespace. A raw interpolation would let a malformed id break
+  // YAML parseability for downstream observers that scan the footer
+  // for the plan link.
   lines.push('```yaml');
-  lines.push(`plan_id: ${inputs.planId}`);
-  lines.push(`observation_atom_id: ${inputs.observationAtomId}`);
-  lines.push(`commit_sha: ${inputs.commitSha}`);
+  lines.push(`plan_id: ${JSON.stringify(inputs.planId)}`);
+  lines.push(`observation_atom_id: ${JSON.stringify(inputs.observationAtomId)}`);
+  lines.push(`commit_sha: ${JSON.stringify(inputs.commitSha)}`);
   lines.push('```');
   return lines.join('\n');
 }
