@@ -190,7 +190,7 @@ describe('DETECT_ANOMALY zod validation', () => {
 
 describe('arbitration/detect still exports identical schema via registry', async () => {
   it('re-exports point to the registry object', async () => {
-    const detect = await import('../../src/arbitration/detect.js');
+    const detect = await import('../../src/substrate/arbitration/detect.js');
     expect(detect.DETECT_SCHEMA).toBe(DETECT_CONFLICT.jsonSchema);
     expect(detect.DETECT_SYSTEM).toBe(DETECT_CONFLICT.systemPrompt);
   });

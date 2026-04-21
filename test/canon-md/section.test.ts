@@ -9,7 +9,7 @@ import {
   readSection,
   replaceSection,
   writeSection,
-} from '../../src/canon-md/section.js';
+} from '../../src/substrate/canon/section.js';
 
 let tmpPath: string;
 

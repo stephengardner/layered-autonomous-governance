@@ -25,7 +25,7 @@ import {
   detectConflict,
   DETECT_SCHEMA,
   DETECT_SYSTEM,
-} from '../../src/arbitration/detect.js';
+} from '../../src/substrate/arbitration/detect.js';
 import {
   EXTRACT_CLAIMS,
   CLASSIFY_ATOM,

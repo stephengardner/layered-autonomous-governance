@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { PromotionEngine } from '../../src/promotion/engine.js';
+import { PromotionEngine } from '../../src/substrate/promotion/engine.js';
 import type { AtomId, PrincipalId } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 

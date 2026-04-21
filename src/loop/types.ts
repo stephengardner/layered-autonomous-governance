@@ -8,7 +8,7 @@
  */
 
 import type { AtomFilter, AtomType, Time } from '../substrate/types.js';
-import type { RenderOptions } from '../canon-md/index.js';
+import type { RenderOptions } from '../substrate/canon/index.js';
 
 export interface HalfLifeConfig {
   /** Per-atom-type half-life in milliseconds. `directive` long, `ephemeral` short. */

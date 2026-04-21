@@ -23,12 +23,12 @@
 
 import { checkToolPolicy } from '../policy/index.js';
 import type { PolicyContext } from '../policy/index.js';
-import { isKillSwitchAbortReason } from '../kill-switch/index.js';
+import { isKillSwitchAbortReason } from '../substrate/kill-switch/index.js';
 import {
   mkKillSwitchTrippedAtom,
   type KillSwitchTripPhase,
   type KillSwitchTripTrigger,
-} from '../kill-switch/tripped-atom.js';
+} from '../substrate/kill-switch/tripped-atom.js';
 import type { Actor, ActorContext } from './actor.js';
 import type {
   ActorAdapters,

@@ -18,7 +18,7 @@ import {
   createKillSwitch,
   isKillSwitchAbortReason,
   type KillSwitchController,
-} from '../../src/kill-switch/index.js';
+} from '../../src/substrate/kill-switch/index.js';
 
 async function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));

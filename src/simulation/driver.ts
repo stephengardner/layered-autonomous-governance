@@ -22,11 +22,11 @@ import type {
   Time,
 } from '../substrate/types.js';
 import type { MemoryHost } from '../adapters/memory/index.js';
-import { applyDecision, arbitrate, ValidatorRegistry } from '../arbitration/index.js';
+import { applyDecision, arbitrate, ValidatorRegistry } from '../substrate/arbitration/index.js';
 import {
   PromotionEngine,
   type PromotionThresholds,
-} from '../promotion/index.js';
+} from '../substrate/promotion/index.js';
 import type {
   AgentWrite,
   ArbitrationRecord,

@@ -18,7 +18,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { LoopRunner } from '../../src/loop/runner.js';
-import { renderCanonMarkdown } from '../../src/canon-md/generator.js';
+import { renderCanonMarkdown } from '../../src/substrate/canon/generator.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
@@ -151,8 +151,8 @@ describe('Scenario 5: adversarial injection (two colluders)', () => {
     const host = createMemoryHost();
     await seedCollusionScene(host);
 
-    const { ValidatorRegistry } = await import('../../src/arbitration/validation.js');
-    const { PromotionEngine } = await import('../../src/promotion/engine.js');
+    const { ValidatorRegistry } = await import('../../src/substrate/arbitration/validation.js');
+    const { PromotionEngine } = await import('../../src/substrate/promotion/engine.js');
 
     const validators = new ValidatorRegistry();
     validators.register(async atom =>

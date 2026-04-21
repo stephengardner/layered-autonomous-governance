@@ -28,7 +28,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createFileHost, type FileHost } from '../../src/adapters/file/index.js';
-import { CanonMdManager } from '../../src/canon-md/index.js';
+import { CanonMdManager } from '../../src/substrate/canon/index.js';
 import { LoopRunner } from '../../src/loop/runner.js';
 import type { AtomId, NotificationHandle, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { DETECT_SCHEMA, DETECT_SYSTEM } from '../../src/arbitration/index.js';
+import { DETECT_SCHEMA, DETECT_SYSTEM } from '../../src/substrate/arbitration/index.js';
 import { runScenario } from '../../src/simulation/driver.js';
 import { formatReport, summarize } from '../../src/simulation/metrics.js';
 import { scenarioS2 } from '../../src/simulation/scenarios/s2-decision-reversal.js';
