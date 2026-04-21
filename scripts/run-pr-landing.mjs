@@ -39,6 +39,10 @@ import { runActor } from '../dist/actors/index.js';
 import { PrLandingActor } from '../dist/actors/pr-landing/index.js';
 import { GitHubPrReviewAdapter } from '../dist/actors/pr-review/index.js';
 import { createGhClient } from '../dist/external/github/index.js';
+import {
+  sendOperatorEscalation,
+  shouldEscalate,
+} from '../dist/actor-message/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
@@ -182,23 +186,68 @@ async function main() {
     2,
   ));
 
+  // Escalation path: if the actor halted with anything other than
+  // `converged`, OR left items unhandled (policy escalations,
+  // body-scoped nits the reviewer posted inside a review body rather
+  // than as replyable line comments), emit an actor-message to the
+  // operator so the halt does not die silently in the CI log.
+  //
+  // We re-observe once post-halt so the message includes the CURRENT
+  // set of unresolved items — between the actor's last iteration and
+  // now, some threads may have been resolved manually. Re-observation
+  // is cheap (two GraphQL + REST calls, ~1s).
+  try {
+    let observation;
+    try {
+      const [comments, bodyNits] = await Promise.all([
+        review.listUnresolvedComments({ owner, repo, number: args.prNumber }),
+        review.listReviewBodyNits({ owner, repo, number: args.prNumber }),
+      ]);
+      observation = { comments, bodyNits };
+    } catch (obsErr) {
+      console.warn(`[pr-landing] post-halt observation failed: ${obsErr?.message ?? obsErr}`);
+      observation = undefined;
+    }
+
+    if (shouldEscalate(report, observation)) {
+      const atomId = await sendOperatorEscalation({
+        host,
+        report,
+        pr: { owner, repo, number: args.prNumber },
+        origin: args.origin,
+        ...(observation ? { observation } : {}),
+      });
+      console.log(`[pr-landing] escalation written as atom ${atomId}`);
+    }
+  } catch (escErr) {
+    // Escalation is best-effort: a failure to write the message must
+    // NOT change the actor's exit code (the actor's own outcome is
+    // what CI gates on). Log and continue.
+    console.warn(`[pr-landing] escalation write failed: ${escErr?.message ?? escErr}`);
+  }
+
   // Exit code signals the broad outcome so CI can gate on it.
   //   0 = actor operated correctly (converged OR escalated by design)
   //   1 = actor crashed (genuine error)
   //   2 = budget exhausted; another run may be needed
   //
-  // Why escalate -> 0: policy-escalate-blocking is a VALID outcome
-  // per the autonomy-dial design. The actor did its job and surfaced
-  // items for the operator. Marking this as a CI failure would block
-  // PRs on their own agent's correct escalation -- exactly the
-  // opposite of what we want.
+  // Why every "correct halt" -> 0: policy-escalate-blocking and
+  // convergence-loop are both VALID outcomes per the autonomy-dial
+  // design. The actor did its job and surfaced items for the
+  // operator via the actor-message escalation written above (see
+  // sendOperatorEscalation). Marking those as CI failures would
+  // double-signal the operator (red CI + inbox notification) AND
+  // block PRs on their own agent's correct escalation - exactly the
+  // opposite of what we want. budget-iterations / budget-deadline
+  // stay at 2 because those ARE "run me again with more budget"
+  // signals, not "I know what I saw, deal with it" signals.
   const exitMap = {
     'converged': 0,
     'policy-escalate-blocking': 0,
     'kill-switch': 0,
+    'convergence-loop': 0,
     'budget-iterations': 2,
     'budget-deadline': 2,
-    'convergence-loop': 2,
     'error': 1,
   };
   process.exit(exitMap[report.haltReason] ?? 1);

@@ -77,3 +77,9 @@ export type {
   AutoApprovePolicyConfig,
   AutoApproveTickResult,
 } from './auto-approve.js';
+
+export {
+  sendOperatorEscalation,
+  shouldEscalate,
+} from './operator-escalation.js';
+export type { OperatorEscalationContext } from './operator-escalation.js';
