@@ -196,7 +196,12 @@ function atomFromSpec(spec) {
     taint: 'clean',
     metadata: {
       alternatives_rejected: spec.alternatives_rejected,
-      what_breaks_if_revisited: spec.what_breaks_if_revisit,
+      // Canonical spelling matches the PlanningActor plan-shape
+      // contract (src/actors/planning/*) and the source plan atoms
+      // own metadata. bootstrap-decisions-canon.mjs uses the past-
+      // tense variant; that is a pre-existing drift handled
+      // separately, not something this script inherits.
+      what_breaks_if_revisit: spec.what_breaks_if_revisit,
     },
   };
 }
