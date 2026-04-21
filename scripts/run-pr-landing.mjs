@@ -138,15 +138,17 @@ async function main() {
     actingAs: 'lag-ops',
   });
 
+  // ensureReviewers is intentionally NOT configured for CodeRabbit
+  // here. The actor's ensureReviewers mechanism posts the trigger
+  // via review.postPrComment(), which uses github-actions[bot] in
+  // CI; CR's anti-loop ignores [bot] comments so that post is
+  // noise. The maybeTriggerCr pre-check above handles CR via the
+  // machine-user PAT instead, which CR honors. The actor's
+  // ensureReviewers slot remains available for reviewers that DO
+  // respond to bot comments (none today); configure it per-reviewer
+  // if that changes.
   const actor = new PrLandingActor({
     pr: { owner, repo, number: args.prNumber },
-    ensureReviewers: [
-      {
-        logins: ['coderabbitai[bot]', 'coderabbitai'],
-        promptBody: '@coderabbitai review',
-        label: 'CodeRabbit',
-      },
-    ],
   });
 
   const deadline = new Date(Date.now() + args.deadlineMs).toISOString();
