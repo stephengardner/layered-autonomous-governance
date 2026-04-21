@@ -59,15 +59,24 @@ test.describe('canon viewer', () => {
     expect(text).toContain('atomstore');
   });
 
-  test('theme toggle swaps body class between dark and light', async ({ page }) => {
-    const initialClass = await page.evaluate(() => document.body.className);
-    expect(initialClass).toMatch(/theme-(dark|light)/);
-    await page.getByTestId('theme-toggle').click();
-    await expect.poll(async () =>
-      page.evaluate(() => document.body.className),
-    ).not.toBe(initialClass);
-    const next = await page.evaluate(() => document.body.className);
-    expect(next).toMatch(/theme-(dark|light)/);
-    expect(next).not.toBe(initialClass);
+  test('theme toggle cycles through supported themes', async ({ page }) => {
+    const seen = new Set<string>();
+    const initial = await page.evaluate(() => document.body.className);
+    expect(initial).toMatch(/theme-(dark|light|sunset)/);
+    seen.add(initial);
+    // Three clicks should yield three distinct body classNames and
+    // then return to the starting state on the third.
+    for (let i = 0; i < 3; i++) {
+      await page.getByTestId('theme-toggle').click();
+      await expect
+        .poll(async () => page.evaluate(() => document.body.className))
+        .not.toBe(Array.from(seen).pop());
+      const next = await page.evaluate(() => document.body.className);
+      expect(next).toMatch(/theme-(dark|light|sunset)/);
+      seen.add(next);
+    }
+    // After 3 clicks we should have cycled through all three themes
+    // at least once (order depends on starting theme, but set size is 3).
+    expect(seen.size).toBe(3);
   });
 });

@@ -21,6 +21,14 @@ export type AtomType =
   | 'question'
   | (string & {});
 
+/*
+ * Alternatives_rejected in real canon atoms shows up in two shapes:
+ *   - ReadonlyArray<string>           — seed atoms, /decide short-form
+ *   - ReadonlyArray<{option,reason}>  — newer structured entries
+ * The frontend accepts both; renderers normalize via `asAlternative()`.
+ */
+export type Alternative = string | { readonly option: string; readonly reason: string };
+
 export interface CanonAtom {
   readonly id: string;
   readonly type: AtomType;
@@ -29,9 +37,16 @@ export interface CanonAtom {
   readonly principal_id: string;
   readonly confidence: number;
   readonly created_at: string;
+  readonly scope?: string;
+  readonly taint?: string;
+  readonly superseded_by?: ReadonlyArray<string>;
+  readonly supersedes?: ReadonlyArray<string>;
+  readonly expires_at?: string | null;
+  readonly last_reinforced_at?: string;
   readonly metadata?: {
-    readonly alternatives_rejected?: ReadonlyArray<{ option: string; reason: string }>;
+    readonly alternatives_rejected?: ReadonlyArray<Alternative>;
     readonly what_breaks_if_revisited?: string;
+    readonly source_plan?: string;
     readonly [k: string]: unknown;
   };
   readonly provenance?: {
@@ -39,6 +54,11 @@ export interface CanonAtom {
     readonly source?: unknown;
     readonly derived_from?: ReadonlyArray<string>;
   };
+}
+
+export function asAlternative(raw: Alternative): { option: string; reason?: string } {
+  if (typeof raw === 'string') return { option: raw };
+  return { option: raw.option, reason: raw.reason };
 }
 
 export interface ListCanonParams {

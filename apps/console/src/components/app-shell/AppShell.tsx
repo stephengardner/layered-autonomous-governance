@@ -1,18 +1,19 @@
 import type { ReactNode } from 'react';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import type { Route } from '@/state/router.store';
 import styles from './AppShell.module.css';
 
 /**
  * AppShell: top-level layout primitive. Sidebar + header + scrollable
  * content area. All styling via CSS tokens, no hardcoded px or hex.
  */
-export function AppShell({ children }: { children: ReactNode }) {
+export function AppShell({ route, children }: { route: Route; children: ReactNode }) {
   return (
     <div className={styles.shell}>
-      <Sidebar />
+      <Sidebar route={route} />
       <div className={styles.main}>
-        <Header />
+        <Header route={route} />
         <main className={styles.content}>{children}</main>
       </div>
     </div>

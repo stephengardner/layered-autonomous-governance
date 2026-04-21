@@ -37,6 +37,7 @@ const LAG_DIR = process.env.LAG_CONSOLE_LAG_DIR
   ? resolve(process.env.LAG_CONSOLE_LAG_DIR)
   : resolve(REPO_ROOT, '.lag');
 const ATOMS_DIR = join(LAG_DIR, 'atoms');
+const PRINCIPALS_DIR = join(LAG_DIR, 'principals');
 
 const PORT = Number.parseInt(process.env.LAG_CONSOLE_BACKEND_PORT ?? '9081', 10);
 
@@ -56,6 +57,20 @@ interface Atom {
   provenance?: Record<string, unknown>;
   taint?: string;
   superseded_by?: string[];
+}
+
+interface Principal {
+  id: string;
+  name?: string;
+  role?: string;
+  active?: boolean;
+  signed_by?: string | null;
+  compromised_at?: string | null;
+  created_at?: string;
+  permitted_scopes?: { read?: string[]; write?: string[] };
+  permitted_layers?: { read?: string[]; write?: string[] };
+  goals?: string[];
+  constraints?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +178,73 @@ async function handleCanonStats(): Promise<{ total: number; byType: Record<strin
   return { total: filtered.length, byType };
 }
 
+async function readAllPrincipals(): Promise<Principal[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(PRINCIPALS_DIR);
+  } catch (err) {
+    console.error(`[backend] could not read ${PRINCIPALS_DIR}: ${(err as Error).message}`);
+    return [];
+  }
+  const files = entries.filter((n) => n.endsWith('.json'));
+  const out: Principal[] = [];
+  for (const name of files) {
+    try {
+      const raw = await readFile(join(PRINCIPALS_DIR, name), 'utf8');
+      out.push(JSON.parse(raw) as Principal);
+    } catch (err) {
+      console.warn(`[backend] skipping malformed principal ${name}: ${(err as Error).message}`);
+    }
+  }
+  // Stable: root principals first, then by id.
+  out.sort((a, b) => {
+    const aRoot = !a.signed_by ? 0 : 1;
+    const bRoot = !b.signed_by ? 0 : 1;
+    if (aRoot !== bRoot) return aRoot - bRoot;
+    return a.id.localeCompare(b.id);
+  });
+  return out;
+}
+
+async function handlePrincipalsList(): Promise<Principal[]> {
+  return readAllPrincipals();
+}
+
+/*
+ * Activities = recent atoms across all types, sorted by created_at
+ * desc. Includes non-L3 atoms (observations, actor-messages, plans,
+ * questions) because the point is to show what's HAPPENING, not
+ * just live canon.
+ */
+async function handleActivitiesList(params: { limit?: number; types?: string[] }): Promise<Atom[]> {
+  const all = await readAllAtoms();
+  let out = all.filter((a) => !a.superseded_by || a.superseded_by.length === 0);
+  if (params.types && params.types.length > 0) {
+    const set = new Set(params.types);
+    out = out.filter((a) => set.has(a.type));
+  }
+  out.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
+  const limit = Math.max(1, Math.min(500, params.limit ?? 100));
+  return out.slice(0, limit);
+}
+
+/*
+ * Plans = atoms of type 'plan' OR atoms whose top-level `plan_state`
+ * field is present (arch-plan-state-top-level-field).
+ */
+async function handlePlansList(): Promise<Atom[]> {
+  const all = await readAllAtoms();
+  const out = all.filter((a) => {
+    if (a.superseded_by && a.superseded_by.length > 0) return false;
+    if (a.type === 'plan') return true;
+    const atomAny = a as unknown as Record<string, unknown>;
+    if (atomAny['plan_state'] !== undefined) return true;
+    return false;
+  });
+  out.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
+  return out;
+}
+
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // CORS preflight.
   if (req.method === 'OPTIONS') {
@@ -208,6 +290,45 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(res, data);
     } catch (err) {
       sendErr(res, 500, 'canon-stats-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/principals.list' && req.method === 'POST') {
+    try {
+      const data = await handlePrincipalsList();
+      sendOk(res, data);
+    } catch (err) {
+      sendErr(res, 500, 'principals-list-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/activities.list' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const bodyLimit = body['limit'];
+    const bodyTypes = body['types'];
+    const limit = typeof bodyLimit === 'number' ? bodyLimit : undefined;
+    const types = Array.isArray(bodyTypes) ? (bodyTypes as string[]) : undefined;
+    const params: { limit?: number; types?: string[] } = {
+      ...(limit !== undefined ? { limit } : {}),
+      ...(types !== undefined ? { types } : {}),
+    };
+    try {
+      const data = await handleActivitiesList(params);
+      sendOk(res, data);
+    } catch (err) {
+      sendErr(res, 500, 'activities-list-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/plans.list' && req.method === 'POST') {
+    try {
+      const data = await handlePlansList();
+      sendOk(res, data);
+    } catch (err) {
+      sendErr(res, 500, 'plans-list-failed', (err as Error).message);
     }
     return;
   }

@@ -11,8 +11,12 @@
 import { create } from 'zustand';
 import { storage } from '@/services/storage.service';
 
-export type ThemeName = 'dark' | 'light';
+export type ThemeName = 'dark' | 'light' | 'sunset';
 const STORAGE_KEY = 'theme';
+
+// Theme cycle order for the single-button toggle. Keep `dark` first so
+// first-time users on dark-prefers systems see the default shade.
+const CYCLE: ReadonlyArray<ThemeName> = ['dark', 'light', 'sunset'];
 
 interface ThemeState {
   theme: ThemeName;
@@ -20,9 +24,13 @@ interface ThemeState {
   toggle: () => void;
 }
 
+function isThemeName(s: unknown): s is ThemeName {
+  return s === 'dark' || s === 'light' || s === 'sunset';
+}
+
 function readInitialTheme(): ThemeName {
   const stored = storage.get<ThemeName>(STORAGE_KEY);
-  if (stored === 'dark' || stored === 'light') return stored;
+  if (isThemeName(stored)) return stored;
   // The inline script in index.html also does this; we repeat the
   // logic here so state-of-record inside React matches what the
   // browser renders before React mounts.
@@ -39,7 +47,8 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
     set({ theme: next });
   },
   toggle: () => {
-    const next: ThemeName = get().theme === 'dark' ? 'light' : 'dark';
+    const i = CYCLE.indexOf(get().theme);
+    const next = CYCLE[(i + 1) % CYCLE.length]!;
     storage.set(STORAGE_KEY, next);
     set({ theme: next });
   },

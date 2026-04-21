@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ChevronDown } from 'lucide-react';
-import type { CanonAtom } from '@/services/canon.service';
+import { ChevronDown, AlertTriangle, Archive } from 'lucide-react';
+import { AtomRef } from '@/components/atom-ref/AtomRef';
+import { asAlternative, type CanonAtom } from '@/services/canon.service';
 import styles from './CanonCard.module.css';
 
 interface Props {
@@ -10,13 +11,12 @@ interface Props {
 
 export function CanonCard({ atom }: Props) {
   const [expanded, setExpanded] = useState(false);
-  const hasAlternatives = (atom.metadata?.alternatives_rejected?.length ?? 0) > 0;
-  const hasWhatBreaks = Boolean(atom.metadata?.what_breaks_if_revisited);
-  const hasDetails = hasAlternatives || hasWhatBreaks;
+  const tainted = Boolean(atom.taint) && atom.taint !== 'clean';
+  const superseded = (atom.superseded_by?.length ?? 0) > 0;
 
   return (
     <article
-      className={`${styles.card} ${styles[`typeTheme_${atom.type}`] ?? ''}`}
+      className={`${styles.card} ${tainted ? styles.cardTainted : ''} ${superseded ? styles.cardSuperseded : ''}`}
       data-testid="canon-card"
       data-atom-id={atom.id}
       data-atom-type={atom.type}
@@ -26,6 +26,18 @@ export function CanonCard({ atom }: Props) {
           {atom.type}
         </span>
         <code className={styles.id}>{atom.id}</code>
+        {tainted && (
+          <span className={styles.statusPill} data-variant="danger" title="Tainted">
+            <AlertTriangle size={12} strokeWidth={2.25} aria-hidden="true" />
+            {atom.taint}
+          </span>
+        )}
+        {superseded && (
+          <span className={styles.statusPill} data-variant="warning" title="Superseded">
+            <Archive size={12} strokeWidth={2.25} aria-hidden="true" />
+            superseded
+          </span>
+        )}
       </header>
 
       <p className={styles.content}>{atom.content}</p>
@@ -36,24 +48,27 @@ export function CanonCard({ atom }: Props) {
         </span>
         <span className={styles.metaDot} aria-hidden="true">•</span>
         <span className={styles.meta}>
+          <span className={styles.metaLabel}>conf</span>
+          {atom.confidence.toFixed(2)}
+        </span>
+        <span className={styles.metaDot} aria-hidden="true">•</span>
+        <span className={styles.meta}>
           <span className={styles.metaLabel}>layer</span> {atom.layer}
         </span>
-        {hasDetails && (
-          <button
-            type="button"
-            className={`${styles.expand} ${expanded ? styles.expandOpen : ''}`}
-            onClick={() => setExpanded((x) => !x)}
-            aria-expanded={expanded}
-            data-testid={`card-expand-${atom.id}`}
-          >
-            <ChevronDown size={14} strokeWidth={2} />
-            {expanded ? 'Hide rationale' : 'Show rationale'}
-          </button>
-        )}
+        <button
+          type="button"
+          className={`${styles.expand} ${expanded ? styles.expandOpen : ''}`}
+          onClick={() => setExpanded((x) => !x)}
+          aria-expanded={expanded}
+          data-testid={`card-expand-${atom.id}`}
+        >
+          <ChevronDown size={14} strokeWidth={2} />
+          {expanded ? 'Hide details' : 'Show details'}
+        </button>
       </footer>
 
       <AnimatePresence initial={false}>
-        {expanded && hasDetails && (
+        {expanded && (
           <motion.div
             className={styles.expanded}
             initial={{ opacity: 0, height: 0 }}
@@ -62,31 +77,126 @@ export function CanonCard({ atom }: Props) {
             transition={{ duration: 0.24, ease: [0.2, 0, 0, 1] }}
           >
             <div className={styles.expandedInner}>
-              {hasAlternatives && (
-                <div className={styles.section}>
-                  <h4 className={styles.sectionTitle}>Alternatives rejected</h4>
-                  <ul className={styles.list}>
-                    {atom.metadata!.alternatives_rejected!.map((alt, i) => (
-                      <li key={i} className={styles.listItem}>
-                        <strong className={styles.listItemTitle}>{alt.option}</strong>
-                        <span className={styles.listItemReason}>{alt.reason}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {hasWhatBreaks && (
-                <div className={styles.section}>
-                  <h4 className={styles.sectionTitle}>What breaks if revisited</h4>
-                  <p className={styles.sectionBody}>
-                    {atom.metadata!.what_breaks_if_revisited}
-                  </p>
-                </div>
-              )}
+              <DetailsPanel atom={atom} />
             </div>
           </motion.div>
         )}
       </AnimatePresence>
     </article>
   );
+}
+
+function DetailsPanel({ atom }: { atom: CanonAtom }) {
+  const alternatives = atom.metadata?.alternatives_rejected ?? [];
+  const whatBreaks = atom.metadata?.what_breaks_if_revisited;
+  const derivedFrom = atom.provenance?.derived_from ?? [];
+  const sourcePlan = typeof atom.metadata?.source_plan === 'string' ? atom.metadata.source_plan : undefined;
+
+  return (
+    <>
+      <Section title="Attributes">
+        <dl className={styles.attrs}>
+          <AttrRow label="Created" value={formatDate(atom.created_at)} />
+          {atom.last_reinforced_at && atom.last_reinforced_at !== atom.created_at && (
+            <AttrRow label="Reinforced" value={formatDate(atom.last_reinforced_at)} />
+          )}
+          <AttrRow label="Scope" value={atom.scope ?? '—'} />
+          <AttrRow label="Taint" value={atom.taint ?? 'clean'} />
+          {atom.expires_at && <AttrRow label="Expires" value={formatDate(atom.expires_at)} />}
+          {atom.provenance?.kind && <AttrRow label="Provenance" value={atom.provenance.kind} />}
+          {sourcePlan && (
+            <>
+              <dt className={styles.attrLabel}>Source plan</dt>
+              <dd className={styles.attrValue}><AtomRef id={sourcePlan} /></dd>
+            </>
+          )}
+        </dl>
+      </Section>
+
+      {whatBreaks && (
+        <Section title="What breaks if revisited">
+          <p className={styles.sectionBody}>{whatBreaks}</p>
+        </Section>
+      )}
+
+      {alternatives.length > 0 && (
+        <Section title="Alternatives rejected">
+          <ul className={styles.list}>
+            {alternatives.map((raw, i) => {
+              const alt = asAlternative(raw);
+              return (
+                <li key={i} className={styles.listItem}>
+                  <strong className={styles.listItemTitle}>{alt.option}</strong>
+                  {alt.reason && <span className={styles.listItemReason}>{alt.reason}</span>}
+                </li>
+              );
+            })}
+          </ul>
+        </Section>
+      )}
+
+      {derivedFrom.length > 0 && (
+        <Section title="Derived from">
+          <ul className={styles.refList}>
+            {derivedFrom.map((ref) => (
+              <li key={ref}><AtomRef id={ref} /></li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {(atom.supersedes?.length ?? 0) > 0 && (
+        <Section title="Supersedes">
+          <ul className={styles.refList}>
+            {atom.supersedes!.map((ref) => (
+              <li key={ref}><AtomRef id={ref} /></li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {(atom.superseded_by?.length ?? 0) > 0 && (
+        <Section title="Superseded by">
+          <ul className={styles.refList}>
+            {atom.superseded_by!.map((ref) => (
+              <li key={ref}><AtomRef id={ref} /></li>
+            ))}
+          </ul>
+        </Section>
+      )}
+    </>
+  );
+}
+
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className={styles.section}>
+      <h4 className={styles.sectionTitle}>{title}</h4>
+      {children}
+    </div>
+  );
+}
+
+function AttrRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <>
+      <dt className={styles.attrLabel}>{label}</dt>
+      <dd className={mono ? styles.attrValueMono : styles.attrValue}>{value}</dd>
+    </>
+  );
+}
+
+function formatDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return iso;
+  }
 }

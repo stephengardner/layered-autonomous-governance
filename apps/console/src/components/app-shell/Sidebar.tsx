@@ -1,23 +1,22 @@
 import { Book, GitBranch, Activity, Users } from 'lucide-react';
+import { routeHref, setRoute, type Route } from '@/state/router.store';
 import logoUrl from '@/assets/lag-logo.png';
 import styles from './Sidebar.module.css';
 
 interface NavItem {
-  readonly id: string;
+  readonly id: Route;
   readonly label: string;
   readonly icon: typeof Book;
-  readonly active?: boolean;
-  readonly disabled?: boolean;
 }
 
 const items: ReadonlyArray<NavItem> = [
-  { id: 'canon', label: 'Canon', icon: Book, active: true },
-  { id: 'principals', label: 'Principals', icon: Users, disabled: true },
-  { id: 'activities', label: 'Activities', icon: Activity, disabled: true },
-  { id: 'plans', label: 'Plans', icon: GitBranch, disabled: true },
+  { id: 'canon', label: 'Canon', icon: Book },
+  { id: 'principals', label: 'Principals', icon: Users },
+  { id: 'activities', label: 'Activities', icon: Activity },
+  { id: 'plans', label: 'Plans', icon: GitBranch },
 ];
 
-export function Sidebar() {
+export function Sidebar({ route }: { route: Route }) {
   return (
     <aside className={styles.sidebar}>
       <div className={styles.brand}>
@@ -27,23 +26,28 @@ export function Sidebar() {
       <nav className={styles.nav} aria-label="Primary">
         {items.map((item) => {
           const Icon = item.icon;
-          const className = [
-            styles.item,
-            item.active ? styles.itemActive : '',
-            item.disabled ? styles.itemDisabled : '',
-          ].filter(Boolean).join(' ');
+          const active = item.id === route;
           return (
-            <button
+            <a
               key={item.id}
-              className={className}
-              aria-current={item.active ? 'page' : undefined}
-              disabled={item.disabled}
-              type="button"
+              className={`${styles.item} ${active ? styles.itemActive : ''}`}
+              href={routeHref(item.id)}
+              aria-current={active ? 'page' : undefined}
+              data-testid={`nav-${item.id}`}
+              onClick={(e) => {
+                // Intercept: use pushState navigation instead of full
+                // page load. Keep default behavior for Cmd/Ctrl+click
+                // (open in new tab) and middle-click.
+                if (e.defaultPrevented) return;
+                if (e.button !== 0) return;
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                e.preventDefault();
+                setRoute(item.id);
+              }}
             >
               <Icon size={16} strokeWidth={1.75} aria-hidden="true" />
               <span>{item.label}</span>
-              {item.disabled && <span className={styles.soonBadge}>soon</span>}
-            </button>
+            </a>
           );
         })}
       </nav>

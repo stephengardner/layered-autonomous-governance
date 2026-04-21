@@ -202,17 +202,62 @@
     color-scheme: light;
   }
 
+  /* ===== SUNSET THEME (warm dark, amber accent) ===== */
+  body.theme-sunset {
+    --palette-ink-950: #0e0806;
+    --palette-ink-900: #140c08;
+    --palette-ink-800: #1c1310;
+    --palette-ink-700: #2a1d16;
+    --palette-ink-600: #3d2b20;
+    --palette-ink-500: #58412f;
+    --palette-ink-400: #7a5d46;
+    --palette-ink-300: #a38a71;
+    --palette-ink-200: #c9b9a1;
+    --palette-ink-100: #ebe1d1;
+    --palette-ink-050: #faf4e8;
+
+    --palette-accent-400: #ff9a4a;
+    --palette-accent-500: #ff7a18;
+    --palette-accent-600: #e66a00;
+
+    --palette-success-500: #84cc16;
+    --palette-warning-500: #fbbf24;
+    --palette-danger-500: #f43f5e;
+
+    --surface-canvas: var(--palette-ink-950);
+    --surface-base: var(--palette-ink-900);
+    --surface-raised: var(--palette-ink-800);
+    --surface-overlay: var(--palette-ink-700);
+    --surface-hover: var(--palette-ink-700);
+
+    --text-primary: var(--palette-ink-050);
+    --text-secondary: var(--palette-ink-200);
+    --text-tertiary: var(--palette-ink-300);
+    --text-muted: var(--palette-ink-400);
+    --text-on-accent: var(--palette-ink-950);
+
+    --border-subtle: var(--palette-ink-700);
+    --border-strong: var(--palette-ink-600);
+    --border-focus: var(--palette-accent-500);
+
+    --accent: var(--palette-accent-500);
+    --accent-hover: var(--palette-accent-400);
+    --accent-active: var(--palette-accent-600);
+
+    --status-success: var(--palette-success-500);
+    --status-warning: var(--palette-warning-500);
+    --status-danger: var(--palette-danger-500);
+
+    --bg-decor-primary: color-mix(in srgb, var(--palette-accent-500) 14%, transparent);
+    --bg-decor-secondary: color-mix(in srgb, var(--palette-accent-400) 8%, transparent);
+    --bg-noise-opacity: 0.05;
+
+    color-scheme: dark;
+  }
+
   /*
    * Pattern for future themes: add a body.theme-<name> selector with
    * the same set of palette + semantic token names. Components never
-   * change. Example scaffold for a future "enterprise-blue" theme:
-   *
-   *   body.theme-enterprise-blue {
-   *     --palette-ink-950: ...;
-   *     ... (full palette) ...
-   *     --surface-canvas: var(--palette-ink-950);
-   *     ... (full semantic layer; components see identical names) ...
-   *     color-scheme: dark;
-   *   }
+   * change. Adding a theme is palette + semantic redefinition only.
    */
 }
