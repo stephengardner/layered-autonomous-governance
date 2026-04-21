@@ -85,4 +85,31 @@ test.describe('views smoke', () => {
     await expect(page).toHaveURL(new RegExp(`/plans/${escaped}$`));
     await expect(page.getByTestId('focus-banner')).toBeVisible();
   });
+
+  /*
+   * Regression guard for the canon focus flash: when navigating
+   * directly to /canon/<id>, the page should never briefly render
+   * the unfiltered canon grid. We sample the visible card set on
+   * every animation frame for 500ms after navigation and assert
+   * that it NEVER exceeded 1 card. If the flash returns, this
+   * assertion fails because during the flash the grid shows all
+   * 70+ atoms.
+   */
+  test('/canon/:id never flashes the unfiltered grid', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('[data-testid="canon-card"]').first().waitFor();
+    // Hit the focused route directly — cold start for this route.
+    const atomId = 'arch-atomstore-source-of-truth';
+    await page.goto(`/canon/${atomId}`);
+    // Poll aggressively: any sample > 1 visible cards is a flash.
+    const samples: number[] = [];
+    const end = Date.now() + 500;
+    while (Date.now() < end) {
+      samples.push(await page.locator('[data-testid="canon-card"]').count());
+      await page.waitForTimeout(25);
+    }
+    const maxSeen = Math.max(...samples, 0);
+    expect(maxSeen, `canon focus flashed unfiltered data: saw up to ${maxSeen} cards`).toBeLessThanOrEqual(1);
+    await expect(page.locator(`[data-testid="canon-card"][data-atom-id="${atomId}"]`)).toBeVisible();
+  });
 });

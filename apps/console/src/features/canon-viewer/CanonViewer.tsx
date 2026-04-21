@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Search } from 'lucide-react';
@@ -21,21 +21,22 @@ const TYPE_OPTIONS: ReadonlyArray<TypeOption> = [
 
 export function CanonViewer() {
   const [activeFilterId, setActiveFilterId] = useState<string>('all');
-  const [search, setSearch] = useState<string>('');
+  const [localSearch, setLocalSearch] = useState<string>('');
   const focusId = useRouteId();
 
-  // When `?focus=<id>` is in the URL, pre-fill search with that id
-  // and reset the type filter so the focused atom is always visible.
-  // Clearing the URL param is the only way to unpin — clearing the
-  // search field is ephemeral UI.
-  useEffect(() => {
-    if (focusId) {
-      setSearch(focusId);
-      setActiveFilterId('all');
-    }
-  }, [focusId]);
-
-  const activeFilter = TYPE_OPTIONS.find((o) => o.id === activeFilterId) ?? TYPE_OPTIONS[0]!;
+  /*
+   * When /canon/<id> is in the URL, the search text derives from the
+   * route id — NOT mirrored via useEffect. Mirroring caused a visible
+   * flash: first render used search='' (fetching all canon), then the
+   * effect fired setSearch(focusId) and re-fetched. Between the two
+   * fetches, the unfiltered result briefly rendered. Deriving on the
+   * same render eliminates that class of flash.
+   *
+   * `localSearch` still backs the typing UI when no focus is active.
+   */
+  const search = focusId ?? localSearch;
+  const effectiveFilterId = focusId ? 'all' : activeFilterId;
+  const activeFilter = TYPE_OPTIONS.find((o) => o.id === effectiveFilterId) ?? TYPE_OPTIONS[0]!;
 
   const dataQuery = useQuery({
     queryKey: ['canon', activeFilter.types, search],
@@ -59,7 +60,7 @@ export function CanonViewer() {
           label="Focused on atom"
           id={focusId}
           onClear={() => {
-            setSearch('');
+            setLocalSearch('');
             setRoute('canon');
           }}
         />
@@ -73,7 +74,12 @@ export function CanonViewer() {
             className={styles.searchInput}
             placeholder="Search canon... (/)"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              // If a route focus is active and the user starts typing,
+              // clear the route focus so typing behaves normally.
+              if (focusId) setRoute('canon');
+              setLocalSearch(e.target.value);
+            }}
             data-testid="canon-search"
             data-global-search=""
             aria-label="Search canon"

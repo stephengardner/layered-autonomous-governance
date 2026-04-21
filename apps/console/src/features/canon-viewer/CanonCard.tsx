@@ -6,7 +6,7 @@ import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { ConfidenceBar } from '@/components/confidence-bar/ConfidenceBar';
 import { CopyLinkButton } from '@/components/copy-link/CopyLinkButton';
 import { RawJson } from '@/components/raw-json/RawJson';
-import { asAlternative, listReferencers, type CanonAtom } from '@/services/canon.service';
+import { asAlternative, listReferencers, listAtomChain, listAtomCascade, type CanonAtom } from '@/services/canon.service';
 import { routeForAtomId, routeHref } from '@/state/router.store';
 import styles from './CanonCard.module.css';
 
@@ -171,6 +171,8 @@ function DetailsPanel({ atom }: { atom: CanonAtom }) {
       )}
 
       <ReferencedBy atomId={atom.id} />
+      <WhyThisAtom atomId={atom.id} />
+      <CascadeIfTainted atomId={atom.id} />
 
       <div className={styles.actionsRow}>
         <CopyLinkButton href={routeHref(routeForAtomId(atom.id), atom.id)} />
@@ -196,15 +198,68 @@ function ReferencedBy({ atomId }: { atomId: string }) {
   if (query.isPending || refs.length === 0) return null;
   return (
     <Section title={`Referenced by (${refs.length})`}>
-      <ul className={styles.refList}>
-        {refs.map((a) => (
-          <li key={a.id} className={styles.referencer}>
-            <span className={styles.referencerType} data-type={a.type}>{a.type}</span>
-            <AtomRef id={a.id} />
-          </li>
-        ))}
-      </ul>
+      <AtomPillList atoms={refs} testIdPrefix="referenced-by" />
     </Section>
+  );
+}
+
+/*
+ * "Why this atom exists" — walks derived_from transitively and shows
+ * the provenance chain that led to this atom. Every atom's decision
+ * is the product of its ancestors; this surface makes that visible.
+ */
+function WhyThisAtom({ atomId }: { atomId: string }) {
+  const query = useQuery({
+    queryKey: ['atoms.chain', atomId],
+    queryFn: ({ signal }) => listAtomChain(atomId, 5, signal),
+    staleTime: 30_000,
+  });
+  const chain = query.data ?? [];
+  if (query.isPending || chain.length === 0) return null;
+  return (
+    <Section title={`Why this atom exists (${chain.length} ancestor${chain.length === 1 ? '' : 's'})`}>
+      <AtomPillList atoms={chain} testIdPrefix="provenance-chain" />
+    </Section>
+  );
+}
+
+/*
+ * "If compromised, these would taint" — walks the reverse derived_from
+ * graph showing the blast radius if this atom's integrity is lost.
+ * Governance-specific wow: hover a high-authority atom and see the
+ * downstream consequences of a compromise.
+ */
+function CascadeIfTainted({ atomId }: { atomId: string }) {
+  const query = useQuery({
+    queryKey: ['atoms.cascade', atomId],
+    queryFn: ({ signal }) => listAtomCascade(atomId, 5, signal),
+    staleTime: 30_000,
+  });
+  const cascade = query.data ?? [];
+  if (query.isPending || cascade.length === 0) return null;
+  return (
+    <Section title={`If compromised, taint cascades to (${cascade.length})`}>
+      <AtomPillList atoms={cascade} testIdPrefix="cascade" />
+    </Section>
+  );
+}
+
+function AtomPillList({
+  atoms,
+  testIdPrefix,
+}: {
+  atoms: ReadonlyArray<CanonAtom>;
+  testIdPrefix: string;
+}) {
+  return (
+    <ul className={styles.refList} data-testid={testIdPrefix}>
+      {atoms.map((a) => (
+        <li key={a.id} className={styles.referencer}>
+          <span className={styles.referencerType} data-type={a.type}>{a.type}</span>
+          <AtomRef id={a.id} />
+        </li>
+      ))}
+    </ul>
   );
 }
 

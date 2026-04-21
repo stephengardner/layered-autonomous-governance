@@ -108,3 +108,53 @@ export async function listReferencers(
     signal ? { signal } : undefined,
   );
 }
+
+/**
+ * Provenance chain — the transitive derived_from ancestors of `id`,
+ * depth-limited. Used by the "Why this atom exists" trace.
+ */
+export async function listAtomChain(
+  id: string,
+  depth = 5,
+  signal?: AbortSignal,
+): Promise<ReadonlyArray<CanonAtom>> {
+  return transport.call<ReadonlyArray<CanonAtom>>(
+    'atoms.chain',
+    { id, depth },
+    signal ? { signal } : undefined,
+  );
+}
+
+/**
+ * Taint cascade — transitive set of atoms that would inherit taint if
+ * `id` were compromised. Walks reverse direction of derived_from.
+ */
+export async function listAtomCascade(
+  id: string,
+  depth = 5,
+  signal?: AbortSignal,
+): Promise<ReadonlyArray<CanonAtom>> {
+  return transport.call<ReadonlyArray<CanonAtom>>(
+    'atoms.cascade',
+    { id, depth },
+    signal ? { signal } : undefined,
+  );
+}
+
+export interface ArbitrationResult {
+  readonly a: { readonly atom: CanonAtom | null; readonly rank: number; readonly breakdown: Record<string, number> };
+  readonly b: { readonly atom: CanonAtom | null; readonly rank: number; readonly breakdown: Record<string, number> };
+  readonly winner: 'a' | 'b' | 'tie';
+}
+
+export async function compareArbitration(
+  aId: string,
+  bId: string,
+  signal?: AbortSignal,
+): Promise<ArbitrationResult> {
+  return transport.call<ArbitrationResult>(
+    'arbitration.compare',
+    { a: aId, b: bId },
+    signal ? { signal } : undefined,
+  );
+}

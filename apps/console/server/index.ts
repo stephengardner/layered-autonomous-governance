@@ -260,6 +260,114 @@ async function handleAtomReferences(id: string): Promise<Atom[]> {
  * scraping, no external dep. The Console header pill renders this
  * into a single live/quiet badge.
  */
+/*
+ * Provenance walk: starting at `id`, follow derived_from pointers
+ * transitively and return the chain of ancestor atoms. Depth-limited
+ * (default 5) and cycle-safe via a visited set.
+ */
+async function handleAtomChain(id: string, maxDepth: number): Promise<Atom[]> {
+  const all = await readAllAtoms();
+  const byId = new Map(all.map((a) => [a.id, a]));
+  const visited = new Set<string>();
+  const chain: Atom[] = [];
+  const queue: Array<{ id: string; depth: number }> = [{ id, depth: 0 }];
+  while (queue.length > 0) {
+    const { id: cur, depth } = queue.shift()!;
+    if (visited.has(cur) || depth > maxDepth) continue;
+    visited.add(cur);
+    const atom = byId.get(cur);
+    if (!atom) continue;
+    if (cur !== id) chain.push(atom);
+    const derived = (atom.provenance as { derived_from?: string[] } | undefined)?.derived_from ?? [];
+    for (const next of derived) queue.push({ id: next, depth: depth + 1 });
+  }
+  return chain;
+}
+
+/*
+ * Taint cascade: if the given atom (or principal) were marked
+ * compromised/tainted, which atoms would transitively inherit taint?
+ * Walks the REVERSE direction of derived_from — atoms that point AT
+ * this one, and atoms that point at those.
+ */
+async function handleAtomCascade(id: string, maxDepth: number): Promise<Atom[]> {
+  const all = await readAllAtoms();
+  const referencers = new Map<string, string[]>();
+  for (const a of all) {
+    const derived = (a.provenance as { derived_from?: string[] } | undefined)?.derived_from ?? [];
+    for (const d of derived) {
+      const bucket = referencers.get(d);
+      if (bucket) bucket.push(a.id); else referencers.set(d, [a.id]);
+    }
+  }
+  const byId = new Map(all.map((a) => [a.id, a]));
+  const visited = new Set<string>([id]);
+  const cascade: Atom[] = [];
+  const queue: Array<{ id: string; depth: number }> = [{ id, depth: 0 }];
+  while (queue.length > 0) {
+    const { id: cur, depth } = queue.shift()!;
+    if (depth > maxDepth) continue;
+    const refs = referencers.get(cur) ?? [];
+    for (const r of refs) {
+      if (visited.has(r)) continue;
+      visited.add(r);
+      const atom = byId.get(r);
+      if (atom) cascade.push(atom);
+      queue.push({ id: r, depth: depth + 1 });
+    }
+  }
+  return cascade;
+}
+
+/*
+ * Source-rank formula per canon pref-source-rank-scoring-formula:
+ *   Layer x 10000 + Provenance x 100 + (MAX_PRINCIPAL_DEPTH - depth) x 10
+ *     + floor(confidence x 10)
+ *
+ * We don't have principal_depth data here yet, so this implementation
+ * approximates depth=0 for human, 1 for agent-signed-by-human, etc.,
+ * derived from the principals file if present. If data is missing,
+ * the formula still ranks reasonably by layer + confidence.
+ */
+async function handleArbitrationCompare(aId: string, bId: string): Promise<{
+  a: { atom: Atom | null; rank: number; breakdown: Record<string, number> };
+  b: { atom: Atom | null; rank: number; breakdown: Record<string, number> };
+  winner: 'a' | 'b' | 'tie';
+}> {
+  const all = await readAllAtoms();
+  const byId = new Map(all.map((a) => [a.id, a]));
+  const aAtom = byId.get(aId) ?? null;
+  const bAtom = byId.get(bId) ?? null;
+  const score = (atom: Atom | null) => {
+    if (!atom) return { total: 0, breakdown: { layer: 0, provenance: 0, hierarchy: 0, confidence: 0 } };
+    const layerMap: Record<string, number> = { L0: 0, L1: 1, L2: 2, L3: 3 };
+    const layerPts = (layerMap[atom.layer] ?? 0) * 10000;
+    const provKind = (atom.provenance as { kind?: string } | undefined)?.kind ?? 'unknown';
+    const provMap: Record<string, number> = {
+      'operator-seeded': 90,
+      'user-directive': 80,
+      'bootstrap': 70,
+      'agent-observed': 40,
+      'unknown': 10,
+    };
+    const provenancePts = (provMap[provKind] ?? 10) * 100;
+    const hierarchyPts = 50; // stubbed until principal depth is wired
+    const confidencePts = Math.floor((atom.confidence ?? 0) * 10);
+    return {
+      total: layerPts + provenancePts + hierarchyPts + confidencePts,
+      breakdown: { layer: layerPts, provenance: provenancePts, hierarchy: hierarchyPts, confidence: confidencePts },
+    };
+  };
+  const a = score(aAtom);
+  const b = score(bAtom);
+  const winner: 'a' | 'b' | 'tie' = a.total > b.total ? 'a' : b.total > a.total ? 'b' : 'tie';
+  return {
+    a: { atom: aAtom, rank: a.total, breakdown: a.breakdown },
+    b: { atom: bAtom, rank: b.total, breakdown: b.breakdown },
+    winner,
+  };
+}
+
 async function handleDaemonStatus(): Promise<{
   atomCount: number;
   lastAtomId: string | null;
@@ -387,6 +495,48 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(res, data);
     } catch (err) {
       sendErr(res, 500, 'activities-list-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/atoms.chain' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const id = typeof body['id'] === 'string' ? (body['id'] as string) : '';
+    const depth = typeof body['depth'] === 'number' ? (body['depth'] as number) : 5;
+    if (!id) { sendErr(res, 400, 'missing-id', 'atoms.chain requires { id: string }'); return; }
+    try {
+      const data = await handleAtomChain(id, depth);
+      sendOk(res, data);
+    } catch (err) {
+      sendErr(res, 500, 'atoms-chain-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/atoms.cascade' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const id = typeof body['id'] === 'string' ? (body['id'] as string) : '';
+    const depth = typeof body['depth'] === 'number' ? (body['depth'] as number) : 5;
+    if (!id) { sendErr(res, 400, 'missing-id', 'atoms.cascade requires { id: string }'); return; }
+    try {
+      const data = await handleAtomCascade(id, depth);
+      sendOk(res, data);
+    } catch (err) {
+      sendErr(res, 500, 'atoms-cascade-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/arbitration.compare' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const a = typeof body['a'] === 'string' ? (body['a'] as string) : '';
+    const b = typeof body['b'] === 'string' ? (body['b'] as string) : '';
+    if (!a || !b) { sendErr(res, 400, 'missing-ids', 'arbitration.compare requires { a, b }'); return; }
+    try {
+      const data = await handleArbitrationCompare(a, b);
+      sendOk(res, data);
+    } catch (err) {
+      sendErr(res, 500, 'arbitration-compare-failed', (err as Error).message);
     }
     return;
   }

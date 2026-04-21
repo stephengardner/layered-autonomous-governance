@@ -34,15 +34,23 @@ test.describe('canon viewer', () => {
   test('type filter narrows the grid to the selected type', async ({ page }) => {
     await page.locator('[data-testid="canon-card"]').first().waitFor();
     const initial = await page.locator('[data-testid="canon-card"]').count();
+    expect(initial).toBeGreaterThan(14);
     await page.getByTestId('type-filter-decision').click();
-    // A filtered refetch has resolved when no card with a non-decision
-    // data-atom-type is left in the DOM. Assert via locator so
-    // Playwright auto-retries until the condition holds.
-    await expect(
-      page.locator('[data-testid="canon-card"][data-atom-type]:not([data-atom-type="decision"])'),
-    ).toHaveCount(0, { timeout: 10_000 });
-    const decisionCards = page.locator('[data-testid="canon-card"][data-atom-type="decision"]');
-    const filtered = await decisionCards.count();
+    /*
+     * Combined predicate: the post-filter state is "N decisions, 0
+     * non-decisions, N > 0". Single poll avoids the animation race
+     * where decisions briefly count zero while non-decisions exit.
+     */
+    await expect.poll(async () => {
+      const types = await page.locator('[data-testid="canon-card"]').evaluateAll(
+        (els) => (els as HTMLElement[]).map((e) => e.getAttribute('data-atom-type')),
+      );
+      const decisions = types.filter((t) => t === 'decision').length;
+      const others = types.filter((t) => t !== null && t !== 'decision').length;
+      if (decisions === 0 || others > 0) return 'not-settled';
+      return 'settled';
+    }, { timeout: 10_000 }).toBe('settled');
+    const filtered = await page.locator('[data-testid="canon-card"]').count();
     expect(filtered).toBeGreaterThan(0);
     expect(filtered).toBeLessThan(initial);
   });
