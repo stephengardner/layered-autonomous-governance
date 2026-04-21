@@ -251,33 +251,34 @@ async function main() {
         ...(observation ? { observation } : {}),
       };
       const { atomId, alreadyExisted } = await sendOperatorEscalation(escalationCtx);
+
+      // Single if/else covers both the log line and the PR-comment
+      // post. Two sequential `if (alreadyExisted)` blocks read as
+      // bug-prone even when behaviorally fine; collapse for clarity.
+      //
+      // Dedup gate: `alreadyExisted` signals the atom write hit
+      // ConflictError on the deterministic id (same actor + PR +
+      // haltReason + iter). Skipping the PR comment keeps repeat runs
+      // quiet. A genuinely new halt (different haltReason on the
+      // same PR) yields a distinct atom id and posts fresh.
+      //
+      // PR-comment delivery is the CI-ephemeral-filesystem escape
+      // hatch: the atom lands in the runner's .lag/ which disappears
+      // at job end; the PR comment persists in the PR discussion
+      // history and pings the operator via GitHub's notification
+      // stack - no extra secret or daemon. Adapter's dry-run
+      // short-circuits postPrComment internally, so dry-run runs log
+      // the intent but do not call GitHub. Catch is best-effort per
+      // the outer catch's contract: a secondary-delivery failure
+      // does NOT alter the actor's exit code (the actor's own
+      // outcome is what CI gates on). Warning goes to stderr
+      // (console.warn) so CI log readers still see it loudly.
       if (alreadyExisted) {
-        console.log(`[pr-landing] escalation atom ${atomId} already existed (deduped)`);
+        console.log(
+          `[pr-landing] escalation atom ${atomId} already existed (deduped); skipping PR comment`,
+        );
       } else {
         console.log(`[pr-landing] escalation written as atom ${atomId}`);
-      }
-
-      // Also deliver the escalation as a PR comment WHEN THE ATOM
-      // WAS NEWLY WRITTEN. The atom goes to whatever AtomStore the
-      // Host is configured with; in CI that is an ephemeral runner
-      // filesystem that disappears 30 seconds after the job ends.
-      // The PR comment is the synchronous operator-visible surface:
-      // GitHub's normal notification stack pings the operator, the
-      // comment persists in the PR's discussion history, and no
-      // extra secret or daemon is needed.
-      //
-      // Gating on `!alreadyExisted` keeps us idempotent: a repeat
-      // run on the same halt (same actor + PR + haltReason + iter)
-      // does not repost. The atom's deterministic id is the dedup
-      // key. A genuinely new halt (e.g., different haltReason on
-      // the same PR) produces a distinct atom id and posts a fresh
-      // comment.
-      //
-      // Adapter's dry-run short-circuits postPrComment internally,
-      // so dry-run runs log the intent but do not call GitHub.
-      if (alreadyExisted) {
-        console.log('[pr-landing] skipping PR comment (escalation already surfaced)');
-      } else {
         try {
           const body = renderEscalationBody(escalationCtx);
           const outcome = await review.postPrComment(

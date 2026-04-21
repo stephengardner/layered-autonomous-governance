@@ -419,6 +419,16 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     };
   }
 
+  /**
+   * Fetch PR-level mergeability metadata via a single GraphQL query.
+   * Returns `mergeable` (coerced from the GraphQL enum to
+   * boolean | null; null for UNKNOWN when GitHub has not finished
+   * computing), `mergeStateStatus`
+   * (CLEAN / BLOCKED / UNKNOWN / BEHIND / DIRTY / DRAFT / HAS_HOOKS /
+   * UNSTABLE), and the head ref's SHA so the check-runs and
+   * legacy-statuses fetches can hang off it. One GraphQL round trip
+   * keeps the composite read cheap.
+   */
   private async fetchPrMetaGql(pr: PrIdentifier): Promise<{
     mergeable: boolean | null;
     mergeStateStatus: string | null;
@@ -464,6 +474,15 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     };
   }
 
+  /**
+   * Fetch all submitted reviews via REST. Single call, per_page=100;
+   * pagination not added because realistic PRs top out well under
+   * 100 submitted reviews. Returns each review's author login, state
+   * (COMMENTED / APPROVED / CHANGES_REQUESTED / DISMISSED), submission
+   * timestamp, and body. Defensively uses `user?.login ?? 'unknown'`
+   * because GitHub's REST API can return a null user when the account
+   * was deleted or is a ghost.
+   */
   private async fetchSubmittedReviews(pr: PrIdentifier): Promise<ReadonlyArray<SubmittedReview>> {
     type Resp = ReadonlyArray<{
       readonly user?: { readonly login: string } | null;
@@ -486,6 +505,14 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     });
   }
 
+  /**
+   * Fetch check-runs for the head commit via REST. check-runs is
+   * GitHub's modern check surface (most CI systems post here, e.g.,
+   * the repo's own `CI` workflow and `pr-landing agent`). Returns
+   * name, status (queued / in_progress / completed), conclusion
+   * (success / failure / cancelled / skipped / null when still
+   * running), and the posting app's slug for attribution.
+   */
   private async fetchCheckRuns(pr: PrIdentifier, sha: string): Promise<ReadonlyArray<CheckRun>> {
     type Resp = {
       readonly check_runs: ReadonlyArray<{
@@ -510,6 +537,15 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     });
   }
 
+  /**
+   * Fetch legacy commit statuses via REST. Pre-dates the check-runs
+   * API; some external services (notably some CodeRabbit
+   * configurations) still post ONLY here, not via check-runs.
+   * Reading both surfaces lets the composite read surface the
+   * blocking check regardless of which API it lives on - the exact
+   * failure mode that motivated the multi-surface observation
+   * discipline in the first place.
+   */
   private async fetchLegacyStatuses(pr: PrIdentifier, sha: string): Promise<ReadonlyArray<LegacyStatus>> {
     type Resp = {
       readonly statuses: ReadonlyArray<{

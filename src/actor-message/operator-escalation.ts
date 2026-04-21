@@ -20,10 +20,13 @@
  *   pattern would justify extracting a runActor hook; one concrete
  *   caller is enough for inline-today.
  *
- * - The message body is markdown-friendly plain text with Telegram's
- *   reasonable limits in mind: every PR link, halt reason, and
- *   escalation item is one line; proposed-fix diffs are inlined as
- *   fenced diff blocks so the operator can copy + `git apply`.
+ * - The message body is rendered by `renderEscalationBody` and follows
+ *   a line-per-intent contract: every PR link, halt reason, and
+ *   escalation item is one logical line so channels with tight line
+ *   limits (chat apps, email previews, terminal-width dashboards) can
+ *   all show a useful prefix without truncation mid-claim. Proposed-fix
+ *   diffs are inlined as fenced ```diff blocks so the operator can
+ *   copy them straight into `git apply`.
  *
  * - Caller-determined atom id. A deterministic id lets callers make
  *   the emit idempotent (same halt on the same PR → same atom id, so
@@ -251,7 +254,7 @@ export function renderEscalationBody(ctx: OperatorEscalationContext): string {
   const lines: string[] = [];
 
   const titleStub = pr
-    ? `pr-landing halt on ${pr.owner}/${pr.repo}#${pr.number}`
+    ? `${report.actor} halt on ${pr.owner}/${pr.repo}#${pr.number}`
     : `${report.actor} halt`;
   lines.push(`**${titleStub}**`);
   lines.push('');
@@ -334,6 +337,15 @@ function firstLineOf(body: string): string {
 function renderProposedFixBlock(diff: string): string {
   // Trim outer blank lines but preserve the diff content exactly so
   // the operator can copy it into `git apply` without reformatting.
+  //
+  // Two-space indent on the fences is deliberate: the fenced block is
+  // nested inside an existing list item (the caller renders it right
+  // after a `- <path>:<line> - <author>: <title>` line), and Markdown
+  // renderers need >= 2-space indentation to treat the fenced block
+  // as a continuation of the list item rather than a top-level code
+  // block breaking out of the list. GitHub's renderer, Telegram's
+  // markdown flavor, and most chat/mail clients agree on this. Do
+  // not strip the indent.
   const trimmed = diff.replace(/^\n+/, '').replace(/\n+$/, '');
   return ['  ```diff', trimmed, '  ```'].join('\n');
 }
