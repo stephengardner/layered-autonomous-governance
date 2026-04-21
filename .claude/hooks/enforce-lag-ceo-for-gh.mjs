@@ -145,45 +145,53 @@ function inspectBash(payload) {
   // `git push` attribution check. Raw push uses the system credential
   // helper (operator PAT on this machine); the push event's pusher
   // is then recorded as the operator. git-as.mjs threads an App
-  // installation token in via http.extraHeader so the pusher is
+  // installation token via env-injected git config so the pusher is
   // the bot instead. Block anything else.
-  if (/\bgit(?:\.exe)?\s+(?:-[^\s]+\s+)*push\b/.test(command)
-      && !ALLOWED_GIT_WRAPPER_PATTERNS.some((p) => p.test(command))) {
-    const offending = clauses.find((c) => RAW_GIT_PUSH_PATTERN.test(c));
-    if (offending !== undefined) {
-      const reason = [
-        `Raw \`git push\` blocked by .claude/hooks/enforce-lag-ceo-for-gh.mjs.`,
-        ``,
-        `Commit authorship is already the bot via local git config, but`,
-        `the PUSH authenticates via the system credential helper, which`,
-        `caches the operator's personal PAT. GitHub records the pusher`,
-        `of the push event as whoever owns that token - leaking operator`,
-        `identity on every force-push / new-branch push.`,
-        ``,
-        `Rewrite:`,
-        ``,
-        `    FROM:  ${offending.trim()}`,
-        `    TO  :  node scripts/git-as.mjs lag-ceo ${stripGitPrefix(offending.trim())}`,
-        ``,
-        `For a narrowly-scoped legitimate case (e.g. pushing a local`,
-        `branch that must be under operator identity), append`,
-        `\`# allow-raw-git-push\` to the command.`,
-      ].join('\n');
-      process.stdout.write(JSON.stringify({ decision: 'block', reason }));
-      return;
-    }
+  //
+  // Scope the wrapper check to the offending CLAUSE, not the whole
+  // command. A compound like
+  //   `node scripts/git-as.mjs lag-ceo push ...; git push --force`
+  // must NOT be allowed just because an earlier clause was
+  // wrapper-mediated: the raw push at the end still leaks operator
+  // identity. Each clause that contains `git push` must itself be
+  // wrapped (or carry the `# allow-raw-git-push` escape hatch).
+  const offendingPush = clauses.find(
+    (c) => RAW_GIT_PUSH_PATTERN.test(c)
+      && !ALLOWED_GIT_WRAPPER_PATTERNS.some((p) => p.test(c)),
+  );
+  if (offendingPush !== undefined) {
+    const reason = [
+      `Raw \`git push\` blocked by .claude/hooks/enforce-lag-ceo-for-gh.mjs.`,
+      ``,
+      `Commit authorship is already the bot via local git config, but`,
+      `the PUSH authenticates via the system credential helper, which`,
+      `caches the operator's personal PAT. GitHub records the pusher`,
+      `of the push event as whoever owns that token - leaking operator`,
+      `identity on every force-push / new-branch push.`,
+      ``,
+      `Rewrite:`,
+      ``,
+      `    FROM:  ${offendingPush.trim()}`,
+      `    TO  :  node scripts/git-as.mjs lag-ceo ${stripGitPrefix(offendingPush.trim())}`,
+      ``,
+      `For a narrowly-scoped legitimate case (e.g. pushing a local`,
+      `branch that must be under operator identity), append`,
+      `\`# allow-raw-git-push\` to the offending clause.`,
+    ].join('\n');
+    process.stdout.write(JSON.stringify({ decision: 'block', reason }));
+    return;
   }
 
   // Fast path: if gh is not mentioned at all, skip the gh check.
   if (!/\bgh(?:\.exe)?\b/.test(command)) return;
 
-  // If the command is explicitly using one of the allowed wrappers
-  // OR contains the allow-raw-gh escape hatch, allow.
-  for (const p of ALLOWED_WRAPPER_PATTERNS) {
-    if (p.test(command)) return;
-  }
-
-  const offending = clauses.find((c) => RAW_GH_PATTERN.test(c));
+  // Scope the wrapper check to the offending CLAUSE, matching the
+  // per-clause discipline above: a wrapper on one clause does not
+  // exempt a raw `gh` on another clause from attribution rules.
+  const offending = clauses.find(
+    (c) => RAW_GH_PATTERN.test(c)
+      && !ALLOWED_WRAPPER_PATTERNS.some((p) => p.test(c)),
+  );
   if (offending === undefined) return;
 
   const reason = [

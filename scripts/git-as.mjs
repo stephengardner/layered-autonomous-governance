@@ -117,25 +117,43 @@ async function main() {
   // convention consistent with gh-as.mjs).
   console.error(`[git-as] using installation token for role '${role}' (expires ~1h)`);
 
-  const overrides = [
-    '-c', `http.extraHeader=Authorization: Bearer ${token.token}`,
-    // Empty credential.helper suppresses the system helper for this
-    // invocation; the bearer header above is the only auth source.
-    '-c', 'credential.helper=',
-  ];
-
+  // Pass the config overrides via GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n>
+  // / GIT_CONFIG_VALUE_<n> env vars instead of argv `-c key=value`.
+  // Motivation: the bearer token is sensitive; putting it in argv
+  // makes it visible in `ps` / `/proc/<pid>/cmdline` for any local
+  // process that can read the process list. On shared CI runners or
+  // dev hosts that is a broader audience than the operator's own
+  // credential store - and the whole point of the wrapper is to keep
+  // the token scoped to this one subprocess. The env-var form lands
+  // the same git config without exposing the token on argv.
+  //
+  // Index 0 carries the Authorization header that authenticates the
+  // push as the bot App installation. Index 1 clears the system
+  // credential helper so a cached operator PAT does not sneak in
+  // alongside the bearer header.
   let exitCode = 0;
   try {
-    const result = await execa('git', [...overrides, ...gitArgs], {
+    const result = await execa('git', gitArgs, {
       env: {
         ...process.env,
         GIT_TERMINAL_PROMPT: '0',
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_KEY_0: 'http.extraHeader',
+        GIT_CONFIG_VALUE_0: `Authorization: Bearer ${token.token}`,
+        GIT_CONFIG_KEY_1: 'credential.helper',
+        GIT_CONFIG_VALUE_1: '',
       },
       stdio: 'inherit',
       reject: false,
     });
-    if (result.signalDescription) {
-      console.error(`[git-as] git child terminated by signal ${result.signalDescription}`);
+    // Signal detection: `result.signal` is always defined when the
+    // child was killed by a signal; `signalDescription` is the human
+    // label but execa leaves it undefined for uncommon signals. Gate
+    // the fail-closed branch on `signal` (reliable) and only use
+    // `signalDescription` for the operator-facing error message.
+    if (result.signal !== undefined && result.signal !== null) {
+      const label = result.signalDescription ?? result.signal;
+      console.error(`[git-as] git child terminated by signal ${label}`);
       exitCode = 1;
     } else {
       exitCode = typeof result.exitCode === 'number' ? result.exitCode : 0;

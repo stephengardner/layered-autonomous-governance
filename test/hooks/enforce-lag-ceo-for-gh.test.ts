@@ -365,6 +365,34 @@ describe('enforce-lag-ceo-for-gh hook (git push attribution)', () => {
     }
   });
 
+  it('mixed chain blocks the raw push clause even when another clause is wrapper-mediated', async () => {
+    // If one clause uses the wrapper, that must NOT launder a later
+    // raw `git push` in the same compound. Each clause is evaluated
+    // on its own; a wrapper-mediated clause earlier does not exempt
+    // a raw push at the end.
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'node scripts/git-as.mjs lag-ceo push origin feat/A && git push origin feat/B',
+      },
+    });
+    expect(result.decision).toBe('block');
+    expect(result.reason).toMatch(/Raw `git push` blocked/);
+    // The error must cite the RAW clause, not the wrapped one.
+    expect(result.reason).toContain('git push origin feat/B');
+  });
+
+  it('mixed chain blocks the raw gh clause even when another clause is wrapper-mediated', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'node scripts/gh-as.mjs lag-ceo pr view 1 && gh pr list',
+      },
+    });
+    expect(result.decision).toBe('block');
+    expect(result.reason).toMatch(/Raw `gh` CLI call blocked/);
+  });
+
   it('allows `git pushd` (not actually a push subcommand)', async () => {
     // No such git subcommand exists, but the RAW_GIT_PUSH_PATTERN
     // must require `push` as a token, not a prefix match. A typo or
