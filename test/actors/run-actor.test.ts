@@ -287,6 +287,104 @@ describe('runActor', () => {
     }
   });
 
+  it('writes a kill-switch-tripped atom on trip (metadata.kind discriminator)', async () => {
+    // Contract per arch-medium-tier-kill-switch: on a kill-switch
+    // halt the runner emits a durable L1 observation with
+    // metadata.kind='kill-switch-tripped' carrying actor, principal,
+    // trigger, phase, iteration, and session_id for lineage.
+    const host = createMemoryHost();
+    const actor = new ScriptedActor({ observations: [1, 2, 3] });
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 5 },
+      origin: 'test',
+      killSwitch: () => true,
+      killSwitchSessionId: 'test-session-abc',
+    });
+    expect(report.haltReason).toBe('kill-switch');
+    const { atoms } = await host.atoms.query({}, 100);
+    const tripped = atoms.find(
+      (a) => (a.metadata as { kind?: unknown } | null | undefined)?.kind === 'kill-switch-tripped',
+    );
+    expect(tripped).toBeDefined();
+    expect(tripped!.type).toBe('observation');
+    expect(tripped!.layer).toBe('L1');
+    expect(tripped!.metadata).toMatchObject({
+      kind: 'kill-switch-tripped',
+      actor: 'scripted',
+      tripped_by: 'stop-sentinel',
+      phase: 'between-iterations',
+    });
+    expect(tripped!.provenance.source.session_id).toBe('test-session-abc');
+    expect(tripped!.provenance.source.tool).toBe('kill-switch-revocation');
+  });
+
+  it('kill-switch-tripped atom records phase=apply and in_flight_tool when mid-action', async () => {
+    // Halt mid-iteration, after apply N, before apply N+1. The
+    // atom must record phase='apply' and the tool of the action
+    // that WAS about to run (action N+1). This is the audit
+    // information a reviewer needs to reconstruct "where was the
+    // actor when the operator pulled the plug."
+    const host = createMemoryHost();
+    let killed = false;
+    let applyCount = 0;
+    const actor = new ScriptedActor({
+      observations: [1],
+      proposals: [
+        { tool: 'safe-a', payload: 'a' },
+        { tool: 'danger-b', payload: 'b' },
+      ],
+      applyImpl: async () => {
+        applyCount++;
+        if (applyCount === 1) killed = true;
+        return `ok-${applyCount}`;
+      },
+      reflect: () => ({ done: false, progress: true }),
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 3 },
+      origin: 'test',
+      killSwitch: () => killed,
+      killSwitchSessionId: 'test-session-mid',
+    });
+    const { atoms } = await host.atoms.query({}, 100);
+    const tripped = atoms.find(
+      (a) => (a.metadata as { kind?: unknown } | null | undefined)?.kind === 'kill-switch-tripped',
+    );
+    expect(tripped).toBeDefined();
+    expect(tripped!.metadata).toMatchObject({
+      kind: 'kill-switch-tripped',
+      phase: 'apply',
+      in_flight_tool: 'danger-b',
+    });
+  });
+
+  it('no kill-switch-tripped atom on non-kill-switch halts', async () => {
+    const host = createMemoryHost();
+    const actor = new ScriptedActor({
+      observations: [1, 2],
+      reflect: (i) => ({ done: i === 2, progress: true }),
+    });
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 5 },
+      origin: 'test',
+    });
+    expect(report.haltReason).toBe('converged');
+    const { atoms } = await host.atoms.query({}, 100);
+    const tripped = atoms.find(
+      (a) => (a.metadata as { kind?: unknown } | null | undefined)?.kind === 'kill-switch-tripped',
+    );
+    expect(tripped).toBeUndefined();
+  });
+
   it('halts when deadline passed before iteration start', async () => {
     const host = createMemoryHost();
     const actor = new ScriptedActor({ observations: [1, 2, 3] });
