@@ -8,11 +8,11 @@ Source plan: `plan-ship-run-pr-landing-mjs-observe-only-obs-cto-actor-2026042103
 
 Session 2026-04-21 shipped three related layers to force multi-surface PR observation:
 
-- `getPrReviewStatus(pr)` on `PrReviewAdapter` — a composite read covering mergeable + mergeStateStatus + line comments + body-nits + submitted reviews + check-runs + legacy statuses, with a `partial:true` degrade path when any surface fails. Canon: `dev-multi-surface-review-observation`.
-- `scripts/pr-status.mjs` — the canonical CLI wrapper. Prints every surface in one shot.
-- `.claude/hooks/enforce-pr-status-composite.mjs` — PreToolUse hook that blocks ad-hoc `gh pr view` / `gh api .../pulls/<N>` / commits-status / check-runs queries and redirects the agent to `pr-status.mjs`.
+- `getPrReviewStatus(pr)` on `PrReviewAdapter` - a composite read covering mergeable + mergeStateStatus + line comments + body-nits + submitted reviews + check-runs + legacy statuses, with a `partial:true` degrade path when any surface fails. Canon: `dev-multi-surface-review-observation`.
+- `scripts/pr-status.mjs` - the canonical CLI wrapper. Prints every surface in one shot.
+- `.claude/hooks/enforce-pr-status-composite.mjs` - PreToolUse hook that blocks ad-hoc `gh pr view` / `gh api .../pulls/<N>` / commits-status / check-runs queries and redirects the agent to `pr-status.mjs`.
 
-The architectural long-term shape is `arch-pr-state-observation-via-actor-only`: session agents do not poll PR state directly at all; the pr-landing actor is the canonical observer and session agents read its output (atom + PR comment). `pr-status.mjs` is a stepping stone — it wraps the same composite read the actor uses, but invokes it from the session.
+The architectural long-term shape is `arch-pr-state-observation-via-actor-only`: session agents do not poll PR state directly at all; the pr-landing actor is the canonical observer and session agents read its output (atom + PR comment). `pr-status.mjs` is a stepping stone - it wraps the same composite read the actor uses, but invokes it from the session.
 
 PR #58 (this ADR) ships `run-pr-landing.mjs --observe-only`, the actor-native observer: single-shot observe, writes a `pr-observation` atom, posts a PR comment, zero reply/resolve/merge. With it, the final shape is ready: the hook could redirect to `run-pr-landing.mjs --observe-only <N>` instead of `pr-status.mjs <N>`.
 
@@ -22,15 +22,15 @@ PR #58 (this ADR) ships `run-pr-landing.mjs --observe-only`, the actor-native ob
 
 ## Rationale
 
-`dev-substrate-not-prescription` encodes the ≥2-consumer bar for promoting a seam to canonical status. A seam validated by exactly one consumer ossifies around that consumer's needs — the next consumer then has to deform either its own shape or the seam. Wait for a second consumer before committing.
+`dev-substrate-not-prescription` encodes the ≥2-consumer bar for promoting a seam to canonical status. A seam validated by exactly one consumer ossifies around that consumer's needs - the next consumer then has to deform either its own shape or the seam. Wait for a second consumer before committing.
 
 Today's consumers of the composite read:
 
-1. `pr-status.mjs` — directly via the adapter (rehydrated from atom when fresh; API fallback otherwise).
-2. `run-pr-landing.mjs --observe-only` — via the adapter, then written to atom.
-3. `run-pr-landing.mjs` (full mode) — via the adapter during `observe()`.
+1. `pr-status.mjs` - directly via the adapter (rehydrated from atom when fresh; API fallback otherwise).
+2. `run-pr-landing.mjs --observe-only` - via the adapter, then written to atom.
+3. `run-pr-landing.mjs` (full mode) - via the adapter during `observe()`.
 
-All three invoke the adapter from JS; none read the atom. The redirect value is "force the agent through the actor atom trail" — but the atom trail only has one writer so far (the observer itself) and zero non-script readers.
+All three invoke the adapter from JS; none read the atom. The redirect value is "force the agent through the actor atom trail" - but the atom trail only has one writer so far (the observer itself) and zero non-script readers.
 
 Candidate second consumers that would unlock the redirect:
 
