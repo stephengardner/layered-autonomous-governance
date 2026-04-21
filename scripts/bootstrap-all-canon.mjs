@@ -67,6 +67,14 @@ const order = (() => {
 
 console.log(`[bootstrap-all] running ${order.length} bootstrap scripts in sequence`);
 
+// Per-child timeout. Each bootstrap script is a handful of atom
+// writes; cold wall time is ~300ms-1s per script. 20s per child is
+// >> observed and still fails loud rather than hanging forever if a
+// script gets wedged (e.g., blocked on a broken lock file). spawnSync
+// on timeout: result.error = { code: 'ETIMEDOUT' }, result.signal set,
+// result.status null - we handle that branch explicitly.
+const PER_SCRIPT_TIMEOUT_MS = 20_000;
+
 let started = Date.now();
 for (const script of order) {
   const scriptPath = resolve(SCRIPTS_DIR, script);
@@ -78,10 +86,17 @@ for (const script of order) {
   const result = spawnSync('node', [scriptPath], {
     stdio: 'inherit',
     env: process.env,
+    timeout: PER_SCRIPT_TIMEOUT_MS,
   });
   const elapsed = Date.now() - t0;
   if (result.error) {
-    console.error(`[bootstrap-all] ERROR spawning ${script}: ${result.error.message}`);
+    if (result.error?.code === 'ETIMEDOUT') {
+      console.error(
+        `[bootstrap-all] ${script} timed out after ${PER_SCRIPT_TIMEOUT_MS}ms (signal=${result.signal ?? '?'})`,
+      );
+    } else {
+      console.error(`[bootstrap-all] ERROR spawning ${script}: ${result.error.message}`);
+    }
     process.exit(1);
   }
   if (result.status !== 0) {
