@@ -1,11 +1,12 @@
 import { useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, AlertTriangle, Archive } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { ConfidenceBar } from '@/components/confidence-bar/ConfidenceBar';
 import { CopyLinkButton } from '@/components/copy-link/CopyLinkButton';
 import { RawJson } from '@/components/raw-json/RawJson';
-import { asAlternative, type CanonAtom } from '@/services/canon.service';
+import { asAlternative, listReferencers, type CanonAtom } from '@/services/canon.service';
 import { routeForAtomId, routeHref } from '@/state/router.store';
 import styles from './CanonCard.module.css';
 
@@ -169,11 +170,41 @@ function DetailsPanel({ atom }: { atom: CanonAtom }) {
         </Section>
       )}
 
+      <ReferencedBy atomId={atom.id} />
+
       <div className={styles.actionsRow}>
         <CopyLinkButton href={routeHref(routeForAtomId(atom.id), atom.id)} />
         <RawJson value={atom} testId={`raw-json-${atom.id}`} />
       </div>
     </>
+  );
+}
+
+/*
+ * Reverse-reference lookup. Runs only when the parent card is
+ * expanded (component is mounted lazily from the details panel).
+ * TanStack Query caches per-atom-id across remounts, so reopening a
+ * card that was already opened is instant.
+ */
+function ReferencedBy({ atomId }: { atomId: string }) {
+  const query = useQuery({
+    queryKey: ['atoms.references', atomId],
+    queryFn: ({ signal }) => listReferencers(atomId, signal),
+    staleTime: 30_000,
+  });
+  const refs = query.data ?? [];
+  if (query.isPending || refs.length === 0) return null;
+  return (
+    <Section title={`Referenced by (${refs.length})`}>
+      <ul className={styles.refList}>
+        {refs.map((a) => (
+          <li key={a.id} className={styles.referencer}>
+            <span className={styles.referencerType} data-type={a.type}>{a.type}</span>
+            <AtomRef id={a.id} />
+          </li>
+        ))}
+      </ul>
+    </Section>
   );
 }
 

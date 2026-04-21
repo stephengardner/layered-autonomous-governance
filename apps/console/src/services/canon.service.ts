@@ -91,3 +91,20 @@ export async function getCanonStats(signal?: AbortSignal): Promise<CanonStats> {
   );
   return call;
 }
+
+/**
+ * Reverse refs — every atom that points AT `id` via derived_from,
+ * supersedes, superseded_by, or metadata.source_plan. Render under
+ * "Referenced by" on any atom's detail view to make the graph
+ * bidirectional.
+ */
+export async function listReferencers(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ReadonlyArray<CanonAtom>> {
+  return transport.call<ReadonlyArray<CanonAtom>>(
+    'atoms.references',
+    { id },
+    signal ? { signal } : undefined,
+  );
+}

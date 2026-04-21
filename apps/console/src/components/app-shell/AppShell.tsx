@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import { CompromiseBanner } from '@/components/compromise-banner/CompromiseBanner';
 import type { Route } from '@/state/router.store';
 import styles from './AppShell.module.css';
 
@@ -13,6 +14,7 @@ export function AppShell({ route, children }: { route: Route; children: ReactNod
     <div className={styles.shell}>
       <Sidebar route={route} />
       <div className={styles.main}>
+        <CompromiseBanner />
         <Header route={route} />
         <main className={styles.content}>{children}</main>
       </div>

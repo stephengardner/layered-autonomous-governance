@@ -1,6 +1,7 @@
 import { Moon, Sun, Flame } from 'lucide-react';
 import { useThemeStore } from '@/state/theme.store';
 import { DensityToggle } from '@/components/density-toggle/DensityToggle';
+import { DaemonStatusPill } from '@/components/daemon-pill/DaemonStatusPill';
 import type { Route } from '@/state/router.store';
 import styles from './Header.module.css';
 
@@ -44,6 +45,7 @@ export function Header({ route }: { route: Route }) {
         <span className={styles.subtitle}>{meta.subtitle}</span>
       </div>
       <div className={styles.actions}>
+        <DaemonStatusPill />
         <DensityToggle />
         <button
           type="button"

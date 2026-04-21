@@ -57,6 +57,7 @@ interface Atom {
   provenance?: Record<string, unknown>;
   taint?: string;
   superseded_by?: string[];
+  supersedes?: string[];
 }
 
 interface Principal {
@@ -232,6 +233,73 @@ async function handleActivitiesList(params: { limit?: number; types?: string[] }
  * Plans = atoms of type 'plan' OR atoms whose top-level `plan_state`
  * field is present (arch-plan-state-top-level-field).
  */
+/*
+ * Reverse refs = every atom whose provenance or metadata points AT
+ * the given id. Lets the UI surface "this atom is referenced by..."
+ * on any card — turns the derived_from graph bidirectional.
+ */
+async function handleAtomReferences(id: string): Promise<Atom[]> {
+  const all = await readAllAtoms();
+  return all.filter((a) => {
+    if (a.id === id) return false;
+    const derived = (a.provenance as { derived_from?: string[] } | undefined)?.derived_from ?? [];
+    const meta = a.metadata ?? {};
+    const sourcePlan = typeof meta['source_plan'] === 'string' ? meta['source_plan'] : undefined;
+    return (
+      derived.includes(id)
+      || (a.supersedes ?? []).includes(id)
+      || (a.superseded_by ?? []).includes(id)
+      || sourcePlan === id
+    );
+  });
+}
+
+/*
+ * Daemon status summary: the lightest useful digest of what's
+ * happening in .lag/. Computed from atom metadata — no log file
+ * scraping, no external dep. The Console header pill renders this
+ * into a single live/quiet badge.
+ */
+async function handleDaemonStatus(): Promise<{
+  atomCount: number;
+  lastAtomId: string | null;
+  lastAtomCreatedAt: string | null;
+  secondsSinceLastAtom: number | null;
+  atomsInLastHour: number;
+  atomsInLastDay: number;
+  lagDir: string;
+}> {
+  const all = await readAllAtoms();
+  let latest: Atom | null = null;
+  for (const a of all) {
+    if (!a.created_at) continue;
+    if (!latest || a.created_at > latest.created_at) latest = a;
+  }
+  const now = Date.now();
+  const hourAgo = now - 60 * 60 * 1000;
+  const dayAgo = now - 24 * 60 * 60 * 1000;
+  let inHour = 0;
+  let inDay = 0;
+  for (const a of all) {
+    const t = a.created_at ? Date.parse(a.created_at) : NaN;
+    if (Number.isFinite(t)) {
+      if (t >= hourAgo) inHour++;
+      if (t >= dayAgo) inDay++;
+    }
+  }
+  const lastTs = latest?.created_at ? Date.parse(latest.created_at) : NaN;
+  const secondsSince = Number.isFinite(lastTs) ? Math.max(0, Math.round((now - lastTs) / 1000)) : null;
+  return {
+    atomCount: all.length,
+    lastAtomId: latest?.id ?? null,
+    lastAtomCreatedAt: latest?.created_at ?? null,
+    secondsSinceLastAtom: secondsSince,
+    atomsInLastHour: inHour,
+    atomsInLastDay: inDay,
+    lagDir: LAG_DIR,
+  };
+}
+
 async function handlePlansList(): Promise<Atom[]> {
   const all = await readAllAtoms();
   const out = all.filter((a) => {
@@ -319,6 +387,32 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(res, data);
     } catch (err) {
       sendErr(res, 500, 'activities-list-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/atoms.references' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const id = typeof body['id'] === 'string' ? (body['id'] as string) : '';
+    if (!id) {
+      sendErr(res, 400, 'missing-id', 'atoms.references requires { id: string }');
+      return;
+    }
+    try {
+      const data = await handleAtomReferences(id);
+      sendOk(res, data);
+    } catch (err) {
+      sendErr(res, 500, 'atoms-references-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/daemon.status' && req.method === 'POST') {
+    try {
+      const data = await handleDaemonStatus();
+      sendOk(res, data);
+    } catch (err) {
+      sendErr(res, 500, 'daemon-status-failed', (err as Error).message);
     }
     return;
   }
