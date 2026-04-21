@@ -40,9 +40,17 @@ const STATE_DIR = resolve(REPO_ROOT, '.lag');
 // redacted in the operator-action atom so the atom store never
 // captures a secret. Narrow list by design; if we grow past this, the
 // real fix is to stop letting secrets reach argv at all.
+//
+// Short flags intentionally omitted: `-t` clashes with `gh pr create
+// --title` (aliased `-t`) and would destroy PR titles in the audit
+// trail. The realistic token-leak surface for `gh api` is the
+// Authorization header shape (-H "Authorization: bearer ..."), which
+// is value-embedded and not captured by this simple flag-pair list;
+// treat the argv-redaction as best-effort for obvious cases and rely
+// on callers to avoid piping secrets through argv.
 const REDACT_FLAG_NAMES = new Set([
-  '--token', '--auth-token', '--api-key', '--password', '--secret',
-  '-t',
+  '--token', '--auth-token', '--github-token', '--access-token',
+  '--api-key', '--password', '--secret',
 ]);
 
 function redactSecretLikeArgs(args) {
@@ -174,8 +182,9 @@ async function main() {
  *
  * Shape:
  *   type:        'observation'
- *   layer:       'L0' (raw observation; promotion pipeline can lift
- *                later if aggregated queries want it in canon)
+ *   layer:       'L1' (extracted observation, matching the
+ *                agent-observed provenance kind; L0 would be raw
+ *                pre-extraction which these are not)
  *   principal_id: the role (e.g., 'lag-ceo'); authority chain folds
  *                 through the bot identity, operator above, agent
  *                 below in the signed_by chain of the principals
@@ -199,17 +208,28 @@ async function writeOperatorActionAtom(role, args) {
 
   // ID needs to be unique across re-invocations AND stable within
   // one logical call. Includes wall-clock millisecond + pid + a
-  // short uuid suffix so concurrent invocations don't collide and
-  // a retry of the same op produces a new audit entry (intentional
+  // short uuid suffix so concurrent invocations don't collide, and
+  // a retry of the same op produces a new audit entry intentionally
   // (a retry IS a distinct action).
   const id = `op-action-${role}-${nowMs}-${randomUUID().slice(0, 8)}`;
 
   const atom = {
     schema_version: 1,
     id,
-    content: `${role}: gh ${redactedArgs.join(' ')}`,
+    // JSON.stringify preserves argv boundaries faithfully so an
+    // argument containing spaces (e.g., `--title "Land PR 53"`)
+    // reads back as its original tokens instead of collapsing into
+    // ambiguous whitespace. metadata.operator_action.args still
+    // carries the array, but content should not silently lie about
+    // what was invoked.
+    content: `${role}: gh ${JSON.stringify(redactedArgs)}`,
     type: 'observation',
-    layer: 'L0',
+    // L1: agent-observed atoms land at the extracted layer per the
+    // existing observation-contract (see
+    // design/inbox-v1-load-test-commitment.md). L0 would mark this
+    // as raw/untyped which would sit below the promotion pipeline's
+    // aggregation queries.
+    layer: 'L1',
     provenance: {
       kind: 'agent-observed',
       source: {

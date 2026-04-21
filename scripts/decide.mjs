@@ -154,11 +154,17 @@ function diffAtom(existing, expected) {
       diffs.push(`${k}: stored=${JSON.stringify(existing[k])} expected=${JSON.stringify(expected[k])}`);
     }
   }
+  // Bidirectional metadata diff so extra keys on the stored atom
+  // (the hostile-injection class of tampering) are caught too.
+  // One-sided iteration would let a tampered atom with an extra
+  // metadata.* key read as clean if the original spec's keys all
+  // match.
   const em = existing.metadata ?? {};
   const xm = expected.metadata;
-  for (const k of Object.keys(xm)) {
+  const metaKeys = new Set([...Object.keys(em), ...Object.keys(xm)]);
+  for (const k of metaKeys) {
     if (JSON.stringify(em[k]) !== JSON.stringify(xm[k])) {
-      diffs.push(`metadata.${k}: stored vs expected differ`);
+      diffs.push(`metadata.${k}: stored=${JSON.stringify(em[k])} expected=${JSON.stringify(xm[k])}`);
     }
   }
   if (existing.provenance?.kind !== expected.provenance.kind) {

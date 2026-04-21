@@ -114,9 +114,16 @@ function atomFromSpec(spec) {
     type: spec.type,
     layer: 'L3',
     provenance: {
-      kind: 'human-asserted',
+      // operator-seeded (not human-asserted): this atom is written
+      // by a bootstrap script, not by a live conversational /decide
+      // capture. The distinction matters for taint/provenance
+      // analysis - pre-dynamic seed atoms and post-compromise
+      // live-session atoms need to be separable, which is why
+      // ProvenanceKind keeps 'operator-seeded' distinct from
+      // 'human-asserted'.
+      kind: 'operator-seeded',
       source: {
-        tool: 'decide-cli',
+        tool: 'bootstrap-operator-directives',
         agent_id: OPERATOR_ID,
       },
       derived_from: spec.derived_from ?? [],
@@ -139,7 +146,7 @@ function atomFromSpec(spec) {
     metadata: {
       alternatives_rejected: spec.alternatives_rejected,
       what_breaks_if_revisited: spec.what_breaks_if_revisited,
-      source: 'decide-cli',
+      source: 'bootstrap-operator-directives',
     },
   };
 }
@@ -151,11 +158,18 @@ function diffAtom(existing, expected) {
       diffs.push(`${k}: stored=${JSON.stringify(existing[k])} expected=${JSON.stringify(expected[k])}`);
     }
   }
+  // Bidirectional metadata diff so extra keys on the stored atom
+  // (the hostile-injection class of tampering) are caught too.
+  // One-sided iteration lets a tampered atom with an extra
+  // metadata.* key read as clean if the original spec's keys all
+  // match - the exact gap bootstrap-inbox-canon.mjs already closed
+  // via diffPolicyAtom.
   const em = existing.metadata ?? {};
   const xm = expected.metadata;
-  for (const k of Object.keys(xm)) {
+  const metaKeys = new Set([...Object.keys(em), ...Object.keys(xm)]);
+  for (const k of metaKeys) {
     if (JSON.stringify(em[k]) !== JSON.stringify(xm[k])) {
-      diffs.push(`metadata.${k}: stored vs expected differ`);
+      diffs.push(`metadata.${k}: stored=${JSON.stringify(em[k])} expected=${JSON.stringify(xm[k])}`);
     }
   }
   if (existing.provenance?.kind !== expected.provenance.kind) {
