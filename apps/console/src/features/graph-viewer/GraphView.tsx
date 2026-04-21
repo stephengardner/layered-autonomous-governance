@@ -294,12 +294,18 @@ export function GraphView() {
           <GraphHoverTooltip node={nodes.find((n) => n.id === hoverId)!} x={hoverPos.x} y={hoverPos.y} />
         )}
       </div>
-      <AnimatePresence>
-        {selectedAtom && createPortal(
-          <GraphDetailPanel node={selectedAtom} onClose={() => setSelectedId(null)} />,
-          document.body,
-        )}
-      </AnimatePresence>
+      {createPortal(
+        <AnimatePresence>
+          {selectedAtom && (
+            <GraphDetailPanel
+              key={selectedAtom.id}
+              node={selectedAtom}
+              onClose={() => setSelectedId(null)}
+            />
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
     </section>
   );
 }
