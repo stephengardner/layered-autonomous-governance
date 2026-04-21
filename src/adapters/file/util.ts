@@ -3,16 +3,18 @@
  *
  * - Atomic write: write-to-temp, fsync, rename. Prevents partial writes.
  * - Safe read: returns null on ENOENT instead of throwing.
- * - Ensure directory exists (mkdir -p).
+ * - Ensure directory exists (mkdir -p) is re-exported from the substrate
+ *   util so adapters can keep a single import site while substrate
+ *   modules (canon/section) pull the primitive directly from
+ *   ../substrate/util/fs.js without crossing the adapter boundary.
  */
 
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { ensureDir } from '../../substrate/util/fs.js';
 
-export async function ensureDir(dir: string): Promise<void> {
-  await mkdir(dir, { recursive: true });
-}
+export { ensureDir };
 
 /**
  * Write file atomically: to temp path, then rename. Rename is atomic on

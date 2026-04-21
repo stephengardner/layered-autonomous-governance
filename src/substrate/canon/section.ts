@@ -10,7 +10,7 @@
  */
 
 import { readFile, writeFile } from 'node:fs/promises';
-import { ensureDir } from '../../adapters/file/util.js';
+import { ensureDir } from '../util/fs.js';
 import { dirname } from 'node:path';
 
 export const CANON_START = '<!-- lag:canon-start -->';
