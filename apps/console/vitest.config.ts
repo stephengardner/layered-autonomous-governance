@@ -5,10 +5,10 @@ import { dirname, resolve } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 
 /*
- * Vitest config. Deliberately scoped to unit tests in src/ — the
+ * Vitest config. Scoped to unit tests under src/ and server/ — the
  * Playwright e2e specs under tests/e2e/ use @playwright/test which
  * Vitest can't execute. Excluding them here keeps `npm test` fast
- * and focused on pure logic (services, utilities, pure components).
+ * and focused on pure logic (services, utilities, server helpers).
  */
 export default defineConfig({
   resolve: {
@@ -17,7 +17,10 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    include: [
+      'src/**/*.{test,spec}.{ts,tsx}',
+      'server/**/*.{test,spec}.ts',
+    ],
     exclude: [
       '**/node_modules/**',
       '**/dist/**',

@@ -22,6 +22,11 @@ import { readFile, readdir } from 'node:fs/promises';
 import { watch as fsWatch } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+import {
+  atomFilenameFromId,
+  isAllowedOrigin as isAllowedOriginPure,
+  makeAllowedOriginSet,
+} from './security';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -213,22 +218,45 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
   });
 }
 
-function sendJson(res: ServerResponse, status: number, payload: unknown): void {
-  res.writeHead(status, {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
+/*
+ * CORS allowlist is built once at boot from the in-repo defaults
+ * plus an optional env extra list. Pure construction + lookup lives
+ * in ./security so it can be unit-tested without standing up the
+ * HTTP server.
+ */
+const ALLOWED_ORIGINS = makeAllowedOriginSet(process.env['LAG_CONSOLE_ALLOWED_ORIGINS']);
+
+function isAllowedOrigin(origin: string | undefined): boolean {
+  return isAllowedOriginPure(ALLOWED_ORIGINS, origin);
+}
+
+function corsHeadersFor(req: IncomingMessage | undefined): Record<string, string> {
+  const origin = req?.headers.origin;
+  const headers: Record<string, string> = {
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    Vary: 'Origin',
+  };
+  if (typeof origin === 'string' && ALLOWED_ORIGINS.has(origin)) {
+    headers['Access-Control-Allow-Origin'] = origin;
+  }
+  return headers;
+}
+
+function sendJson(req: IncomingMessage | undefined, res: ServerResponse, status: number, payload: unknown): void {
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    ...corsHeadersFor(req),
   });
   res.end(JSON.stringify(payload));
 }
 
-function sendOk<T>(res: ServerResponse, data: T): void {
-  sendJson(res, 200, { ok: true, data });
+function sendOk<T>(req: IncomingMessage, res: ServerResponse, data: T): void {
+  sendJson(req, res, 200, { ok: true, data });
 }
 
-function sendErr(res: ServerResponse, status: number, code: string, message: string): void {
-  sendJson(res, status, { ok: false, error: { code, message } });
+function sendErr(req: IncomingMessage, res: ServerResponse, status: number, code: string, message: string): void {
+  sendJson(req, res, status, { ok: false, error: { code, message } });
 }
 
 // ---------------------------------------------------------------------------
@@ -567,7 +595,7 @@ async function handleAtomReinforce(params: {
   id: string;
   actor_id: string;
 }): Promise<{ id: string; last_reinforced_at: string }> {
-  const filename = `${params.id}.json`;
+  const filename = atomFilenameFromId(params.id);
   const raw = await readFile(join(ATOMS_DIR, filename), 'utf8');
   const atom = JSON.parse(raw) as Atom & { last_reinforced_at?: string; metadata?: Record<string, unknown> };
   const now = new Date().toISOString();
@@ -591,7 +619,7 @@ async function handleAtomMarkStale(params: {
   actor_id: string;
   reason?: string;
 }): Promise<{ id: string; expires_at: string }> {
-  const filename = `${params.id}.json`;
+  const filename = atomFilenameFromId(params.id);
   const raw = await readFile(join(ATOMS_DIR, filename), 'utf8');
   const atom = JSON.parse(raw) as Atom & { expires_at?: string | null; metadata?: Record<string, unknown> };
   const now = new Date().toISOString();
@@ -663,8 +691,18 @@ async function handleAtomPropose(params: {
   const slug = params.content.toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 48);
-  const id = `prop-${slug}-${stamp}`;
+    .slice(0, 48) || 'atom';
+  /*
+   * Append a random nonce so two proposals with the same slug+second
+   * don't collide. Before this, a second click within the same
+   * second produced an identical id + default writeFile (which
+   * overwrites), so the first proposal was silently lost. Using
+   * `crypto.randomBytes` for entropy and writing with `flag: 'wx'`
+   * means the write fails loudly on EEXIST instead of clobbering.
+   */
+  const { randomBytes } = await import('node:crypto');
+  const nonce = randomBytes(3).toString('hex'); // 6 hex chars
+  const id = atomFilenameFromId(`prop-${slug}-${stamp}-${nonce}`).replace(/\.json$/, '');
   const filename = `${id}.json`;
   const atom: Atom & { scope: string; validation_status: string; last_reinforced_at: string } = {
     id,
@@ -689,7 +727,7 @@ async function handleAtomPropose(params: {
   await fsWriteModule.writeFile(
     join(ATOMS_DIR, filename),
     JSON.stringify(atom, null, 2),
-    'utf8',
+    { encoding: 'utf8', flag: 'wx' },
   );
   // The file-watcher will pick up the new file and update the index
   // + broadcast atom.created on its own cycle.
@@ -815,14 +853,32 @@ async function handlePlansList(): Promise<Atom[]> {
 }
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  // CORS preflight.
+  const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+
+  // CORS preflight — only answer with CORS headers for allowlisted
+  // origins. A request from a non-allowlisted origin still gets 204
+  // (so non-CORS clients aren't broken) but without the
+  // Access-Control-Allow-Origin header, so the browser refuses the
+  // subsequent request.
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Content-Type',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    });
+    res.writeHead(204, corsHeadersFor(req));
     res.end();
+    return;
+  }
+
+  /*
+   * Defense-in-depth: reject state-changing requests whose Origin
+   * header is present and not allowlisted. CORS is advisory — the
+   * browser can be bypassed (old browsers, native clients, headers
+   * forged by a proxy). The server must also enforce that a mutation
+   * coming from a foreign origin doesn't go through, because the
+   * mutations here write governance atoms to disk.
+   *
+   * GET stays open so a same-origin-misconfigured client can still
+   * read; only the mutation surface is gated.
+   */
+  if (req.method !== 'GET' && req.method !== 'HEAD' && !isAllowedOrigin(origin)) {
+    sendErr(req, res, 403, 'origin-not-allowed', `Origin ${origin} is not allowlisted for state-changing requests`);
     return;
   }
 
@@ -830,7 +886,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const path = url.pathname;
 
   if (path === '/api/health') {
-    sendOk(res, { ok: true, lagDir: LAG_DIR, atomsDir: ATOMS_DIR });
+    sendOk(req, res, { ok: true, lagDir: LAG_DIR, atomsDir: ATOMS_DIR });
+    return;
+  }
+
+  if (path === '/api/session.current' && req.method === 'POST') {
+    /*
+     * Returns the actor id the server is configured to attribute UI
+     * writes to. Read from `LAG_CONSOLE_ACTOR_ID` env var. If unset,
+     * data.actor_id is null and the UI fails closed on mutations —
+     * per canon `dev-framework-mechanism-only`, the console must NOT
+     * ship hardcoded instance identities. Each deployment configures
+     * this explicitly at boot.
+     */
+    const actorId = process.env['LAG_CONSOLE_ACTOR_ID'] ?? null;
+    sendOk(req, res, { actor_id: actorId });
     return;
   }
 
@@ -846,9 +916,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     };
     try {
       const data = await handleCanonList(params);
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'canon-list-failed', (err as Error).message);
+      sendErr(req, res, 500, 'canon-list-failed', (err as Error).message);
     }
     return;
   }
@@ -856,9 +926,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (path === '/api/canon.stats' && req.method === 'POST') {
     try {
       const data = await handleCanonStats();
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'canon-stats-failed', (err as Error).message);
+      sendErr(req, res, 500, 'canon-stats-failed', (err as Error).message);
     }
     return;
   }
@@ -866,9 +936,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (path === '/api/principals.list' && req.method === 'POST') {
     try {
       const data = await handlePrincipalsList();
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'principals-list-failed', (err as Error).message);
+      sendErr(req, res, 500, 'principals-list-failed', (err as Error).message);
     }
     return;
   }
@@ -885,9 +955,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     };
     try {
       const data = await handleActivitiesList(params);
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'activities-list-failed', (err as Error).message);
+      sendErr(req, res, 500, 'activities-list-failed', (err as Error).message);
     }
     return;
   }
@@ -899,11 +969,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const scope = typeof body['scope'] === 'string' ? (body['scope'] as string) : undefined;
     const atomTypes = Array.isArray(body['atomTypes']) ? (body['atomTypes'] as string[]) : undefined;
     if (!principal_id) {
-      sendErr(res, 400, 'missing-principal', 'canon.applicable requires { principal_id }');
+      sendErr(req, res, 400, 'missing-principal', 'canon.applicable requires { principal_id }');
       return;
     }
     if (!['L0', 'L1', 'L2', 'L3'].includes(layer)) {
-      sendErr(res, 400, 'invalid-layer', 'layer must be L0|L1|L2|L3');
+      sendErr(req, res, 400, 'invalid-layer', 'layer must be L0|L1|L2|L3');
       return;
     }
     try {
@@ -913,9 +983,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         ...(scope !== undefined ? { scope } : {}),
         ...(atomTypes !== undefined ? { atomTypes } : {}),
       });
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'canon-applicable-failed', (err as Error).message);
+      sendErr(req, res, 500, 'canon-applicable-failed', (err as Error).message);
     }
     return;
   }
@@ -925,14 +995,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const id = typeof body['id'] === 'string' ? (body['id'] as string) : '';
     const actor_id = typeof body['actor_id'] === 'string' ? (body['actor_id'] as string) : '';
     if (!id || !actor_id) {
-      sendErr(res, 400, 'missing-params', 'atoms.reinforce requires { id, actor_id }');
+      sendErr(req, res, 400, 'missing-params', 'atoms.reinforce requires { id, actor_id }');
       return;
     }
     try {
       const data = await handleAtomReinforce({ id, actor_id });
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'atom-reinforce-failed', (err as Error).message);
+      const e = err as Error & { code?: string };
+      if (e.code === 'invalid-atom-id') {
+        sendErr(req, res, 400, 'invalid-atom-id', e.message);
+      } else {
+        sendErr(req, res, 500, 'atom-reinforce-failed', e.message);
+      }
     }
     return;
   }
@@ -943,14 +1018,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const actor_id = typeof body['actor_id'] === 'string' ? (body['actor_id'] as string) : '';
     const reason = typeof body['reason'] === 'string' ? (body['reason'] as string) : undefined;
     if (!id || !actor_id) {
-      sendErr(res, 400, 'missing-params', 'atoms.mark-stale requires { id, actor_id }');
+      sendErr(req, res, 400, 'missing-params', 'atoms.mark-stale requires { id, actor_id }');
       return;
     }
     try {
       const data = await handleAtomMarkStale({ id, actor_id, ...(reason !== undefined ? { reason } : {}) });
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'atom-mark-stale-failed', (err as Error).message);
+      const e = err as Error & { code?: string };
+      if (e.code === 'invalid-atom-id') {
+        sendErr(req, res, 400, 'invalid-atom-id', e.message);
+      } else {
+        sendErr(req, res, 500, 'atom-mark-stale-failed', e.message);
+      }
     }
     return;
   }
@@ -961,18 +1041,18 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const actor_id = typeof body['actor_id'] === 'string' ? (body['actor_id'] as string) : '';
     const reason = typeof body['reason'] === 'string' ? (body['reason'] as string) : undefined;
     if (to !== 'off' && to !== 'soft') {
-      sendErr(res, 403, 'tier-not-ui-transitionable', 'UI may only transition kill-switch to off|soft');
+      sendErr(req, res, 403, 'tier-not-ui-transitionable', 'UI may only transition kill-switch to off|soft');
       return;
     }
     if (!actor_id) {
-      sendErr(res, 400, 'missing-actor', 'kill-switch.transition requires { actor_id }');
+      sendErr(req, res, 400, 'missing-actor', 'kill-switch.transition requires { actor_id }');
       return;
     }
     try {
       const data = await handleKillSwitchTransition({ to: to as 'off' | 'soft', actor_id, ...(reason !== undefined ? { reason } : {}) });
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 403, 'kill-switch-transition-refused', (err as Error).message);
+      sendErr(req, res, 403, 'kill-switch-transition-refused', (err as Error).message);
     }
     return;
   }
@@ -985,15 +1065,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const proposer_id = typeof body['proposer_id'] === 'string' ? (body['proposer_id'] as string) : '';
     const scope = typeof body['scope'] === 'string' ? (body['scope'] as string) : undefined;
     if (!content || content.length < 16) {
-      sendErr(res, 400, 'content-too-short', 'content must be at least 16 characters');
+      sendErr(req, res, 400, 'content-too-short', 'content must be at least 16 characters');
       return;
     }
     if (!['directive', 'decision', 'preference', 'reference'].includes(type)) {
-      sendErr(res, 400, 'invalid-type', 'type must be directive|decision|preference|reference');
+      sendErr(req, res, 400, 'invalid-type', 'type must be directive|decision|preference|reference');
       return;
     }
     if (!proposer_id) {
-      sendErr(res, 400, 'missing-proposer', 'proposer_id is required');
+      sendErr(req, res, 400, 'missing-proposer', 'proposer_id is required');
       return;
     }
     try {
@@ -1004,9 +1084,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         proposer_id,
         ...(scope !== undefined ? { scope } : {}),
       });
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'atom-propose-failed', (err as Error).message);
+      sendErr(req, res, 500, 'atom-propose-failed', (err as Error).message);
     }
     return;
   }
@@ -1015,12 +1095,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
     const id = typeof body['id'] === 'string' ? (body['id'] as string) : '';
     const depth = typeof body['depth'] === 'number' ? (body['depth'] as number) : 5;
-    if (!id) { sendErr(res, 400, 'missing-id', 'atoms.chain requires { id: string }'); return; }
+    if (!id) { sendErr(req, res, 400, 'missing-id', 'atoms.chain requires { id: string }'); return; }
     try {
       const data = await handleAtomChain(id, depth);
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'atoms-chain-failed', (err as Error).message);
+      sendErr(req, res, 500, 'atoms-chain-failed', (err as Error).message);
     }
     return;
   }
@@ -1029,12 +1109,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
     const id = typeof body['id'] === 'string' ? (body['id'] as string) : '';
     const depth = typeof body['depth'] === 'number' ? (body['depth'] as number) : 5;
-    if (!id) { sendErr(res, 400, 'missing-id', 'atoms.cascade requires { id: string }'); return; }
+    if (!id) { sendErr(req, res, 400, 'missing-id', 'atoms.cascade requires { id: string }'); return; }
     try {
       const data = await handleAtomCascade(id, depth);
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'atoms-cascade-failed', (err as Error).message);
+      sendErr(req, res, 500, 'atoms-cascade-failed', (err as Error).message);
     }
     return;
   }
@@ -1043,12 +1123,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
     const a = typeof body['a'] === 'string' ? (body['a'] as string) : '';
     const b = typeof body['b'] === 'string' ? (body['b'] as string) : '';
-    if (!a || !b) { sendErr(res, 400, 'missing-ids', 'arbitration.compare requires { a, b }'); return; }
+    if (!a || !b) { sendErr(req, res, 400, 'missing-ids', 'arbitration.compare requires { a, b }'); return; }
     try {
       const data = await handleArbitrationCompare(a, b);
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'arbitration-compare-failed', (err as Error).message);
+      sendErr(req, res, 500, 'arbitration-compare-failed', (err as Error).message);
     }
     return;
   }
@@ -1057,14 +1137,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
     const id = typeof body['id'] === 'string' ? (body['id'] as string) : '';
     if (!id) {
-      sendErr(res, 400, 'missing-id', 'atoms.references requires { id: string }');
+      sendErr(req, res, 400, 'missing-id', 'atoms.references requires { id: string }');
       return;
     }
     try {
       const data = await handleAtomReferences(id);
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'atoms-references-failed', (err as Error).message);
+      sendErr(req, res, 500, 'atoms-references-failed', (err as Error).message);
     }
     return;
   }
@@ -1072,9 +1152,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (path === '/api/canon.drift' && req.method === 'POST') {
     try {
       const data = await handleDriftReport();
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'canon-drift-failed', (err as Error).message);
+      sendErr(req, res, 500, 'canon-drift-failed', (err as Error).message);
     }
     return;
   }
@@ -1088,9 +1168,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
      */
     try {
       const state = await readKillSwitchState();
-      sendOk(res, state);
+      sendOk(req, res, state);
     } catch (err) {
-      sendErr(res, 500, 'kill-switch-state-failed', (err as Error).message);
+      sendErr(req, res, 500, 'kill-switch-state-failed', (err as Error).message);
     }
     return;
   }
@@ -1098,9 +1178,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (path === '/api/daemon.status' && req.method === 'POST') {
     try {
       const data = await handleDaemonStatus();
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'daemon-status-failed', (err as Error).message);
+      sendErr(req, res, 500, 'daemon-status-failed', (err as Error).message);
     }
     return;
   }
@@ -1108,9 +1188,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (path === '/api/plans.list' && req.method === 'POST') {
     try {
       const data = await handlePlansList();
-      sendOk(res, data);
+      sendOk(req, res, data);
     } catch (err) {
-      sendErr(res, 500, 'plans-list-failed', (err as Error).message);
+      sendErr(req, res, 500, 'plans-list-failed', (err as Error).message);
     }
     return;
   }
@@ -1143,7 +1223,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  sendErr(res, 404, 'not-found', `no handler for ${req.method} ${path}`);
+  sendErr(req, res, 404, 'not-found', `no handler for ${req.method} ${path}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1153,7 +1233,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 const server = createServer((req, res) => {
   handleRequest(req, res).catch((err) => {
     console.error('[backend] unhandled:', err);
-    if (!res.headersSent) sendErr(res, 500, 'internal', (err as Error).message);
+    if (!res.headersSent) sendErr(req, res, 500, 'internal', (err as Error).message);
   });
 });
 

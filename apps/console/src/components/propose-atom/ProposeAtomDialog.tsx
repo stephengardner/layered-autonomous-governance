@@ -3,6 +3,8 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { X, Send, CheckCircle2 } from 'lucide-react';
 import { proposeAtom, type AtomType } from '@/services/canon.service';
+import { requireActorId } from '@/services/session.service';
+import { useCurrentActorId } from '@/hooks/useCurrentActorId';
 import styles from './ProposeAtomDialog.module.css';
 
 interface Props {
@@ -27,19 +29,22 @@ const TYPES: ReadonlyArray<{ value: AtomType; label: string; hint: string }> = [
  * is intake — it opens a new door into the governance pipeline, it
  * does not short-circuit the gate.
  *
- * The proposer_id defaults to the current operator (stephen-human).
- * Multi-tenant deployments need auth middleware + real identity
- * resolution before enabling this in shared contexts.
+ * The proposer_id is resolved at mutation time from
+ * `useCurrentActorId`, which reads from the server's
+ * `LAG_CONSOLE_ACTOR_ID` config. `requireActorId` throws loudly if
+ * unset — proposal writes never silently attribute to a fallback
+ * identity (`dev-framework-mechanism-only` canon).
  */
 export function ProposeAtomDialog({ open, onClose }: Props) {
   const [content, setContent] = useState('');
   const [type, setType] = useState<AtomType>('decision');
   const [confidence, setConfidence] = useState(0.8);
   const qc = useQueryClient();
+  const actorId = useCurrentActorId();
 
   const mutation = useMutation({
     mutationFn: (params: { content: string; type: AtomType; confidence: number }) =>
-      proposeAtom({ ...params, proposer_id: 'stephen-human' }),
+      proposeAtom({ ...params, proposer_id: requireActorId(actorId) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['canon'] });
       qc.invalidateQueries({ queryKey: ['activities'] });

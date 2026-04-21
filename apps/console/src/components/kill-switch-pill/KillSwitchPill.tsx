@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ShieldCheck, ShieldAlert, ShieldX, Shield, Power, Pause } from 'lucide-react';
 import { getKillSwitchState, transitionKillSwitch, type KillSwitchTier } from '@/services/kill-switch.service';
+import { requireActorId } from '@/services/session.service';
+import { useCurrentActorId } from '@/hooks/useCurrentActorId';
 import styles from './KillSwitchPill.module.css';
 
 const TIER_ICON: Record<KillSwitchTier, typeof Shield> = {
@@ -37,9 +39,17 @@ export function KillSwitchPill() {
     refetchInterval: 20_000,
   });
 
+  /*
+   * Kill-switch transitions are attributed to the server-resolved
+   * operator identity, not a hardcoded id. If LAG_CONSOLE_ACTOR_ID
+   * isn't set, the mutation throws at click time — a kill-switch
+   * write with no known operator is a governance-integrity red flag,
+   * so we fail loudly instead of silently attributing to a sentinel.
+   */
+  const actorId = useCurrentActorId();
   const mutation = useMutation({
     mutationFn: (to: 'off' | 'soft') =>
-      transitionKillSwitch({ to, actor_id: 'stephen-human', reason: `UI transition to ${to}` }),
+      transitionKillSwitch({ to, actor_id: requireActorId(actorId), reason: `UI transition to ${to}` }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['kill-switch.state'] });
       setMenuOpen(false);

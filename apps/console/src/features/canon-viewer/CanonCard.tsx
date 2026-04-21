@@ -11,6 +11,8 @@ import { RawJson } from '@/components/raw-json/RawJson';
 import { TimeAgo } from '@/components/time-ago/TimeAgo';
 import { AttributionAuditDialog } from '@/components/attribution-audit/AttributionAuditDialog';
 import { asAlternative, listReferencers, listAtomChain, listAtomCascade, reinforceAtom, markAtomStale, type CanonAtom } from '@/services/canon.service';
+import { requireActorId } from '@/services/session.service';
+import { useCurrentActorId } from '@/hooks/useCurrentActorId';
 import { routeForAtomId, routeHref } from '@/state/router.store';
 import styles from './CanonCard.module.css';
 
@@ -202,8 +204,17 @@ function DetailsPanel({ atom }: { atom: CanonAtom }) {
 function MaintenanceActions({ atom }: { atom: CanonAtom }) {
   const [auditOpen, setAuditOpen] = useState(false);
   const qc = useQueryClient();
+  /*
+   * Actor id is resolved at the mutationFn call — NOT baked into a
+   * literal. `requireActorId` throws loudly if the server returned
+   * null (LAG_CONSOLE_ACTOR_ID unset), so a write never silently
+   * attributes to a fallback identity. This is the client half of
+   * `dec-console-session-identity-server-sourced` and closes the
+   * CodeRabbit critical on hardcoded `'stephen-human'`.
+   */
+  const actorId = useCurrentActorId();
   const reinforce = useMutation({
-    mutationFn: () => reinforceAtom({ id: atom.id, actor_id: 'stephen-human' }),
+    mutationFn: () => reinforceAtom({ id: atom.id, actor_id: requireActorId(actorId) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['canon'] });
       qc.invalidateQueries({ queryKey: ['canon.drift'] });
@@ -211,7 +222,7 @@ function MaintenanceActions({ atom }: { atom: CanonAtom }) {
     },
   });
   const markStale = useMutation({
-    mutationFn: () => markAtomStale({ id: atom.id, actor_id: 'stephen-human', reason: 'UI mark-stale' }),
+    mutationFn: () => markAtomStale({ id: atom.id, actor_id: requireActorId(actorId), reason: 'UI mark-stale' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['canon'] });
       qc.invalidateQueries({ queryKey: ['canon.drift'] });
