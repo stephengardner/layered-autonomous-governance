@@ -222,10 +222,34 @@ export async function draftCodeChange(
     const result = await host.llm.judge(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, data, llmOptions);
     rawOutput = result.output;
     modelUsed = result.metadata.model_used;
-    if (Number.isFinite(result.metadata.cost_usd) && result.metadata.cost_usd >= 0) {
-      costUsdSoFar += result.metadata.cost_usd;
+    // Fail closed on invalid cost shape. A NaN / Infinity / negative-
+    // other-than-sentinel value from a broken or compromised adapter
+    // would silently under-count spend, letting a runaway call bypass
+    // the per-PR cap. Adapter convention: `cost_usd: -1` is "unreported"
+    // (honored by MemoryLLM + any adapter the contract names); it
+    // contributes zero to the accumulator rather than failing the call.
+    // Any OTHER invalid shape is rejected.
+    const callCostUsd = result.metadata.cost_usd;
+    if (callCostUsd === -1) {
+      // Adapter did not report; treat as zero contribution. The
+      // cap enforcement still runs downstream; a succession of
+      // -1 reports cannot breach the cap but also cannot be
+      // audited for spend. That is an adapter-choice property
+      // documented in the LLM interface.
+    } else if (!Number.isFinite(callCostUsd) || callCostUsd < 0) {
+      throw new DrafterError(
+        `LLM metadata.cost_usd must be a non-negative finite number (or -1 for unreported); got ${String(callCostUsd)}`,
+        'cost-cap-exceeded',
+        costUsdSoFar,
+      );
+    } else {
+      costUsdSoFar += callCostUsd;
     }
   } catch (err) {
+    // Don't re-wrap our own DrafterError (the cost-shape guard
+    // above throws one); propagate it verbatim so the caller sees
+    // the precise reason.
+    if (err instanceof DrafterError) throw err;
     const reason = err instanceof Error ? err.message : String(err);
     throw new DrafterError(
       `LLM draft call failed: ${reason}`,
@@ -388,7 +412,11 @@ function validatePathScope(
  * surface the same information through the structured-error path.
  */
 export function looksLikeUnifiedDiff(s: string): boolean {
-  return /^--- /m.test(s) && /^\+\+\+ /m.test(s);
+  // Unified diff order is `--- a/<path>` then `+++ b/<path>` on the
+  // next line. A string where `+++` appears before `---` is
+  // structurally malformed; rejecting it prevents a reversed-header
+  // diff from reaching patch application downstream.
+  return /^--- [^\r\n]+(?:\r?\n)\+\+\+ [^\r\n]+/m.test(s);
 }
 
 export { type AtomId };

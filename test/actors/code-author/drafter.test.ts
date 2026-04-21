@@ -457,6 +457,80 @@ describe('draftCodeChange', () => {
       reason: 'cost-cap-exceeded',
     });
   });
+
+  it('rejects NaN / Infinity / other-negative cost_usd from a broken adapter', async () => {
+    // -1 is the documented "unreported" sentinel (MemoryLLM default)
+    // and MUST be accepted as zero-contribution. Any OTHER invalid
+    // shape fails closed: NaN would skew the accumulator silently;
+    // Infinity would claim infinite spend; -0.5 could mean "refund"
+    // which is not a thing. All rejected as cost-cap-exceeded.
+    const plan = mkPlan('broken cost reporter');
+    const fence = mkFence();
+    const base = {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    };
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'ok',
+      confidence: 0.8,
+    });
+    const realJudge = host.llm.judge.bind(host.llm);
+    for (const bad of [Number.NaN, Infinity, -Infinity, -0.5]) {
+      host.llm.judge = (async (s: unknown, y: unknown, d: unknown, o: unknown) => {
+        const res = await realJudge(s as Parameters<typeof realJudge>[0], y as Parameters<typeof realJudge>[1], d as Parameters<typeof realJudge>[2], o as Parameters<typeof realJudge>[3]);
+        return { output: res.output, metadata: { ...res.metadata, cost_usd: bad } };
+      }) as typeof host.llm.judge;
+      await expect(draftCodeChange(host, base)).rejects.toMatchObject({
+        name: 'DrafterError',
+        reason: 'cost-cap-exceeded',
+      });
+    }
+  });
+
+  it('accepts -1 cost_usd as unreported (adapter convention)', async () => {
+    // Plain MemoryLLM reports cost_usd: -1. This test asserts the
+    // default path works without contributing to the accumulator,
+    // so unmodified adapters do not accidentally hit the cap.
+    const plan = mkPlan('unreported cost');
+    const fence = mkFence();
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'ok',
+      confidence: 0.8,
+    });
+    const result = await draftCodeChange(host, {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    });
+    expect(result.totalCostUsd).toBe(0);
+  });
 });
 
 describe('looksLikeUnifiedDiff', () => {
@@ -470,5 +544,20 @@ describe('looksLikeUnifiedDiff', () => {
 
   it('rejects half-formed diff (--- without +++)', () => {
     expect(looksLikeUnifiedDiff('--- a/README.md\n(no plus side)')).toBe(false);
+  });
+
+  it('rejects reversed-header diff (+++ before ---)', () => {
+    // Structural regression: an output where `+++` appears before
+    // `---` is malformed; downstream patch application would either
+    // reject it or apply a reversed patch. The check must enforce
+    // order, not just independent presence.
+    const reversed = [
+      '+++ b/README.md',
+      '--- a/README.md',
+      '@@ -1,1 +1,1 @@',
+      '-# LAG',
+      '+# LAG!',
+    ].join('\n');
+    expect(looksLikeUnifiedDiff(reversed)).toBe(false);
   });
 });
