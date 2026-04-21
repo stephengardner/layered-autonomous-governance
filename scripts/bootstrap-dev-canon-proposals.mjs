@@ -220,7 +220,13 @@ function diffAtom(existing, expected) {
   }
   const em = existing.metadata ?? {};
   const xm = expected.metadata;
-  for (const k of Object.keys(xm)) {
+  // Symmetric key comparison: a stored atom with an EXTRA key (stale
+  // key left over from a prior version of the script, or post-seed
+  // injection) must surface as drift. One-sided comparison would
+  // silently accept legacy/injected metadata, which is exactly the
+  // class of tampering the drift check exists to catch.
+  const allKeys = new Set([...Object.keys(xm), ...Object.keys(em)]);
+  for (const k of allKeys) {
     if (JSON.stringify(em[k]) !== JSON.stringify(xm[k])) {
       diffs.push(`metadata.${k}: stored vs expected differ`);
     }
