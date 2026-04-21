@@ -22,7 +22,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import {
   ClaudeCodeTranscriptSource,
   ObsidianVaultSource,
-} from '../../src/sources/index.js';
+} from '../../src/ingestion/index.js';
 import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principalId = 's12-principal' as PrincipalId;

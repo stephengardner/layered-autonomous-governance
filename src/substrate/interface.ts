@@ -307,7 +307,7 @@ export interface Clock {
 /**
  * Pluggable vector embedder used by AtomStore.search.
  *
- * The default TrigramEmbedder (src/adapters/_common/trigram-embedder.ts)
+ * The default TrigramEmbedder (src/retrieval/trigram-embedder.ts)
  * is good enough for LAG's common case; per-user memory with reinforced
  * subjects; but collapses on pure-semantic paraphrase. Wire a different
  * implementation (Anthropic embeddings API, local mini-lm via

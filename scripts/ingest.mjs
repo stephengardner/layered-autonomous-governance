@@ -40,7 +40,7 @@ import {
   FreshSource,
   GitLogSource,
   ObsidianVaultSource,
-} from '../dist/sources/index.js';
+} from '../dist/ingestion/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 

@@ -451,7 +451,7 @@ const ONNX_ATOMS_PER_CLUSTER = 100;
 
 describeMaybeOnnx('Q-ε onnx-backed retrieval benchmark (2K atoms, all-MiniLM-L6-v2)', () => {
   it('measures top-1 recall, MRR@10, P@10 across 6 query variants under onnx', async () => {
-    const { OnnxMiniLmEmbedder } = await import('../../src/adapters/_common/onnx-minilm-embedder.js');
+    const { OnnxMiniLmEmbedder } = await import('../../src/retrieval/onnx-minilm-embedder.js');
     const embedder = new OnnxMiniLmEmbedder();
 
     // Warm the model up front so the seeding/search timing reflects steady-state.

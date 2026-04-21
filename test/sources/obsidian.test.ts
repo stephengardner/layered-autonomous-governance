@@ -20,7 +20,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import {
   ObsidianVaultSource,
   parseNote,
-} from '../../src/sources/obsidian.js';
+} from '../../src/ingestion/obsidian.js';
 import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principalId = 'obsidian-test' as PrincipalId;

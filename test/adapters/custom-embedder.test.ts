@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createFileHost, type FileHost } from '../../src/adapters/file/index.js';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { TrigramEmbedder } from '../../src/adapters/_common/trigram-embedder.js';
+import { TrigramEmbedder } from '../../src/retrieval/trigram-embedder.js';
 import type { Embedder } from '../../src/substrate/interface.js';
 import type { AtomId, Vector } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';

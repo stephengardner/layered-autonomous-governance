@@ -21,7 +21,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import {
   GitLogSource,
   parseGitLog,
-} from '../../src/sources/git-log.js';
+} from '../../src/ingestion/git-log.js';
 import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principal = 'git-test' as PrincipalId;

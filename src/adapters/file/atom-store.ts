@@ -25,10 +25,10 @@ import type {
   SearchHit,
   Vector,
 } from '../../substrate/types.js';
-import { matches } from '../_common/atom-filter.js';
-import { contentHash as computeContentHash } from '../_common/content-hash.js';
-import { cosineToScore } from '../_common/similarity.js';
-import { TrigramEmbedder } from '../_common/trigram-embedder.js';
+import { matches } from '../../retrieval/atom-filter.js';
+import { contentHash as computeContentHash } from '../../retrieval/content-hash.js';
+import { cosineToScore } from '../../retrieval/similarity.js';
+import { TrigramEmbedder } from '../../retrieval/trigram-embedder.js';
 import {
   atomicWriteFile,
   isEnoent,

@@ -29,7 +29,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import {
   ClaudeCodeTranscriptSource,
   FreshSource,
-} from '../../src/sources/index.js';
+} from '../../src/ingestion/index.js';
 import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principalId = 'source-compose' as PrincipalId;

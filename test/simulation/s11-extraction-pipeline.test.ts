@@ -28,7 +28,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { runExtractionPass } from '../../src/runtime/claims-extraction/index.js';
 import { PromotionEngine } from '../../src/substrate/promotion/index.js';
-import { EXTRACT_CLAIMS, type ExtractClaimsOutput } from '../../src/schemas/index.js';
+import { EXTRACT_CLAIMS, type ExtractClaimsOutput } from '../../src/llm-judge/index.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom, samplePrincipal } from '../fixtures.js';
 

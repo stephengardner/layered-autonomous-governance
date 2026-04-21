@@ -229,7 +229,7 @@ export {
   parseGitLog,
   parseNote as parseObsidianNote,
   listMarkdownRecursive,
-} from './sources/index.js';
+} from './ingestion/index.js';
 export type {
   ClaudeCodeTranscriptSourceOptions,
   GitLogSourceOptions,
@@ -237,7 +237,7 @@ export type {
   IngestReport,
   ObsidianVaultSourceOptions,
   SessionSource,
-} from './sources/index.js';
+} from './ingestion/index.js';
 
 // ---------------------------------------------------------------------------
 // Extraction (Phase 43): L0 raw -> L1 structured claims via LLM judge
@@ -329,7 +329,7 @@ export {
   JUDGE_SCHEMAS,
   SUMMARIZE_DIGEST,
   VALIDATE_CLAIM,
-} from './schemas/index.js';
+} from './llm-judge/index.js';
 export type {
   ClassifyAtomOutput,
   DetectAnomalyOutput,
@@ -339,19 +339,19 @@ export type {
   JudgeSchemaSet,
   SummarizeDigestOutput,
   ValidateClaimOutput,
-} from './schemas/index.js';
+} from './llm-judge/index.js';
 
 // ---------------------------------------------------------------------------
 // Embedders (adapter-agnostic)
 // ---------------------------------------------------------------------------
-export { TrigramEmbedder } from './adapters/_common/trigram-embedder.js';
-export { CachingEmbedder, cacheDirFor } from './adapters/_common/caching-embedder.js';
-export type { CachingEmbedderOptions } from './adapters/_common/caching-embedder.js';
+export { TrigramEmbedder } from './retrieval/trigram-embedder.js';
+export { CachingEmbedder, cacheDirFor } from './retrieval/caching-embedder.js';
+export type { CachingEmbedderOptions } from './retrieval/caching-embedder.js';
 // OnnxMiniLmEmbedder pulls in @huggingface/transformers and a ~90MB model
 // at instantiation time (not import time). Safe to re-export here.
 export {
   OnnxMiniLmEmbedder,
-} from './adapters/_common/onnx-minilm-embedder.js';
+} from './retrieval/onnx-minilm-embedder.js';
 export type {
   OnnxMiniLmOptions,
-} from './adapters/_common/onnx-minilm-embedder.js';
+} from './retrieval/onnx-minilm-embedder.js';

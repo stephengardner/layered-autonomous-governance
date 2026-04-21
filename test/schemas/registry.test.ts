@@ -20,7 +20,7 @@ import {
   VALIDATE_CLAIM,
   type JudgeSchemaId,
   type JudgeSchemaSet,
-} from '../../src/schemas/index.js';
+} from '../../src/llm-judge/index.js';
 
 const allSchemas: ReadonlyArray<[JudgeSchemaId, JudgeSchemaSet<unknown>]> = [
   ['detect-conflict', DETECT_CONFLICT as JudgeSchemaSet<unknown>],

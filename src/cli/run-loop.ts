@@ -17,8 +17,8 @@
 import { parseArgs } from 'node:util';
 import { createFileHost, type FileHost } from '../adapters/file/index.js';
 import { createBridgeHost, type BridgeHost } from '../adapters/bridge/index.js';
-import { CachingEmbedder } from '../adapters/_common/caching-embedder.js';
-import { TrigramEmbedder } from '../adapters/_common/trigram-embedder.js';
+import { CachingEmbedder } from '../retrieval/caching-embedder.js';
+import { TrigramEmbedder } from '../retrieval/trigram-embedder.js';
 import { LoopRunner } from '../runtime/loop/runner.js';
 import type { Embedder, Host } from '../substrate/interface.js';
 import type { PrincipalId } from '../substrate/types.js';
@@ -140,7 +140,7 @@ async function buildEmbedder(args: CliArgs): Promise<Embedder | null> {
   if (args.embedderChoice === 'onnx-minilm') {
     // Dynamic import so the 47-package transformers dep only loads
     // when actually requested.
-    const mod = await import('../adapters/_common/onnx-minilm-embedder.js');
+    const mod = await import('../retrieval/onnx-minilm-embedder.js');
     inner = new mod.OnnxMiniLmEmbedder();
     console.log('[boot] embedder: onnx-minilm (Xenova/all-MiniLM-L6-v2)');
   } else {

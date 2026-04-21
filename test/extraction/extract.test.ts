@@ -21,7 +21,7 @@ import {
   extractClaimsFromAtom,
   runExtractionPass,
 } from '../../src/runtime/claims-extraction/index.js';
-import { EXTRACT_CLAIMS, type ExtractClaimsOutput } from '../../src/schemas/index.js';
+import { EXTRACT_CLAIMS, type ExtractClaimsOutput } from '../../src/llm-judge/index.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
