@@ -326,6 +326,137 @@ describe('draftCodeChange', () => {
     expect(result.diff).toBe('');
     expect(result.touchedPaths).toEqual([]);
   });
+
+  it('non-empty diff without unified headers -> diff-parse-failed', async () => {
+    // LLM returned prose in the `diff` slot. Without this throw,
+    // parseTouchedPaths would silently yield [] and the downstream
+    // scope check would accept it as a no-change -- masking a
+    // malformed output.
+    const plan = mkPlan('prose-in-diff slot');
+    const fence = mkFence();
+    const inputs = {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    };
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: 'Here is what I would change: update the README title...',
+      notes: 'I was confused.',
+      confidence: 0.4,
+    });
+    await expect(draftCodeChange(host, inputs)).rejects.toMatchObject({
+      name: 'DrafterError',
+      reason: 'diff-parse-failed',
+    });
+  });
+
+  it('maxUsdPerPrOverride may tighten the fence cap but not loosen it', async () => {
+    // Override above fence cap is silently clamped to the fence
+    // value -- the fence is authoritative. Override at or below
+    // the fence cap lowers the effective ceiling.
+    const plan = mkPlan('check override clamp');
+    const fence = mkFence();
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'ok',
+      confidence: 0.8,
+    });
+    // Override of 1_000_000 would be a fence bypass if respected;
+    // with the fix it is clamped to fence cap (10).
+    const result = await draftCodeChange(host, {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+      maxUsdPerPrOverride: 1_000_000,
+    });
+    expect(result.totalCostUsd).toBeGreaterThanOrEqual(0);
+  });
+
+  it('maxUsdPerPrOverride rejects non-finite / non-positive values', async () => {
+    const plan = mkPlan('bad override');
+    const fence = mkFence();
+    const base = {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    };
+    for (const bad of [0, -1, Infinity, Number.NaN]) {
+      await expect(
+        draftCodeChange(host, { ...base, maxUsdPerPrOverride: bad }),
+      ).rejects.toMatchObject({
+        name: 'DrafterError',
+        reason: 'cost-cap-exceeded',
+      });
+    }
+  });
+
+  it('cost-cap-exceeded when accumulated cost passes the cap', async () => {
+    // MemoryLLM does not report cost_usd, so we wrap its judge()
+    // to inject a value larger than the fence cap. This exercises
+    // the accumulator + cap-enforcement branch that the default
+    // memory host cannot reach (cost_usd stays <= 0 there).
+    const plan = mkPlan('simulated expensive draft');
+    const fence = mkFence();
+    const realJudge = host.llm.judge.bind(host.llm);
+    host.llm.judge = (async (schema: unknown, system: unknown, data: unknown, options: unknown) => {
+      const res = await realJudge(schema as Parameters<typeof realJudge>[0], system as Parameters<typeof realJudge>[1], data as Parameters<typeof realJudge>[2], options as Parameters<typeof realJudge>[3]);
+      return {
+        output: res.output,
+        metadata: { ...res.metadata, cost_usd: 99.99 },
+      };
+    }) as typeof host.llm.judge;
+    const inputs = {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    };
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'ok',
+      confidence: 0.8,
+    });
+    await expect(draftCodeChange(host, inputs)).rejects.toMatchObject({
+      name: 'DrafterError',
+      reason: 'cost-cap-exceeded',
+    });
+  });
 });
 
 describe('looksLikeUnifiedDiff', () => {

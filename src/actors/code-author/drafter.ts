@@ -63,6 +63,13 @@ export interface DraftCodeChangeInputs {
    * issues a warning but proceeds; path validation then skips.
    * Provenance-grade plans specify this field; a plan from a
    * freeform request may not.
+   *
+   * Entries MUST be exact file paths (no directories, globs, or
+   * patterns). The scope check does strict equality against this
+   * set; a directory entry like `src/foo/` would silently reject
+   * every touched path as an escape. Callers generating scopes
+   * from plan metadata must expand directories/globs to explicit
+   * file lists before reaching this boundary.
    */
   readonly targetPaths: ReadonlyArray<string>;
   /** Prose description of "done" from the plan; forwarded to the LLM prompt. */
@@ -179,7 +186,23 @@ export async function draftCodeChange(
   host: Host,
   inputs: DraftCodeChangeInputs,
 ): Promise<DraftResult> {
-  const costCap = inputs.maxUsdPerPrOverride ?? inputs.fence.perPrCostCap.max_usd_per_pr;
+  // Fence cap is authoritative: an operator-override MAY tighten it
+  // (lower the ceiling for a specific run) but MUST NOT loosen it.
+  // Accepting `maxUsdPerPrOverride: 1_000_000` would silently bypass
+  // pol-code-author-per-pr-cost-cap, which is exactly the fence
+  // bypass the atom exists to prevent. Validate the override shape
+  // (positive + finite) before using it; mirrors the fence-load
+  // invariant that the loader applies to the atom itself.
+  const fenceCap = inputs.fence.perPrCostCap.max_usd_per_pr;
+  const override = inputs.maxUsdPerPrOverride;
+  if (override !== undefined && (!Number.isFinite(override) || override <= 0)) {
+    throw new DrafterError(
+      `maxUsdPerPrOverride must be a positive finite number; got ${JSON.stringify(override)}`,
+      'cost-cap-exceeded',
+      0,
+    );
+  }
+  const costCap = override !== undefined ? Math.min(override, fenceCap) : fenceCap;
   let costUsdSoFar = 0;
 
   const llmOptions: LlmOptions = {
@@ -223,6 +246,19 @@ export async function draftCodeChange(
   }
 
   const parsed = validateDraftOutput(rawOutput, costUsdSoFar);
+
+  // A non-empty "diff" string that lacks `--- `/`+++ ` headers is
+  // the LLM producing prose in the diff slot. Catch it here so the
+  // downstream path-scope check (which silently treats empty
+  // touched-paths as "no change") does not let a malformed diff
+  // slip through to git ops.
+  if (parsed.diff.trim().length > 0 && !looksLikeUnifiedDiff(parsed.diff)) {
+    throw new DrafterError(
+      'LLM "diff" field is non-empty but lacks unified-diff headers',
+      'diff-parse-failed',
+      costUsdSoFar,
+    );
+  }
 
   const touched = parseTouchedPaths(parsed.diff);
   validatePathScope(touched, inputs.targetPaths, costUsdSoFar);
@@ -308,19 +344,16 @@ function parseTouchedPaths(diff: string): string[] {
   const paths = new Set<string>();
   const minusRe = /^--- (?:a\/)?([^\s\r\n]+)/gm;
   const plusRe = /^\+\+\+ (?:b\/)?([^\s\r\n]+)/gm;
+  // The capture group is non-optional; the match always yields a
+  // string at index 1 when successful. The only real filter is
+  // /dev/null (which appears on one side of a create/delete diff
+  // and is not an actual path in the tree).
   let m: RegExpExecArray | null;
   while ((m = minusRe.exec(diff)) !== null) {
-    if (m[1] !== '/dev/null' && m[1] !== undefined) paths.add(m[1]);
+    if (m[1] !== '/dev/null') paths.add(m[1]!);
   }
   while ((m = plusRe.exec(diff)) !== null) {
-    if (m[1] !== '/dev/null' && m[1] !== undefined) paths.add(m[1]);
-  }
-  if (paths.size === 0) {
-    // An empty or comment-only diff is treated as "no touched paths";
-    // path-scope validation trivially passes, but the caller can
-    // spot "diff string produced no `---/+++` headers" via a
-    // downstream DrafterError('diff-parse-failed') check when the
-    // diff string is non-empty.
+    if (m[1] !== '/dev/null') paths.add(m[1]!);
   }
   return Array.from(paths);
 }
