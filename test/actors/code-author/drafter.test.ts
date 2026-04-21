@@ -1,0 +1,343 @@
+/**
+ * Unit tests for draftCodeChange.
+ *
+ * Exercises:
+ *   - happy path: LLM returns a valid diff, drafter returns it with
+ *     cost, model, touched paths
+ *   - LLM call fails -> DrafterError(llm-call-failed)
+ *   - LLM output missing `diff` / `notes` / `confidence` ->
+ *     DrafterError(schema-validation-failed)
+ *   - confidence out of [0,1] -> DrafterError(schema-validation-failed)
+ *   - diff touches a path outside plan scope -> DrafterError(diff-path-escape)
+ *   - diff with empty paths + non-empty target list -> no escape error
+ *     (treat as "no change produced," caller decides retry/skip)
+ *   - looksLikeUnifiedDiff smoke
+ */
+
+import { describe, expect, it, beforeEach } from 'vitest';
+import { createMemoryHost } from '../../../src/adapters/memory/index.js';
+import type { MemoryHost } from '../../../src/adapters/memory/index.js';
+import {
+  DRAFT_SCHEMA,
+  DRAFT_SYSTEM_PROMPT,
+  DrafterError,
+  draftCodeChange,
+  looksLikeUnifiedDiff,
+} from '../../../src/actors/code-author/drafter.js';
+import type {
+  CodeAuthorFence,
+} from '../../../src/actors/code-author/fence.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../../src/types.js';
+
+const NOW = '2026-04-21T12:00:00.000Z' as Time;
+const CODE_AUTHOR = 'code-author' as PrincipalId;
+
+function mkFence(overrides: Partial<CodeAuthorFence> = {}): CodeAuthorFence {
+  return Object.freeze({
+    signedPrOnly: Object.freeze({
+      subject: 'code-author-authorship',
+      output_channel: 'signed-pr',
+      allowed_direct_write_paths: Object.freeze([]),
+      require_app_identity: true,
+    }),
+    perPrCostCap: Object.freeze({
+      subject: 'code-author-per-pr-cost-cap',
+      max_usd_per_pr: 10,
+      include_retries: true,
+    }),
+    ciGate: Object.freeze({
+      subject: 'code-author-ci-gate',
+      required_checks: Object.freeze(['Node 22 on ubuntu-latest']),
+      require_all: true,
+      max_check_age_ms: 600_000,
+    }),
+    writeRevocationOnStop: Object.freeze({
+      subject: 'code-author-write-revocation',
+      on_stop_action: 'close-pr-with-revocation-comment',
+      draft_atoms_layer: 'L0',
+      revocation_atom_type: 'code-author-revoked',
+    }),
+    warnings: Object.freeze([]),
+    ...overrides,
+  });
+}
+
+function mkPlan(content: string, title = 'Test plan'): Atom {
+  return {
+    schema_version: 1,
+    id: 'plan-drafter-test-1' as AtomId,
+    content,
+    type: 'plan',
+    layer: 'L1',
+    provenance: {
+      kind: 'agent-observed',
+      source: { agent_id: 'cto-actor', session_id: 'test' },
+      derived_from: [],
+    },
+    confidence: 0.85,
+    created_at: NOW,
+    last_reinforced_at: NOW,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: 'cto-actor' as PrincipalId,
+    taint: 'clean',
+    plan_state: 'executing',
+    metadata: { title },
+  };
+}
+
+const SAMPLE_DIFF = [
+  '--- a/README.md',
+  '+++ b/README.md',
+  '@@ -1,2 +1,2 @@',
+  '-# LAG',
+  '+# LAG (Layered Autonomous Governance)',
+  '',
+].join('\n');
+
+describe('draftCodeChange', () => {
+  let host: MemoryHost;
+
+  beforeEach(() => {
+    host = createMemoryHost();
+  });
+
+  it('happy path: LLM returns a valid diff; drafter returns diff + cost + touched paths', async () => {
+    const plan = mkPlan('# Bump README title\n\nExpand the title.');
+    const fence = mkFence();
+    const inputs = {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      successCriteria: 'Title is more descriptive',
+      model: 'claude-opus-4-7',
+    };
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: 'Title is more descriptive',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'Simple title expansion.',
+      confidence: 0.9,
+    });
+
+    const result = await draftCodeChange(host, inputs);
+    expect(result.diff).toBe(SAMPLE_DIFF);
+    expect(result.notes).toBe('Simple title expansion.');
+    expect(result.confidence).toBe(0.9);
+    expect(result.touchedPaths).toEqual(['README.md']);
+    // MemoryLLM does not report cost; adapter returns 0 and drafter accumulates it.
+    expect(result.totalCostUsd).toBeGreaterThanOrEqual(0);
+  });
+
+  it('LLM throws -> DrafterError(llm-call-failed)', async () => {
+    const plan = mkPlan('unregistered request');
+    const fence = mkFence();
+    // No response registered; MemoryLLM throws UnsupportedError on judge.
+    await expect(
+      draftCodeChange(host, {
+        plan,
+        fence,
+        targetPaths: ['README.md'],
+        model: 'claude-opus-4-7',
+      }),
+    ).rejects.toMatchObject({
+      name: 'DrafterError',
+      reason: 'llm-call-failed',
+    });
+  });
+
+  it('LLM output missing diff field -> schema-validation-failed', async () => {
+    const plan = mkPlan('malformed response');
+    const fence = mkFence();
+    const inputs = {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    };
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      // missing `diff`
+      notes: 'No diff',
+      confidence: 0.5,
+    });
+    await expect(draftCodeChange(host, inputs)).rejects.toMatchObject({
+      name: 'DrafterError',
+      reason: 'schema-validation-failed',
+    });
+  });
+
+  it('confidence out of [0,1] -> schema-validation-failed', async () => {
+    const plan = mkPlan('bad confidence');
+    const fence = mkFence();
+    const inputs = {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    };
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'ok',
+      confidence: 1.5,
+    });
+    await expect(draftCodeChange(host, inputs)).rejects.toMatchObject({
+      name: 'DrafterError',
+      reason: 'schema-validation-failed',
+    });
+  });
+
+  it('diff touches path outside plan target_paths -> diff-path-escape', async () => {
+    const plan = mkPlan('path escape');
+    const fence = mkFence();
+    const inputs = {
+      plan,
+      fence,
+      targetPaths: ['README.md'], // declared scope
+      model: 'claude-opus-4-7',
+    };
+    const offRoadDiff = [
+      '--- a/README.md',
+      '+++ b/README.md',
+      '@@ -1,1 +1,1 @@',
+      '-# LAG',
+      '+# LAG!',
+      '--- a/src/sneaky.ts',
+      '+++ b/src/sneaky.ts',
+      '@@ -0,0 +1,1 @@',
+      '+export const backdoor = true;',
+      '',
+    ].join('\n');
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: offRoadDiff,
+      notes: 'expanded scope without asking',
+      confidence: 0.8,
+    });
+    await expect(draftCodeChange(host, inputs)).rejects.toMatchObject({
+      name: 'DrafterError',
+      reason: 'diff-path-escape',
+    });
+  });
+
+  it('empty targetPaths -> scope check is skipped (freeform plan)', async () => {
+    const plan = mkPlan('no declared scope');
+    const fence = mkFence();
+    const inputs = {
+      plan,
+      fence,
+      targetPaths: [], // no scope declared
+      model: 'claude-opus-4-7',
+    };
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: [],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'ok',
+      confidence: 0.8,
+    });
+    const result = await draftCodeChange(host, inputs);
+    expect(result.touchedPaths).toEqual(['README.md']);
+  });
+
+  it('empty diff + declared scope -> no error (caller decides)', async () => {
+    const plan = mkPlan('llm produced no change');
+    const fence = mkFence();
+    const inputs = {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    };
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: '',
+      notes: 'Plan is already satisfied; no change required.',
+      confidence: 0.3,
+    });
+    const result = await draftCodeChange(host, inputs);
+    expect(result.diff).toBe('');
+    expect(result.touchedPaths).toEqual([]);
+  });
+});
+
+describe('looksLikeUnifiedDiff', () => {
+  it('recognizes a well-formed diff', () => {
+    expect(looksLikeUnifiedDiff(SAMPLE_DIFF)).toBe(true);
+  });
+
+  it('rejects prose-only output', () => {
+    expect(looksLikeUnifiedDiff('Just prose; no diff headers.')).toBe(false);
+  });
+
+  it('rejects half-formed diff (--- without +++)', () => {
+    expect(looksLikeUnifiedDiff('--- a/README.md\n(no plus side)')).toBe(false);
+  });
+});
