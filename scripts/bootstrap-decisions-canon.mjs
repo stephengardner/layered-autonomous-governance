@@ -5,8 +5,12 @@
  *
  * Source plan: plan-seed-8-canon-atoms-recording-proactive-c-cto-actor-
  * 20260420193913, produced by the CTO self-audit run that followed the
- * inbox V1 merge. Eight atoms: three arch/decisions, one decision, and
- * four directives. All additive; none overturn existing canon.
+ * inbox V1 merge. Nine atoms: three arch/decisions, one decision, and
+ * five directives (the fifth, `dev-multi-surface-review-observation`,
+ * was added later after a gap was observed in the escalation-notifier
+ * delivery work: the agent was polling one status API and missed that
+ * CodeRabbit had completed a review on another surface). All additive;
+ * none overturn existing canon.
  *
  * Idempotent per atom id; drift against stored shape fails loud.
  */
@@ -199,6 +203,32 @@ const ATOMS = [
       SOURCE_PLAN,
     ],
     what_breaks_if_revisited: 'Tied to cto-actor principal continuity; if CTO principal is replaced, re-derive.',
+  },
+  {
+    id: 'dev-multi-surface-review-observation',
+    type: 'directive',
+    content:
+      'When observing a pull-request review state, ALL surfaces must be '
+      + 'queried: submitted reviews, line comments, issue comments, '
+      + 'check-runs, legacy statuses, and mergeStateStatus. A single-'
+      + 'surface observation is incomplete and must not drive merge or '
+      + 'escalation decisions. Concrete mechanism: PrReviewAdapter '
+      + 'exposes getPrReviewStatus(pr) which returns the composite '
+      + 'state; callers use that single call instead of polling '
+      + 'individual endpoints and risking stale reads. Partial reads '
+      + 'degrade to partial:true rather than throwing so callers can '
+      + 'make an explicit choice about acting on an incomplete view.',
+    alternatives_rejected: [
+      'Poll one endpoint and hope (observed to miss CR completion in session 2026-04-20; agent checked legacy status, missed review-comments + reviews APIs)',
+      'Poll each endpoint inline at call sites (duplicates logic; easy to regress; no single source of truth for "is this PR ready")',
+      'Rely on mergeStateStatus alone (collapses distinct states; masks which surface is blocking; unusable for debugging)',
+    ],
+    derived_from: [
+      'arch-host-interface-boundary',
+      'inv-provenance-every-write',
+    ],
+    what_breaks_if_revisited:
+      'Only revisit if GitHub consolidates review surfaces into one API; until then, partial reads produce silent-failure bugs in the escalation notifier and any actor observing PR state.',
   },
 ];
 

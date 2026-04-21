@@ -21,11 +21,15 @@ import type {
   GithubReviewThreadsResponse,
 } from '../../external/github/index.js';
 import type {
+  CheckRun,
+  LegacyStatus,
   PrCommentOutcome,
   PrIdentifier,
   PrReviewAdapter,
+  PrReviewStatus,
   ReviewComment,
   ReviewReplyOutcome,
+  SubmittedReview,
 } from './adapter.js';
 import { extractProposedFixFromCommentBody, parseCodeRabbitReviewBody } from './coderabbit-body-parser.js';
 
@@ -327,6 +331,202 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       }
     }
     return out;
+  }
+
+  /**
+   * Composite multi-surface read. Per canon directive
+   * `dev-multi-surface-review-observation`, we fetch every surface
+   * that can contribute to "is this PR ready to merge" and return
+   * them together so callers never make decisions on a partial view.
+   *
+   * Surfaces fetched concurrently:
+   *   - mergeable + mergeStateStatus + head SHA via GraphQL
+   *   - line comments via listUnresolvedComments
+   *   - body-nits via listReviewBodyNits
+   *   - submitted reviews via REST /pulls/{n}/reviews
+   *   - check-runs via REST /commits/{sha}/check-runs
+   *   - legacy statuses via REST /commits/{sha}/status
+   *
+   * Per-surface failures degrade the snapshot to `partial: true` +
+   * `partialSurfaces: [...]` rather than throwing. Callers decide
+   * whether the missing surface matters for the decision at hand.
+   */
+  async getPrReviewStatus(pr: PrIdentifier): Promise<PrReviewStatus> {
+    const partialSurfaces: string[] = [];
+
+    const prMeta = this.fetchPrMetaGql(pr).catch((err) => {
+      partialSurfaces.push(`pr-meta: ${err?.message ?? err}`);
+      return {
+        mergeable: null as boolean | null,
+        mergeStateStatus: null as string | null,
+        headOid: null as string | null,
+      };
+    });
+    const lineComments = this.listUnresolvedComments(pr).catch((err) => {
+      partialSurfaces.push(`line-comments: ${err?.message ?? err}`);
+      return [] as ReadonlyArray<ReviewComment>;
+    });
+    const bodyNits = this.listReviewBodyNits(pr).catch((err) => {
+      partialSurfaces.push(`body-nits: ${err?.message ?? err}`);
+      return [] as ReadonlyArray<ReviewComment>;
+    });
+    const submittedReviews = this.fetchSubmittedReviews(pr).catch((err) => {
+      partialSurfaces.push(`submitted-reviews: ${err?.message ?? err}`);
+      return [] as ReadonlyArray<SubmittedReview>;
+    });
+
+    const [meta, line, body, reviews] = await Promise.all([
+      prMeta,
+      lineComments,
+      bodyNits,
+      submittedReviews,
+    ]);
+
+    // check-runs and legacy statuses hang off the HEAD commit; fetch
+    // after prMeta resolves so we know the SHA. If prMeta failed
+    // (no head oid), mark both as partial rather than guess.
+    let checkRuns: ReadonlyArray<CheckRun> = [];
+    let legacyStatuses: ReadonlyArray<LegacyStatus> = [];
+    if (meta.headOid) {
+      const [cr, ls] = await Promise.all([
+        this.fetchCheckRuns(pr, meta.headOid).catch((err) => {
+          partialSurfaces.push(`check-runs: ${err?.message ?? err}`);
+          return [] as ReadonlyArray<CheckRun>;
+        }),
+        this.fetchLegacyStatuses(pr, meta.headOid).catch((err) => {
+          partialSurfaces.push(`legacy-statuses: ${err?.message ?? err}`);
+          return [] as ReadonlyArray<LegacyStatus>;
+        }),
+      ]);
+      checkRuns = cr;
+      legacyStatuses = ls;
+    } else {
+      partialSurfaces.push('check-runs: no head oid');
+      partialSurfaces.push('legacy-statuses: no head oid');
+    }
+
+    return {
+      pr,
+      mergeable: meta.mergeable,
+      mergeStateStatus: meta.mergeStateStatus,
+      lineComments: line,
+      bodyNits: body,
+      submittedReviews: reviews,
+      checkRuns,
+      legacyStatuses,
+      partial: partialSurfaces.length > 0,
+      partialSurfaces,
+    };
+  }
+
+  private async fetchPrMetaGql(pr: PrIdentifier): Promise<{
+    mergeable: boolean | null;
+    mergeStateStatus: string | null;
+    headOid: string | null;
+  }> {
+    const query = `
+      query PrMeta($owner: String!, $repo: String!, $number: Int!) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $number) {
+            mergeable
+            mergeStateStatus
+            headRefOid
+          }
+        }
+      }
+    `;
+    type Resp = {
+      readonly repository: {
+        readonly pullRequest: {
+          readonly mergeable: string | null;
+          readonly mergeStateStatus: string | null;
+          readonly headRefOid: string | null;
+        };
+      };
+    };
+    const data = await this.client.graphql<Resp>(query, {
+      owner: pr.owner,
+      repo: pr.repo,
+      number: pr.number,
+    });
+    const node = data.repository.pullRequest;
+    // GraphQL `mergeable` is an enum: MERGEABLE, CONFLICTING, UNKNOWN.
+    // Coerce to a boolean for callers; null for UNKNOWN.
+    const mergeable = node.mergeable === 'MERGEABLE'
+      ? true
+      : node.mergeable === 'CONFLICTING'
+        ? false
+        : null;
+    return {
+      mergeable,
+      mergeStateStatus: node.mergeStateStatus,
+      headOid: node.headRefOid,
+    };
+  }
+
+  private async fetchSubmittedReviews(pr: PrIdentifier): Promise<ReadonlyArray<SubmittedReview>> {
+    type Resp = ReadonlyArray<{
+      readonly user?: { readonly login: string } | null;
+      readonly state: string;
+      readonly submitted_at?: string;
+      readonly body?: string;
+    }>;
+    const reviews = await this.client.rest<Resp>({
+      path: `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`,
+      query: { per_page: 100 },
+    });
+    if (!reviews) return [];
+    return reviews.map((r) => {
+      const base: SubmittedReview = {
+        author: r.user?.login ?? 'unknown',
+        state: r.state,
+        submittedAt: r.submitted_at ?? '',
+      };
+      return r.body ? { ...base, body: r.body } : base;
+    });
+  }
+
+  private async fetchCheckRuns(pr: PrIdentifier, sha: string): Promise<ReadonlyArray<CheckRun>> {
+    type Resp = {
+      readonly check_runs: ReadonlyArray<{
+        readonly name: string;
+        readonly status: string;
+        readonly conclusion: string | null;
+        readonly app?: { readonly slug?: string };
+      }>;
+    };
+    const data = await this.client.rest<Resp>({
+      path: `repos/${pr.owner}/${pr.repo}/commits/${sha}/check-runs`,
+      query: { per_page: 100 },
+    });
+    if (!data) return [];
+    return data.check_runs.map((r) => {
+      const base: CheckRun = {
+        name: r.name,
+        status: r.status,
+        conclusion: r.conclusion,
+      };
+      return r.app?.slug ? { ...base, appSlug: r.app.slug } : base;
+    });
+  }
+
+  private async fetchLegacyStatuses(pr: PrIdentifier, sha: string): Promise<ReadonlyArray<LegacyStatus>> {
+    type Resp = {
+      readonly statuses: ReadonlyArray<{
+        readonly context: string;
+        readonly state: string;
+        readonly updated_at: string;
+      }>;
+    };
+    const data = await this.client.rest<Resp>({
+      path: `repos/${pr.owner}/${pr.repo}/commits/${sha}/status`,
+    });
+    if (!data) return [];
+    return data.statuses.map((s) => ({
+      context: s.context,
+      state: s.state,
+      updatedAt: s.updated_at,
+    }));
   }
 
   /**
