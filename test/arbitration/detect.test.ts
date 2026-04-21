@@ -4,7 +4,7 @@ import {
   DETECT_SCHEMA,
   DETECT_SYSTEM,
   detectConflict,
-} from '../../src/arbitration/detect.js';
+} from '../../src/substrate/arbitration/detect.js';
 import { sampleAtom } from '../fixtures.js';
 
 describe('detectConflict', () => {

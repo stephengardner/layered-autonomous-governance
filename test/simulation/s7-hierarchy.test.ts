@@ -20,8 +20,8 @@ import {
   DETECT_SCHEMA,
   DETECT_SYSTEM,
   MAX_PRINCIPAL_DEPTH,
-} from '../../src/arbitration/index.js';
-import { sourceRank, sourceRankDecide } from '../../src/arbitration/source-rank.js';
+} from '../../src/substrate/arbitration/index.js';
+import { sourceRank, sourceRankDecide } from '../../src/substrate/arbitration/source-rank.js';
 import type { PrincipalId, Time } from '../../src/substrate/types.js';
 import { samplePrincipal, sampleAtom } from '../fixtures.js';
 

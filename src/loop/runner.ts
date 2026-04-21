@@ -23,8 +23,8 @@ import {
   PromotionEngine,
   type PromotableLayer,
   type PromotionOutcome,
-} from '../promotion/index.js';
-import { CanonMdManager, type RenderOptions } from '../canon-md/index.js';
+} from '../substrate/promotion/index.js';
+import { CanonMdManager, type RenderOptions } from '../substrate/canon/index.js';
 import { decayedConfidence, shouldUpdateConfidence } from './decay.js';
 import { ttlExpirePatch } from './ttl.js';
 import {

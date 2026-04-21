@@ -48,7 +48,7 @@ import {
   arbitrate,
   DETECT_SCHEMA,
   DETECT_SYSTEM,
-} from '../../src/arbitration/index.js';
+} from '../../src/substrate/arbitration/index.js';
 import type { Atom, PrincipalId } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 

@@ -109,13 +109,13 @@ export {
   DETECT_SYSTEM,
   sourceRank,
   ValidatorRegistry,
-} from './arbitration/index.js';
+} from './substrate/arbitration/index.js';
 export type {
   ArbiterOptions,
   ConflictPair,
   Decision,
   DecisionOutcome,
-} from './arbitration/index.js';
+} from './substrate/arbitration/index.js';
 
 // ---------------------------------------------------------------------------
 // Kill switch (medium-tier runtime revocation)
@@ -123,13 +123,13 @@ export type {
 export {
   createKillSwitch,
   isKillSwitchAbortReason,
-} from './kill-switch/index.js';
+} from './substrate/kill-switch/index.js';
 export type {
   CreateKillSwitchOptions,
   KillSwitchAbortReason,
   KillSwitchController,
   KillSwitchTrigger,
-} from './kill-switch/index.js';
+} from './substrate/kill-switch/index.js';
 
 // ---------------------------------------------------------------------------
 // Per-principal LLM tool policy (resolves disallowedTools from canon)
@@ -150,7 +150,7 @@ export {
   evaluate as evaluatePromotion,
   PromotionEngine,
   sourceLayerFor,
-} from './promotion/index.js';
+} from './substrate/promotion/index.js';
 export type {
   LayerThresholds,
   PromotableLayer,
@@ -160,7 +160,7 @@ export type {
   PromotionOutcome,
   PromotionOutcomeKind,
   PromotionThresholds,
-} from './promotion/index.js';
+} from './substrate/promotion/index.js';
 
 // ---------------------------------------------------------------------------
 // Loop (decay + TTL + tick runner)
@@ -194,11 +194,11 @@ export {
   renderCanonMarkdown,
   replaceSection,
   writeSection,
-} from './canon-md/index.js';
+} from './substrate/canon/index.js';
 export type {
   CanonSectionWriteResult,
   RenderOptions,
-} from './canon-md/index.js';
+} from './substrate/canon/index.js';
 
 // ---------------------------------------------------------------------------
 // Daemon (Phase 41): ambient Telegram runtime
@@ -311,11 +311,11 @@ export type {
 // ---------------------------------------------------------------------------
 export {
   propagateCompromiseTaint,
-} from './taint/index.js';
+} from './substrate/taint/index.js';
 export type {
   PropagateOptions,
   TaintReport,
-} from './taint/index.js';
+} from './substrate/taint/index.js';
 
 // ---------------------------------------------------------------------------
 // Judge schemas

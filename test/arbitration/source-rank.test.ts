@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { sourceRank, sourceRankDecide } from '../../src/arbitration/source-rank.js';
-import type { ConflictPair } from '../../src/arbitration/types.js';
+import { sourceRank, sourceRankDecide } from '../../src/substrate/arbitration/source-rank.js';
+import type { ConflictPair } from '../../src/substrate/arbitration/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 describe('sourceRank (scoring)', () => {

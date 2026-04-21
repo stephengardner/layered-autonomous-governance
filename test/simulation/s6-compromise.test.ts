@@ -23,8 +23,8 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { renderCanonMarkdown } from '../../src/canon-md/generator.js';
-import { propagateCompromiseTaint } from '../../src/taint/propagate.js';
+import { renderCanonMarkdown } from '../../src/substrate/canon/generator.js';
+import { propagateCompromiseTaint } from '../../src/substrate/taint/propagate.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { samplePrincipal, sampleAtom } from '../fixtures.js';
 

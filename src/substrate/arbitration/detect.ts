@@ -9,13 +9,13 @@
  * DATA never as prompt. Schema is enforced.
  */
 
-import type { Host } from '../substrate/interface.js';
-import { DETECT_CONFLICT } from '../schemas/index.js';
-import type { Atom } from '../substrate/types.js';
+import type { Host } from '../interface.js';
+import { DETECT_CONFLICT } from '../../schemas/index.js';
+import type { Atom } from '../types.js';
 import type { ConflictKind, ConflictPair } from './types.js';
 
 // Re-export for backward compatibility with prior call sites.
-// New code should import directly from '../schemas/index.js'.
+// New code should import directly from '../../schemas/index.js'.
 export const DETECT_SCHEMA = DETECT_CONFLICT.jsonSchema;
 export const DETECT_SYSTEM = DETECT_CONFLICT.systemPrompt;
 

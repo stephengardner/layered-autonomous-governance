@@ -20,7 +20,7 @@
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline';
 import { createFileHost } from '../adapters/file/index.js';
-import { propagateCompromiseTaint } from '../taint/propagate.js';
+import { propagateCompromiseTaint } from '../substrate/taint/propagate.js';
 import type { PrincipalId } from '../substrate/types.js';
 
 interface CliArgs {

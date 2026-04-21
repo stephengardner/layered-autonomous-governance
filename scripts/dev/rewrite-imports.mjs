@@ -13,10 +13,20 @@
  *     Matches when resolved spec starts with `from + /`. Replaces the prefix
  *     with `to`. Used for entire-directory moves. Preserves the subpath.
  *
+ * Two-pass resolution per specifier:
+ *   1. Resolve the spec from the importer's CURRENT dir and look for a
+ *      matching REWRITES `from` entry.
+ *   2. If no match, check whether the importer itself lives inside a
+ *      moved directory. If so, re-resolve the spec from the importer's
+ *      PRE-MOVE dir and take the rule `to` (or the unmoved target) as
+ *      the true target. This handles "importer moved in phase N+1, spec
+ *      already pointed at a phase-N post-move target" - the rewriter
+ *      produces the new relative path from the importer's current dir.
+ *
  * Only relative specifiers (starting with './' or '../') are rewritten;
  * bare-specifier imports (npm packages) are left alone.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { dirname, relative, resolve, sep } from 'node:path';
 
@@ -27,7 +37,12 @@ const REWRITES = [
   { kind: 'file', from: resolve('src/types.ts'),     to: resolve('src/substrate/types.ts') },
   { kind: 'file', from: resolve('src/interface.ts'), to: resolve('src/substrate/interface.ts') },
   { kind: 'file', from: resolve('src/errors.ts'),    to: resolve('src/substrate/errors.ts') },
-  // Phase B2 additions go here. Phase B3, C1, D1-D3, D4, E1 each append.
+  // Phase B2:
+  { kind: 'dir', from: resolve('src/arbitration'),   to: resolve('src/substrate/arbitration') },
+  { kind: 'dir', from: resolve('src/promotion'),     to: resolve('src/substrate/promotion') },
+  { kind: 'dir', from: resolve('src/taint'),         to: resolve('src/substrate/taint') },
+  { kind: 'dir', from: resolve('src/kill-switch'),   to: resolve('src/substrate/kill-switch') },
+  { kind: 'dir', from: resolve('src/canon-md'),      to: resolve('src/substrate/canon') },
 ];
 
 function resolveSpec(fileDir, spec) {
@@ -52,13 +67,64 @@ function matchRewrite(resolved) {
   return null;
 }
 
+// If the importer lives inside a moved dir (its abs path starts with some
+// rule's `to`), map that path back to the pre-move location so stale specs
+// written before the importer moved can still be resolved.
+function preMoveDir(fileDir) {
+  for (const r of REWRITES) {
+    if (r.kind !== 'dir') continue;
+    const withSep = r.to + sep;
+    if (fileDir === r.to || fileDir.startsWith(withSep)) {
+      return r.from + fileDir.slice(r.to.length);
+    }
+  }
+  return null;
+}
+
+// A resolved path is "valid" if the file actually exists on disk. Also
+// accepts index.ts under a resolved-as-dir path (common for 'foo.js' imports
+// that really mean 'foo/index.ts' after a directory rename). Does not chase
+// other resolution rules (extension shims, tsconfig paths) - the rewriter
+// operates on literal relative `.js` specifiers only.
+function isValidTarget(resolved) {
+  if (existsSync(resolved)) return true;
+  // '.ts' file absent - try '/index.ts' (rare but possible after dir moves).
+  if (resolved.endsWith('.ts')) {
+    const asIndex = resolved.replace(/\.ts$/, '/index.ts');
+    if (existsSync(asIndex)) return true;
+  }
+  return false;
+}
+
 function rewriteSpec(fileDir, spec) {
   const resolved = resolveSpec(fileDir, spec);
   const newResolved = matchRewrite(resolved);
-  if (!newResolved) return null;
-  let rel = relative(fileDir, newResolved).replace(/\\/g, '/');
-  if (!rel.startsWith('.')) rel = './' + rel;
-  return rel.replace(/\.ts$/, '.js');
+  if (newResolved) {
+    let rel = relative(fileDir, newResolved).replace(/\\/g, '/');
+    if (!rel.startsWith('.')) rel = './' + rel;
+    return rel.replace(/\.ts$/, '.js');
+  }
+  // If the current-dir resolution already points at a valid target, the
+  // spec is already correct - no rewrite needed. This short-circuit is
+  // what keeps the rewriter idempotent after a cross-phase fixup lands.
+  if (isValidTarget(resolved)) return null;
+  // Second chance: the importer itself may have moved, leaving a stale
+  // spec that resolves to a bogus (non-existent) path. Re-resolve from
+  // its pre-move directory; if that points at a valid current target,
+  // compute the correct relative path from the importer's CURRENT dir.
+  const preDir = preMoveDir(fileDir);
+  if (preDir) {
+    const preResolved = resolveSpec(preDir, spec);
+    const preRewritten = matchRewrite(preResolved);
+    const target = preRewritten ?? (isValidTarget(preResolved) ? preResolved : null);
+    if (target) {
+      let rel = relative(fileDir, target).replace(/\\/g, '/');
+      if (!rel.startsWith('.')) rel = './' + rel;
+      const newSpec = rel.replace(/\.ts$/, '.js');
+      return newSpec === spec ? null : newSpec;
+    }
+  }
+  return null;
 }
 
 const IMPORT_RE = /(from\s+["']|import\s*\(\s*["']|import\s+["'])(\.{1,2}\/[^"']+?\.js)(["'])/g;

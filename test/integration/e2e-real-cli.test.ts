@@ -17,7 +17,7 @@ import { ClaudeCliLLM } from '../../src/adapters/claude-cli/llm.js';
 import {
   applyDecision,
   arbitrate,
-} from '../../src/arbitration/index.js';
+} from '../../src/substrate/arbitration/index.js';
 import type { Host } from '../../src/substrate/interface.js';
 import type { LLM } from '../../src/substrate/interface.js';
 import type { PrincipalId } from '../../src/substrate/types.js';

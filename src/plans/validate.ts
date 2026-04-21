@@ -17,8 +17,8 @@
  * `canonFilter`.
  */
 
-import { arbitrate } from '../arbitration/index.js';
-import type { ConflictPair, Decision } from '../arbitration/types.js';
+import { arbitrate } from '../substrate/arbitration/index.js';
+import type { ConflictPair, Decision } from '../substrate/arbitration/types.js';
 import type { Host } from '../substrate/interface.js';
 import type { Atom, AtomFilter, PrincipalId } from '../substrate/types.js';
 

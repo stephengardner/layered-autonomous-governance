@@ -6,7 +6,7 @@ import {
   DETECT_SCHEMA,
   DETECT_SYSTEM,
   ValidatorRegistry,
-} from '../../src/arbitration/index.js';
+} from '../../src/substrate/arbitration/index.js';
 import type { PrincipalId } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 

@@ -24,7 +24,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import {
   DETECT_SCHEMA,
   DETECT_SYSTEM,
-} from '../../src/arbitration/index.js';
+} from '../../src/substrate/arbitration/index.js';
 import {
   transitionPlanState,
   validatePlan,
