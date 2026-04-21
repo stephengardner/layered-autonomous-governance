@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, AlertTriangle, Archive } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
+import { AtomGraph } from '@/components/atom-graph/AtomGraph';
 import { ConfidenceBar } from '@/components/confidence-bar/ConfidenceBar';
 import { CopyLinkButton } from '@/components/copy-link/CopyLinkButton';
 import { RawJson } from '@/components/raw-json/RawJson';
@@ -170,6 +171,9 @@ function DetailsPanel({ atom }: { atom: CanonAtom }) {
         </Section>
       )}
 
+      <Section title="Local graph">
+        <AtomGraph atom={atom} />
+      </Section>
       <ReferencedBy atomId={atom.id} />
       <WhyThisAtom atomId={atom.id} />
       <CascadeIfTainted atomId={atom.id} />
