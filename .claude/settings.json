@@ -10,6 +10,14 @@
           { "type": "command", "command": "node .claude/hooks/enforce-pr-status-composite.mjs" }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/periodic-memory-reflection.mjs" }
+        ]
+      }
     ]
   }
 }
