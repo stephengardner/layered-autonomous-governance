@@ -29,7 +29,7 @@ import { resolve, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createFileHost } from '../dist/adapters/file/index.js';
-import { ClaudeCliLLM } from '../dist/adapters/claude-cli/index.js';
+import { ClaudeCliLLM } from '../dist/adapters/llm/claude-cli/index.js';
 import { runActor } from '../dist/actors/index.js';
 import {
   HostLlmPlanningJudgment,

@@ -17,7 +17,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ExecaOptions, ExecaReturnValue } from 'execa';
 import { Readable } from 'node:stream';
-import { ClaudeCliLLM } from '../../../src/adapters/claude-cli/llm.js';
+import { ClaudeCliLLM } from '../../../src/adapters/llm/claude-cli/llm.js';
 
 function makeExecStub(stdout: string, extra: Partial<ExecaReturnValue<string>> = {}) {
   const calls: Array<{

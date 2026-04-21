@@ -8,3 +8,9 @@
  */
 
 export { ClaudeCliLLM, type ClaudeCliOptions } from './llm.js';
+
+// Also re-export the Claude CLI invocation utility. It was previously
+// inside src/daemon/ but is vendor-specific to Claude CLI, so it belongs
+// with the rest of the Claude CLI adapter.
+export { invokeClaude } from './invoke.js';
+export type { InvokeClaudeOptions, InvokeClaudeResult } from './invoke.js';
