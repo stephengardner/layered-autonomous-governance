@@ -60,6 +60,9 @@ const REWRITES = [
   { kind: 'file', from: resolve('src/adapters/notifier/telegram.ts'),            to: resolve('src/adapters/notifier/telegram/notifier.ts') },
   { kind: 'file', from: resolve('src/daemon/format.ts'),                         to: resolve('src/adapters/notifier/telegram/format.ts') },
   { kind: 'file', from: resolve('src/daemon/cli-renderer/telegram-channel.ts'),  to: resolve('src/adapters/notifier/telegram/channel.ts') },
+  // Phase D2:
+  { kind: 'dir',  from: resolve('src/adapters/claude-cli'),    to: resolve('src/adapters/llm/claude-cli') },
+  { kind: 'file', from: resolve('src/daemon/invoke-claude.ts'), to: resolve('src/adapters/llm/claude-cli/invoke.ts') },
 ];
 
 function resolveSpec(fileDir, spec) {

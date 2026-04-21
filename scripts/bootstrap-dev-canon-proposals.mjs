@@ -111,7 +111,7 @@ const ATOMS = [
       + 'caller resolves it from the principal\'s policy atom at invocation time. Fallback when no policy '
       + 'atom resolves is deny-all with an escalation, per inv-governance-before-autonomy.',
     alternatives_rejected: [
-      'Keep DEFAULT_DISALLOWED_TOOLS in code, tune per-actor by editing src/adapters/claude-cli/llm.ts',
+      'Keep DEFAULT_DISALLOWED_TOOLS in code, tune per-actor by editing src/adapters/llm/claude-cli/llm.ts',
       'Allow every tool by default for every LLM actor; rely solely on downstream fences (signed-PR, CI, STOP)',
       'Ship a single framework-level per-role default (planner-default, executor-default) without per-principal atoms',
     ],

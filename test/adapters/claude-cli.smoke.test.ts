@@ -11,7 +11,7 @@
 
 import { execa } from 'execa';
 import { describe, expect, it } from 'vitest';
-import { ClaudeCliLLM } from '../../src/adapters/claude-cli/llm.js';
+import { ClaudeCliLLM } from '../../src/adapters/llm/claude-cli/llm.js';
 
 const RUN_REAL = process.env.LAG_REAL_CLI === '1';
 

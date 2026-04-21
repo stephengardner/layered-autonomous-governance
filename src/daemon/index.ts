@@ -43,7 +43,7 @@ import {
 } from '../adapters/notifier/telegram/notifier.js';
 import { assembleContext, type AssembleContextOptions } from './context.js';
 import { markdownToTelegramHtml, splitMarkdownForTelegram } from '../adapters/notifier/telegram/format.js';
-import { invokeClaude, type InvokeClaudeOptions } from './invoke-claude.js';
+import { invokeClaude, type InvokeClaudeOptions } from '../adapters/llm/claude-cli/invoke.js';
 import { CliRenderer } from './cli-renderer/index.js';
 import type { CliRendererChannel, InlineAction } from './cli-renderer/index.js';
 import { createTelegramChannel } from '../adapters/notifier/telegram/channel.js';
@@ -1076,8 +1076,8 @@ export function splitForTelegram(text: string, maxChars: number): string[] {
 }
 
 // Re-exports for callers that compose the daemon.
-export { invokeClaude } from './invoke-claude.js';
-export type { InvokeClaudeOptions, InvokeClaudeResult } from './invoke-claude.js';
+export { invokeClaude } from '../adapters/llm/claude-cli/invoke.js';
+export type { InvokeClaudeOptions, InvokeClaudeResult } from '../adapters/llm/claude-cli/invoke.js';
 export { assembleContext } from './context.js';
 export type { AssembleContextOptions, AssembledContext } from './context.js';
 export {

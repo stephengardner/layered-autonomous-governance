@@ -107,7 +107,7 @@ describe('LAGDaemon.tick', () => {
       canonFilePath: canonPath,
       principalResolver: () => PRINCIPAL,
       fetchImpl,
-      invokeImpl: invoke as unknown as typeof import('../../src/daemon/invoke-claude.js').invokeClaude,
+      invokeImpl: invoke as unknown as typeof import('../../src/adapters/llm/claude-cli/invoke.js').invokeClaude,
     });
 
     const processed = await daemon.tick();

@@ -7,7 +7,7 @@
  *
  * Why this exists
  * ---------------
- * `src/adapters/claude-cli/llm.ts` ships a `DEFAULT_DISALLOWED_TOOLS`
+ * `src/adapters/llm/claude-cli/llm.ts` ships a `DEFAULT_DISALLOWED_TOOLS`
  * that denies every code-interacting tool for every actor. That
  * posture is correct for the zero-config safety floor but too
  * restrictive for real actors: planners grounding plans in tactical
