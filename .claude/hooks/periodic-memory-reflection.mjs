@@ -71,6 +71,7 @@ import {
 } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag', 'session-memory-reflection');
@@ -127,7 +128,7 @@ const LOCK_WAIT_MS = 5000;
 const LOCK_POLL_MS = 25;
 const LOCK_STALE_MS = 10_000;
 
-function acquireLock(lockPath) {
+async function acquireLock(lockPath) {
   const deadline = Date.now() + LOCK_WAIT_MS;
   while (Date.now() < deadline) {
     try {
@@ -136,10 +137,6 @@ function acquireLock(lockPath) {
       return true;
     } catch (err) {
       if (err?.code !== 'EEXIST') throw err;
-      // Stale-lock reclaim: if the existing lock is older than
-      // LOCK_STALE_MS, delete it and retry immediately. A crashed
-      // prior holder should not be able to wedge every future
-      // PostToolUse invocation for this session.
       try {
         const st = statSync(lockPath);
         if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
@@ -147,13 +144,16 @@ function acquireLock(lockPath) {
           continue;
         }
       } catch {
-        // Lock disappeared between stat and our retry - fine.
         continue;
       }
-      // Busy-wait briefly; the contending writer is normally done
-      // in a few ms.
-      const until = Date.now() + LOCK_POLL_MS;
-      while (Date.now() < until) { /* spin */ }
+      // Async sleep yields to the event loop so contending processes
+      // on the same core make progress. A synchronous busy-wait here
+      // pegs CPU: with 10 concurrent PostToolUse processes on a 2-core
+      // Windows runner, the spin kept every contender hot and none
+      // could complete their write inside LOCK_WAIT_MS, dropping all
+      // increments. setTimeout/await releases the core so the lock
+      // holder finishes quickly.
+      await sleep(LOCK_POLL_MS);
     }
   }
   return false;
@@ -163,7 +163,7 @@ function releaseLock(lockPath) {
   try { unlinkSync(lockPath); } catch { /* already gone */ }
 }
 
-function bumpCounter(sessionId) {
+async function bumpCounter(sessionId) {
   try {
     if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
   } catch {
@@ -172,7 +172,7 @@ function bumpCounter(sessionId) {
   const path = resolve(STATE_DIR, `${sessionId}.json`);
   const lockPath = resolve(STATE_DIR, `${sessionId}.lock`);
 
-  if (!acquireLock(lockPath)) return null;
+  if (!(await acquireLock(lockPath))) return null;
   try {
     let count = 0;
     if (existsSync(path)) {
@@ -237,7 +237,7 @@ async function main() {
   }
 
   const every = getEvery();
-  const count = bumpCounter(sessionId);
+  const count = await bumpCounter(sessionId);
   if (count === null) process.exit(0);
 
   if (count % every !== 0) process.exit(0);
