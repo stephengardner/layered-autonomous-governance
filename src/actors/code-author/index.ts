@@ -60,3 +60,15 @@ export type {
   GitIdentity,
   GitOpsErrorReason,
 } from './git-ops.js';
+
+export {
+  PrCreationError,
+  createDraftPr,
+  renderPrBody,
+} from './pr-creation.js';
+export type {
+  CreatePrInputs,
+  CreatePrResult,
+  PrBodyInputs,
+  PrCreationErrorReason,
+} from './pr-creation.js';
