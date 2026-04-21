@@ -15,8 +15,8 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CachingEmbedder, cacheDirFor } from '../../src/adapters/_common/caching-embedder.js';
-import { TrigramEmbedder } from '../../src/adapters/_common/trigram-embedder.js';
+import { CachingEmbedder, cacheDirFor } from '../../src/retrieval/caching-embedder.js';
+import { TrigramEmbedder } from '../../src/retrieval/trigram-embedder.js';
 import type { Embedder } from '../../src/substrate/interface.js';
 import type { Vector } from '../../src/substrate/types.js';
 import { runEmbedderSpec } from '../conformance/shared/embedder-spec.js';

@@ -67,6 +67,10 @@ const REWRITES = [
   { kind: 'file', from: resolve('src/daemon/voice.ts'), to: resolve('src/adapters/transcriber/whisper/whisper.ts') },
   // Phase D4:
   { kind: 'dir', from: resolve('src/daemon'), to: resolve('src/runtime/daemon') },
+  // Phase E1:
+  { kind: 'dir', from: resolve('src/sources'),          to: resolve('src/ingestion') },
+  { kind: 'dir', from: resolve('src/schemas'),          to: resolve('src/llm-judge') },
+  { kind: 'dir', from: resolve('src/adapters/_common'), to: resolve('src/retrieval') },
 ];
 
 function resolveSpec(fileDir, spec) {

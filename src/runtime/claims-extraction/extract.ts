@@ -22,7 +22,7 @@ import type { Host } from '../../substrate/interface.js';
 import {
   EXTRACT_CLAIMS,
   type ExtractClaimsOutput,
-} from '../../schemas/index.js';
+} from '../../llm-judge/index.js';
 import type {
   Atom,
   AtomFilter,

@@ -21,7 +21,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import {
   ClaudeCodeTranscriptSource,
   parseLine,
-} from '../../src/sources/claude-code.js';
+} from '../../src/ingestion/claude-code.js';
 import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principalId = 'ingest-test' as PrincipalId;

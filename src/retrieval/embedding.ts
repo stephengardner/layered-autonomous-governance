@@ -1,4 +1,4 @@
-import type { Vector } from '../../substrate/types.js';
+import type { Vector } from '../substrate/types.js';
 
 const DEFAULT_DIM = 128;
 

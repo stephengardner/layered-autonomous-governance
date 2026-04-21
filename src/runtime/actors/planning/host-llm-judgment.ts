@@ -21,7 +21,7 @@
 
 import type { Host } from '../../../substrate/interface.js';
 import type { Atom, AtomId } from '../../../substrate/types.js';
-import { PLAN_CLASSIFY, PLAN_DRAFT } from '../../../schemas/index.js';
+import { PLAN_CLASSIFY, PLAN_DRAFT } from '../../../llm-judge/index.js';
 import type {
   PlanningClassification,
   PlanningContext,
