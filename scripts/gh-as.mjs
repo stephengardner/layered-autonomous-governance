@@ -23,15 +23,50 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import {
   createCredentialsStore,
 } from '../dist/actors/provisioning/index.js';
 import {
   fetchInstallationToken,
 } from '../dist/external/github-app/index.js';
+import { createFileHost } from '../dist/adapters/file/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
+
+// Argv tokens that might carry secrets (tokens, passwords, keys). When
+// one of these flags appears, the value immediately following it is
+// redacted in the operator-action atom so the atom store never
+// captures a secret. Narrow list by design; if we grow past this, the
+// real fix is to stop letting secrets reach argv at all.
+const REDACT_FLAG_NAMES = new Set([
+  '--token', '--auth-token', '--api-key', '--password', '--secret',
+  '-t',
+]);
+
+function redactSecretLikeArgs(args) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    out.push(a);
+    // Catch both `--flag value` and `--flag=value` shapes. The equals
+    // form embeds the secret in the same token; we still redact it.
+    if (typeof a === 'string' && a.includes('=')) {
+      const idx = a.indexOf('=');
+      const flag = a.slice(0, idx);
+      if (REDACT_FLAG_NAMES.has(flag)) {
+        out[out.length - 1] = `${flag}=<redacted>`;
+      }
+      continue;
+    }
+    if (REDACT_FLAG_NAMES.has(a) && i + 1 < args.length) {
+      out.push('<redacted>');
+      i++;
+    }
+  }
+  return out;
+}
 
 async function main() {
   const role = process.argv[2];
@@ -68,6 +103,22 @@ async function main() {
   } catch (err) {
     console.error(`[gh-as] token mint failed: ${err?.message ?? err}`);
     process.exit(1);
+  }
+
+  // Atomize the operator action before exec. Every bot-identity-
+  // mediated GitHub action produces an observation atom so the
+  // provenance chain `operator -> agent -> bot -> GitHub op` has a
+  // durable record. Without this, merges + comments + PR opens flow
+  // through the bot identity with no atom trail, which is the
+  // audit-gap closure described in `dev-atomize-operator-actions`
+  // (canon). Redacted argv strips known secret-carrying flags. Best
+  // effort: if the write fails we log and continue so an AtomStore
+  // hiccup never blocks an operator action. Env override
+  // LAG_SKIP_OPERATOR_ACTION_ATOM=1 disables the write for tests +
+  // emergency bypass.
+  const actionAtomId = await writeOperatorActionAtom(role, ghArgs);
+  if (actionAtomId !== null) {
+    console.log(`[gh-as] operator-action atom ${actionAtomId}`);
   }
 
   // Exec gh with GH_TOKEN overridden for this child only. GH_TOKEN
@@ -113,6 +164,95 @@ async function main() {
     console.error(`[gh-as] failed to spawn gh: ${err?.message ?? err}`);
     process.exit(1);
   });
+}
+
+/**
+ * Append an `operator-action` observation atom describing a
+ * bot-identity-mediated GitHub op. Returns the atom id on success,
+ * null on any failure (caller continues regardless; audit is
+ * best-effort, the actual gh op is load-bearing).
+ *
+ * Shape:
+ *   type:        'observation'
+ *   layer:       'L0' (raw observation; promotion pipeline can lift
+ *                later if aggregated queries want it in canon)
+ *   principal_id: the role (e.g., 'lag-ceo'); authority chain folds
+ *                 through the bot identity, operator above, agent
+ *                 below in the signed_by chain of the principals
+ *                 registry.
+ *   metadata.operator_action:
+ *     { role, args, started_at, session_id, pid }
+ *
+ * Why 'observation' (not a new 'operator-action' type): using
+ * an existing AtomType avoids a type-union widening for a single
+ * script. If / when a second producer emits these (e.g., git-as-bot
+ * wrappers), a dedicated type becomes justified.
+ */
+async function writeOperatorActionAtom(role, args) {
+  if (process.env.LAG_SKIP_OPERATOR_ACTION_ATOM === '1') return null;
+
+  const redactedArgs = redactSecretLikeArgs(args);
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const pid = process.pid;
+  const sessionId = process.env.LAG_SESSION_ID ?? `gh-as-${pid}-${randomUUID().slice(0, 8)}`;
+
+  // ID needs to be unique across re-invocations AND stable within
+  // one logical call. Includes wall-clock millisecond + pid + a
+  // short uuid suffix so concurrent invocations don't collide and
+  // a retry of the same op produces a new audit entry (intentional
+  // (a retry IS a distinct action).
+  const id = `op-action-${role}-${nowMs}-${randomUUID().slice(0, 8)}`;
+
+  const atom = {
+    schema_version: 1,
+    id,
+    content: `${role}: gh ${redactedArgs.join(' ')}`,
+    type: 'observation',
+    layer: 'L0',
+    provenance: {
+      kind: 'agent-observed',
+      source: {
+        tool: 'gh-as',
+        agent_id: role,
+        session_id: sessionId,
+      },
+      derived_from: [],
+    },
+    confidence: 1.0,
+    created_at: nowIso,
+    last_reinforced_at: nowIso,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: role,
+    taint: 'clean',
+    metadata: {
+      operator_action: {
+        role,
+        args: redactedArgs,
+        started_at: nowIso,
+        session_id: sessionId,
+        pid,
+      },
+    },
+  };
+
+  try {
+    const host = await createFileHost({ rootDir: STATE_DIR });
+    await host.atoms.put(atom);
+    return id;
+  } catch (err) {
+    console.warn(`[gh-as] operator-action atom write failed: ${err?.message ?? err}`);
+    return null;
+  }
 }
 
 await main();
