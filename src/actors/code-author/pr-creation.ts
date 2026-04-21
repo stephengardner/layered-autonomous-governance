@@ -1,0 +1,193 @@
+/**
+ * PR creation primitive: open a pull request for a pushed branch.
+ *
+ * Pure mechanism. Takes an authenticated GitHub client + branch
+ * handle + PR body fields, returns the opened PR's number + url
+ * or throws `PrCreationError` on any fail-closed axis.
+ *
+ * Design note: this module does NOT know about atoms or fences.
+ * Every piece of caller-specific metadata (plan id, observation
+ * atom id, commit SHA) is passed in as a string and interpolated
+ * into the PR body. Keeping this primitive caller-agnostic lets
+ * the same function serve the native actor runtime, a LangGraph
+ * node, or an ad-hoc script.
+ */
+
+import type { GhClient } from '../../external/github/index.js';
+
+export type PrCreationErrorReason =
+  | 'missing-owner-repo'
+  | 'gh-api-failed'
+  | 'invalid-response';
+
+export class PrCreationError extends Error {
+  constructor(
+    message: string,
+    public readonly reason: PrCreationErrorReason,
+    public readonly stage: string,
+    public readonly status: number | null = null,
+    public readonly responseBody: unknown = undefined,
+  ) {
+    super(message);
+    this.name = 'PrCreationError';
+  }
+}
+
+export interface CreatePrInputs {
+  readonly client: GhClient;
+  readonly owner: string;
+  readonly repo: string;
+  readonly title: string;
+  /**
+   * Full PR body. Caller is responsible for shaping the body;
+   * typical content is the plan's title + content + a footer
+   * linking the plan-atom id / observation-atom id / commit SHA
+   * for downstream audit.
+   */
+  readonly body: string;
+  /** Branch already pushed to `origin` via applyDraftBranch. */
+  readonly head: string;
+  /** Target branch; defaults to `main`. */
+  readonly base?: string;
+  /** Open as a draft PR by default so operator review is required. */
+  readonly draft?: boolean;
+}
+
+export interface CreatePrResult {
+  readonly number: number;
+  readonly htmlUrl: string;
+  readonly apiUrl: string;
+  readonly nodeId: string;
+  readonly state: string;
+}
+
+/**
+ * Open a PR via the REST `pulls` endpoint. The caller pre-
+ * authenticates `client` with whatever credentials are
+ * appropriate for its identity story (App installation token,
+ * PAT, etc); this function only plumbs those through.
+ */
+export async function createDraftPr(
+  inputs: CreatePrInputs,
+): Promise<CreatePrResult> {
+  if (!inputs.owner || !inputs.repo) {
+    throw new PrCreationError(
+      'owner + repo required',
+      'missing-owner-repo',
+      'validate-inputs',
+    );
+  }
+
+  const base = inputs.base ?? 'main';
+  const draft = inputs.draft ?? true;
+
+  let resp;
+  try {
+    resp = await inputs.client.rest<{
+      number: number;
+      html_url: string;
+      url: string;
+      node_id: string;
+      state: string;
+    }>({
+      method: 'POST',
+      path: `repos/${inputs.owner}/${inputs.repo}/pulls`,
+      fields: {
+        title: inputs.title,
+        head: inputs.head,
+        base,
+        body: inputs.body,
+        draft,
+      },
+    });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new PrCreationError(
+      `gh REST pulls create failed: ${reason}`,
+      'gh-api-failed',
+      'rest-call',
+    );
+  }
+
+  if (!resp) {
+    throw new PrCreationError(
+      'gh REST pulls create returned empty response',
+      'invalid-response',
+      'parse-response',
+    );
+  }
+
+  if (
+    typeof resp.number !== 'number'
+    || typeof resp.html_url !== 'string'
+    || typeof resp.url !== 'string'
+    || typeof resp.node_id !== 'string'
+    || typeof resp.state !== 'string'
+  ) {
+    throw new PrCreationError(
+      'gh REST pulls create response missing required fields',
+      'invalid-response',
+      'parse-response',
+      null,
+      resp,
+    );
+  }
+
+  return Object.freeze({
+    number: resp.number,
+    htmlUrl: resp.html_url,
+    apiUrl: resp.url,
+    nodeId: resp.node_id,
+    state: resp.state,
+  });
+}
+
+/**
+ * Shape the PR body from a plan atom, observation id, and commit
+ * metadata. Keeps body construction here (with the other PR
+ * primitives) rather than scattered across every caller.
+ *
+ * The caller passes raw fields; the body is markdown with a
+ * machine-parseable footer that a downstream observer can scan
+ * for the plan id.
+ */
+export interface PrBodyInputs {
+  readonly planId: string;
+  readonly planContent: string;
+  readonly draftNotes: string;
+  readonly draftConfidence: number;
+  readonly observationAtomId: string;
+  readonly commitSha: string;
+  readonly costUsd: number;
+  readonly modelUsed: string;
+  readonly touchedPaths: ReadonlyArray<string>;
+}
+
+export function renderPrBody(inputs: PrBodyInputs): string {
+  const lines: string[] = [];
+  lines.push('## Summary');
+  lines.push('');
+  lines.push(inputs.draftNotes || '(no drafter notes provided)');
+  lines.push('');
+  lines.push('## Plan context');
+  lines.push('');
+  lines.push(inputs.planContent.trim().slice(0, 4000));
+  if (inputs.planContent.length > 4000) lines.push('\n...(plan truncated at 4000 chars)...');
+  lines.push('');
+  lines.push('## Drafter metadata');
+  lines.push('');
+  lines.push(`- confidence: ${inputs.draftConfidence.toFixed(2)}`);
+  lines.push(`- cost_usd: ${inputs.costUsd.toFixed(4)}`);
+  lines.push(`- model: ${inputs.modelUsed}`);
+  lines.push(`- touched paths (${inputs.touchedPaths.length}):`);
+  for (const p of inputs.touchedPaths) lines.push(`  - \`${p}\``);
+  lines.push('');
+  lines.push('## Machine-parseable provenance footer');
+  lines.push('');
+  lines.push('```yaml');
+  lines.push(`plan_id: ${inputs.planId}`);
+  lines.push(`observation_atom_id: ${inputs.observationAtomId}`);
+  lines.push(`commit_sha: ${inputs.commitSha}`);
+  lines.push('```');
+  return lines.join('\n');
+}
