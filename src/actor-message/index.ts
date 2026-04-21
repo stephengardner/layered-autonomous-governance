@@ -70,7 +70,21 @@ export {
   runCodeAuthor,
   mkCodeAuthorInvokedAtomId,
 } from './code-author-invoker.js';
-export type { CodeAuthorPayload } from './code-author-invoker.js';
+export type {
+  CodeAuthorPayload,
+  CodeAuthorExecutor,
+  CodeAuthorExecutorResult,
+  CodeAuthorExecutorSuccess,
+  CodeAuthorExecutorFailure,
+} from './code-author-invoker.js';
+
+// The default executor (drafter + git-ops + pr-creation composition)
+// is a concrete, GitHub-backed implementation of CodeAuthorExecutor.
+// Intentionally NOT re-exported from this barrel so the primitive
+// surface stays seam-only: consumers importing `actor-message`
+// receive the invoker and the executor interface; consumers who want
+// the default chain opt in via the `/actor-message/executor-default`
+// subpath (see package.json exports + src/actor-message/executor-default.ts).
 
 export { runDispatchTick } from './plan-dispatch.js';
 export type { DelegationEnvelope, DispatchTickResult } from './plan-dispatch.js';
