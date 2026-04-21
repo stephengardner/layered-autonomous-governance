@@ -16,6 +16,14 @@
           { "type": "command", "command": "node .claude/hooks/enforce-lag-ceo-for-gh.mjs" }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/periodic-memory-reflection.mjs" }
+        ]
+      }
     ]
   }
 }
