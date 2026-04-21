@@ -10,12 +10,13 @@
  */
 
 import type { Host } from '../interface.js';
-import { DETECT_CONFLICT } from '../../llm-judge/index.js';
+import { DETECT_CONFLICT } from './judge-prompts.js';
 import type { Atom } from '../types.js';
 import type { ConflictKind, ConflictPair } from './types.js';
 
 // Re-export for backward compatibility with prior call sites.
-// New code should import directly from '../../llm-judge/index.js'.
+// New code should import directly from './judge-prompts.js' (or the
+// llm-judge barrel, which re-exports this symbol).
 export const DETECT_SCHEMA = DETECT_CONFLICT.jsonSchema;
 export const DETECT_SYSTEM = DETECT_CONFLICT.systemPrompt;
 
