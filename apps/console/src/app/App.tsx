@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { AppShell } from '@/components/app-shell/AppShell';
 import { ShortcutsHelp } from '@/components/shortcuts-help/ShortcutsHelp';
 import { CommandPalette } from '@/components/command-palette/CommandPalette';
+import { ProposeAtomDialog } from '@/components/propose-atom/ProposeAtomDialog';
 import { CanonViewer } from '@/features/canon-viewer/CanonViewer';
 import { PrincipalsView } from '@/features/principals-viewer/PrincipalsView';
 import { ActivitiesView } from '@/features/activities-viewer/ActivitiesView';
@@ -29,6 +30,7 @@ export function App() {
   const route = useRoute();
   const [helpOpen, setHelpOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [proposeOpen, setProposeOpen] = useState(false);
 
   useEffect(() => {
     const body = document.body;
@@ -52,11 +54,12 @@ export function App() {
 
   return (
     <>
-      <AppShell route={route}>
+      <AppShell route={route} onPropose={() => setProposeOpen(true)}>
         <PageTransition key={route}>{renderRoute(route)}</PageTransition>
       </AppShell>
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      <ProposeAtomDialog open={proposeOpen} onClose={() => setProposeOpen(false)} />
     </>
   );
 }

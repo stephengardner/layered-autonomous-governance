@@ -161,6 +161,55 @@ export async function getCanonDrift(signal?: AbortSignal): Promise<CanonDrift> {
   );
 }
 
+export interface ApplicableAtom extends CanonAtom {
+  readonly _rank: number;
+}
+
+/**
+ * Agent-consumable: given a principal + layer + scope, return the
+ * canon that governs that position, ranked by source-rank. This is
+ * the endpoint agents should use instead of reading .lag/atoms
+ * directly. Contract stays stable across Tauri + browser runtimes.
+ */
+export async function listCanonApplicable(
+  params: {
+    principal_id: string;
+    layer: 'L0' | 'L1' | 'L2' | 'L3';
+    scope?: string;
+    atomTypes?: ReadonlyArray<string>;
+  },
+  signal?: AbortSignal,
+): Promise<ReadonlyArray<ApplicableAtom>> {
+  return transport.call<ReadonlyArray<ApplicableAtom>>(
+    'canon.applicable',
+    params as unknown as Record<string, unknown>,
+    signal ? { signal } : undefined,
+  );
+}
+
+/**
+ * Propose a new atom. Writes to .lag/atoms/ at L0 with
+ * validation_status: pending_review. L3 promotion still requires
+ * the existing human-approval flow; this is intake, not
+ * auto-canonization.
+ */
+export async function proposeAtom(
+  params: {
+    content: string;
+    type: AtomType;
+    confidence: number;
+    proposer_id: string;
+    scope?: string;
+  },
+  signal?: AbortSignal,
+): Promise<{ id: string; path: string }> {
+  return transport.call<{ id: string; path: string }>(
+    'atoms.propose',
+    params as unknown as Record<string, unknown>,
+    signal ? { signal } : undefined,
+  );
+}
+
 export async function compareArbitration(
   aId: string,
   bId: string,

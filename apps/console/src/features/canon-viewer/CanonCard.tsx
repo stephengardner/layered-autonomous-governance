@@ -8,6 +8,7 @@ import { SupersedesDiff } from '@/components/supersedes-diff/SupersedesDiff';
 import { ConfidenceBar } from '@/components/confidence-bar/ConfidenceBar';
 import { CopyLinkButton } from '@/components/copy-link/CopyLinkButton';
 import { RawJson } from '@/components/raw-json/RawJson';
+import { TimeAgo } from '@/components/time-ago/TimeAgo';
 import { asAlternative, listReferencers, listAtomChain, listAtomCascade, type CanonAtom } from '@/services/canon.service';
 import { routeForAtomId, routeHref } from '@/state/router.store';
 import styles from './CanonCard.module.css';
@@ -62,6 +63,8 @@ export function CanonCard({ atom }: Props) {
         <span className={styles.meta}>
           <span className={styles.metaLabel}>layer</span> {atom.layer}
         </span>
+        <span className={styles.metaDot} aria-hidden="true">•</span>
+        <TimeAgo iso={atom.created_at} />
         <button
           type="button"
           className={`${styles.expand} ${expanded ? styles.expandOpen : ''}`}

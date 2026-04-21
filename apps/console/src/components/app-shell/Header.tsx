@@ -1,4 +1,4 @@
-import { Moon, Sun, Flame } from 'lucide-react';
+import { Moon, Sun, Flame, Plus } from 'lucide-react';
 import { useThemeStore } from '@/state/theme.store';
 import { DensityToggle } from '@/components/density-toggle/DensityToggle';
 import { DaemonStatusPill } from '@/components/daemon-pill/DaemonStatusPill';
@@ -39,7 +39,7 @@ const ROUTE_META: Record<Route, RouteMeta> = {
  * Top app bar. For v1: route-aware title + subtitle + theme toggle.
  * Future: daemon status pill, kill-switch indicator, command palette.
  */
-export function Header({ route }: { route: Route }) {
+export function Header({ route, onPropose }: { route: Route; onPropose?: (() => void) | undefined }) {
   const theme = useThemeStore((s) => s.theme);
   const toggle = useThemeStore((s) => s.toggle);
   const meta = ROUTE_META[route];
@@ -52,6 +52,18 @@ export function Header({ route }: { route: Route }) {
         <span className={styles.subtitle}>{meta.subtitle}</span>
       </div>
       <div className={styles.actions}>
+        {onPropose && (
+          <button
+            type="button"
+            className={styles.proposeBtn}
+            onClick={onPropose}
+            data-testid="header-propose"
+            aria-label="Propose a new atom"
+          >
+            <Plus size={14} strokeWidth={2.25} />
+            <span className={styles.proposeLabel}>propose</span>
+          </button>
+        )}
         <KillSwitchPill />
         <DaemonStatusPill />
         <DensityToggle />
