@@ -116,6 +116,14 @@ jobs:
       - name: Run pr-landing actor (${{ steps.mode.outputs.label }})
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # LAG_OPS_PAT is the machine-user (type=User) PAT that
+          # powers the CR-failsafe trigger. CodeRabbit ignores
+          # @-mentions from [bot] accounts; posting the trigger as
+          # a User account is the only reliable path when CR's
+          # auto_review has not fired. Absence of this secret is
+          # OK: the pre-check logs missing-token and proceeds; the
+          # actor works on existing review comments regardless.
+          LAG_OPS_PAT: ${{ secrets.LAG_OPS_PAT }}
         run: |
           node scripts/run-pr-landing.mjs \
             --pr "${{ steps.pr.outputs.number }}" \
