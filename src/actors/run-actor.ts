@@ -23,6 +23,12 @@
 
 import { checkToolPolicy } from '../policy/index.js';
 import type { PolicyContext } from '../policy/index.js';
+import { isKillSwitchAbortReason } from '../kill-switch/index.js';
+import {
+  mkKillSwitchTrippedAtom,
+  type KillSwitchTripPhase,
+  type KillSwitchTripTrigger,
+} from '../kill-switch/tripped-atom.js';
 import type { Actor, ActorContext } from './actor.js';
 import type {
   ActorAdapters,
@@ -62,6 +68,16 @@ export interface RunActorOptions<Adapters extends ActorAdapters> {
    */
   readonly killSwitchSignal?: AbortSignal;
   /**
+   * Session identifier stamped into the kill-switch-tripped atom's
+   * provenance.source.session_id when a trip halts the loop.
+   * Required for downstream lineage projections that group trips
+   * by operator session; when absent, the driver synthesizes a
+   * fallback id of the form `run-actor-<actor>-<startedAt>` so the
+   * atom still has a session_id, but the fallback is clearly not
+   * a real session and should be treated as such by consumers.
+   */
+  readonly killSwitchSessionId?: string;
+  /**
    * Optional audit sink. Receives a structured event per phase. If
    * omitted, the driver still writes a minimal record to host.auditor.
    */
@@ -97,12 +113,18 @@ export async function runActor<
   let iteration = 0;
   let prevKey: string | null = null;
   let prevProgress = true;
+  // Tracked so the kill-switch-tripped atom can record the exact
+  // phase that was interrupted. Updated each time we enter an
+  // apply; consulted on halt to attribute the trip accurately.
+  let trippedPhase: KillSwitchTripPhase = 'between-iterations';
+  let trippedInFlightTool: string | undefined;
 
   for (iteration = 1; iteration <= options.budget.maxIterations; iteration++) {
     const iterStartedAt = options.host.clock.now();
 
     if (options.killSwitch?.() || (options.killSwitchSignal !== undefined && options.killSwitchSignal.aborted)) {
       haltReason = 'kill-switch';
+      trippedPhase = 'between-iterations';
       break;
     }
     if (options.budget.deadline && iterStartedAt >= options.budget.deadline) {
@@ -204,6 +226,8 @@ export async function runActor<
       // so the actor halts cleanly instead of starting a new apply.
       if (options.killSwitch?.() || (options.killSwitchSignal !== undefined && options.killSwitchSignal.aborted)) {
         haltReason = 'kill-switch';
+        trippedPhase = 'apply';
+        trippedInFlightTool = action.tool;
         halted = true;
         break;
       }
@@ -309,6 +333,38 @@ export async function runActor<
     payload: { haltReason, escalations: escalations.slice() },
   });
 
+  // On kill-switch halt, write the kill-switch-tripped L1 observation
+  // so there is a durable atom record of WHAT got interrupted and
+  // WHY. Best-effort: any failure here logs a fatal stderr line and
+  // falls through; the stored audit halt event above already carries
+  // haltReason='kill-switch' so the incident is auditable either way.
+  if (haltReason === 'kill-switch') {
+    try {
+      const trigger = resolveKillSwitchTrigger(options.killSwitchSignal);
+      const sessionId =
+        options.killSwitchSessionId
+        ?? `run-actor-${actor.name}-${startedAt}`;
+      const atom = mkKillSwitchTrippedAtom({
+        actor: actor.name,
+        principalId: options.principal.id,
+        trigger,
+        trippedAt: endedAt,
+        iteration,
+        phase: trippedPhase,
+        sessionId,
+        ...(trippedInFlightTool !== undefined
+          ? { inFlightTool: trippedInFlightTool }
+          : {}),
+      });
+      await options.host.atoms.put(atom);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[runActor] FATAL: kill-switch-tripped atom write failed: ${errString(err)}`,
+      );
+    }
+  }
+
   const base = {
     actor: actor.name,
     principal: options.principal.id,
@@ -344,6 +400,24 @@ function buildContext<Adapters extends ActorAdapters>(
       });
     },
   };
+}
+
+/**
+ * Peek at a signal's abort reason to distinguish signal-originated
+ * trips (stop-sentinel vs parent-signal, surfaced via the
+ * KillSwitchAbortReason shape from createKillSwitch) from the soft
+ * predicate path. Defaults to 'stop-sentinel' because that is the
+ * overwhelmingly common predicate trigger (.lag/STOP file); a
+ * consumer wiring a different soft predicate can include a
+ * revocation_notes string at the call site for nuance.
+ */
+function resolveKillSwitchTrigger(
+  signal: AbortSignal | undefined,
+): KillSwitchTripTrigger {
+  if (signal?.aborted && isKillSwitchAbortReason(signal.reason)) {
+    return signal.reason.trigger;
+  }
+  return 'stop-sentinel';
 }
 
 async function emitAudit<Adapters extends ActorAdapters>(
