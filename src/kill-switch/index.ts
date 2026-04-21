@@ -1,42 +1,37 @@
 /**
- * Medium-tier kill switch: runtime revocation via AbortSignal.
+ * Kill-switch primitive: an AbortSignal that trips on a filesystem
+ * sentinel, on any of a set of parent AbortSignals, or at construction
+ * if the sentinel is already present.
  *
- * Background: the soft-tier kill switch (existing `killSwitch`
- * predicate on `runActor`) halts only at iteration / action
- * boundaries. An actor that is mid-HTTP-call, mid-child-process,
- * or mid-LLM-stream keeps going until the in-flight work
- * completes. For actors with a blast radius larger than
- * "consumes N more tokens" (code-author pushes commits, merges
- * PRs) that latency is unacceptable.
+ * Shape:
+ *   const ks = createKillSwitch({ stateDir, sentinelFilename?,
+ *     additionalAbortSignals?, pollFallbackMs? });
+ *   // pass ks.signal into every async call that supports it:
+ *   //   fetch(url, { signal: ks.signal })
+ *   //   child_process.spawn(bin, args, { signal: ks.signal })
+ *   //   execa(bin, args, { cancelSignal: ks.signal })
+ *   // eventually:
+ *   ks.dispose();
  *
- * The medium tier solves this by exposing an `AbortSignal`
- * wired to a filesystem watch on `.lag/STOP`. Adapters subscribe
- * (`fetch(url, {signal})`, `execa(bin, {cancelSignal: signal})`,
- * spawned children with `{signal}`) and abort their own work
- * when the signal fires. The actor then halts at the earliest
- * safe point with an `AbortError` raised out of whichever
- * adapter was running.
+ * Trip paths (first-wins):
+ *   1. stop-sentinel: fs.watch on stateDir filtered to sentinelFilename,
+ *      with a redundant setInterval stat() fallback because some
+ *      filesystems drop watch events silently.
+ *   2. parent-signal: any AbortSignal passed via additionalAbortSignals
+ *      that aborts post-construction.
+ *   3. already-present: sentinel existing at construction trips
+ *      synchronously before returning.
  *
- * This module is MECHANISM ONLY. Semantics - what an actor does
- * during its cooperative tear-down (close draft PRs, write
- * revocation atoms) - live in each actor's module. The
- * framework provides the signal; the actor provides the
- * shutdown policy.
+ * Once tripped, signal.reason is a KillSwitchAbortReason describing
+ * the trigger. dispose() is idempotent and does not itself trip the
+ * signal; callers wanting a programmatic trip abort one of the
+ * additionalAbortSignals they passed in.
  *
- * Canon id: `arch-medium-tier-kill-switch`
- * Design: design/adr-medium-tier-kill-switch.md
- *
- * NOT IN THIS PR:
- *   - runActor integration (passing killSwitchSignal through
- *     into ActorContext.abortSignal)
- *   - Adapter signal-forwarding (GhClient / ClaudeCliLLM /
- *     PrReviewAdapter)
- *   - `kill-switch-tripped` atom write
- *
- * Those land in follow-up PRs; this PR is the
- * `createKillSwitch` primitive + its unit tests. Shipping the
- * primitive first lets the follow-up PRs be small, obviously-
- * correct wire-ups.
+ * The module stays mechanism-only: it knows nothing about which actors
+ * use it, which adapters subscribe, which atoms get written on trip,
+ * or which higher-level loop composes it. Those concerns live in
+ * canon, skills, and the specific actor/adapter modules that compose
+ * this primitive.
  */
 
 import {
@@ -69,10 +64,10 @@ export interface KillSwitchController {
 
   /**
    * Stop watching the sentinel, drop the poll interval, and
-   * release the parent-signal subscription. Idempotent; calling
-   * after a trip is a no-op. Does NOT abort the signal on its
-   * own (callers that want a dispose-induced trip should call
-   * trip() first, then dispose()).
+   * release the parent-signal subscription. Idempotent. Does NOT
+   * abort the signal; callers that want to force a programmatic
+   * trip should abort one of the `additionalAbortSignals` they
+   * passed in at construction.
    */
   dispose(): void;
 }
