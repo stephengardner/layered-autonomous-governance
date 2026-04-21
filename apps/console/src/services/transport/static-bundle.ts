@@ -123,8 +123,25 @@ function applyParams<T>(value: T, params: Record<string, unknown> | undefined): 
   if (!params) return value;
   if (!Array.isArray(value)) return value;
   let out: unknown[] = value.slice();
-  const offset = typeof params['offset'] === 'number' ? params['offset'] : 0;
-  const limit = typeof params['limit'] === 'number' ? params['limit'] : undefined;
+  /*
+   * Robust pagination parsing. Reject NaN / Infinity / negative
+   * values silently by falling back to the no-op (offset=0, no
+   * limit). A naive `typeof === 'number'` check accepts Number.NaN
+   * (slice(0, NaN) returns []) and negatives (slice(0, -1) drops
+   * the last element), both of which produce surprising UI
+   * behaviour the bundle author can't see in review. Floor via
+   * Math.trunc so fractional inputs don't double-slice.
+   */
+  const offsetRaw = params['offset'];
+  const limitRaw = params['limit'];
+  const offset =
+    typeof offsetRaw === 'number' && Number.isFinite(offsetRaw) && offsetRaw > 0
+      ? Math.trunc(offsetRaw)
+      : 0;
+  const limit =
+    typeof limitRaw === 'number' && Number.isFinite(limitRaw) && limitRaw >= 0
+      ? Math.trunc(limitRaw)
+      : undefined;
   if (offset > 0) out = out.slice(offset);
   if (limit !== undefined) out = out.slice(0, limit);
   return out as unknown as T;

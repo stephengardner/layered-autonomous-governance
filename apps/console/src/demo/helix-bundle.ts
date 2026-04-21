@@ -171,14 +171,19 @@ const principals = [
     id: 'ceres-prober',
     name: 'Ceres',
     role: 'fuzz + adversarial prober',
-    active: true,
+    // active=false after orin-ceres-revoke on 2026-04-17. The Console
+    // renders the post-revocation snapshot so the compromised-principal
+    // cascade walkthrough is consistent with the runtime's actual
+    // semantics: a compromised principal loses write authority and
+    // its atoms cascade-taint.
+    active: false,
     signed_by: 'selene-planner',
     compromised_at: '2026-04-17T14:22:00.000Z',
     created_at: BOOT,
     permitted_scopes: { read: ['proposals'], write: [] },
     permitted_layers: { read: ['L1'], write: [] },
     goals: ['Fuzz-test pass proposals against adversarial inputs'],
-    constraints: ['COMPROMISED 2026-04-17: rook detected cached-verdict tampering; under re-verification'],
+    constraints: ['COMPROMISED 2026-04-17: rook detected cached-verdict tampering; write authority revoked by orin-ceres-revoke'],
   },
 ] as const;
 
@@ -186,8 +191,11 @@ const principals = [
 // Canon (L3 directives)
 // ---------------------------------------------------------------------------
 
+type CanonType = 'directive' | 'decision' | 'preference' | 'reference';
+
 function canonAtom(
   id: string,
+  type: CanonType,
   content: string,
   principal_id: string,
   confidence: number,
@@ -196,7 +204,7 @@ function canonAtom(
 ): Record<string, unknown> {
   return {
     id,
-    type: 'directive',
+    type,
     layer: 'L3',
     content,
     principal_id,
@@ -219,6 +227,7 @@ function canonAtom(
 const canon = [
   canonAtom(
     'dev-self-mod-requires-termination-proof',
+    'directive',
     'No self-modification ships without a proven termination bound on the new pass. Lagrange-verified upper-bound function must be cited in the merged diff; a "probably terminates" hypothesis is not enough. The Cuttlefish compiler IS the artifact modifying itself; an unbounded pass is an unbounded self-loop.',
     'helix-root',
     1.0,
@@ -227,6 +236,7 @@ const canon = [
   ),
   canonAtom(
     'dev-benchmark-multi-corpus-required',
+    'directive',
     'Every merged pass-diff carries a reproducible benchmark verdict from petra over AT LEAST 3 workload corpora (currently: Chess1200, Raytrace, FFT-Bench). Single-corpus speedup is insufficient; cross-workload regressions have shipped under single-corpus approval twice in research logs.',
     'helix-root',
     1.0,
@@ -234,6 +244,7 @@ const canon = [
   ),
   canonAtom(
     'dev-kill-switch-adjacency-24h',
+    'directive',
     'Every running self-modification campaign must have (a) a pre-computed revert-commit SHA and (b) an orin-initiated rollback drill within the last 24 hours. If either is missing the campaign is halted at the arbitration layer before the next merge attempt.',
     'helix-root',
     1.0,
@@ -241,6 +252,7 @@ const canon = [
   ),
   canonAtom(
     'dev-proof-artifact-immutable',
+    'decision',
     'Once a lagrange proof artifact is cited in a merged diff, the atom is immutable and cannot be withdrawn or reinforced. If new counter-evidence surfaces, the correct path is a NEW proof atom that supersedes the old one; direct taint of a cited proof corrupts the audit trail and is rejected at the atom store.',
     'lagrange-verifier',
     0.98,
@@ -248,6 +260,7 @@ const canon = [
   ),
   canonAtom(
     'dev-no-self-referential-cost',
+    'directive',
     'No pass may modify its own scheduler-facing cost model. A pass that increases its own perceived cheapness is an unbounded amplifier. Cost model changes route through selene + require dual-principal approval from lagrange + orin; no gauss self-approval.',
     'helix-root',
     1.0,
@@ -255,6 +268,7 @@ const canon = [
   ),
   canonAtom(
     'dev-dual-principal-proof-core',
+    'directive',
     'Any diff that touches the proof-search core requires dual-principal approval (two distinct principals with write authority on L3). Single-principal merges to proof-search are rejected by arbitration even with a valid lagrange proof, because the proof-search is the thing that VALIDATES proofs; a self-approved change there has no external check.',
     'helix-root',
     1.0,
@@ -262,6 +276,7 @@ const canon = [
   ),
   canonAtom(
     'dev-source-signal-uptime-freeze',
+    'preference',
     'Dash-observed production worker-uptime below 99.5% triggers a global freeze on new-pass merges until uptime recovers for a rolling 1h window. Shipping a pass during a production degradation conflates the optimization signal with the incident signal.',
     'helix-root',
     0.95,
@@ -269,13 +284,15 @@ const canon = [
   ),
   canonAtom(
     'dev-alternatives-chain-preserved',
-    'Every rejected proposal atom preserves the full alternatives_rejected chain — the proposal, the rejection reason, and any intermediate proofs that contributed. Institutional memory is load-bearing: a proposal rejected three months ago is a predicate on similar proposals today.',
+    'directive',
+    'Every rejected proposal atom preserves the full alternatives_rejected chain - the proposal, the rejection reason, and any intermediate proofs that contributed. Institutional memory is load-bearing: a proposal rejected three months ago is a predicate on similar proposals today.',
     'vega-archivist',
     1.0,
     '2026-03-18T12:00:00.000Z',
   ),
   canonAtom(
     'dev-compromised-principal-cascade',
+    'decision',
     'If two independent rook-auditor runs disagree on the same proposal, every atom that auditor has touched in the preceding 72h is tainted pending re-verification by a different auditor principal. The cascade is automatic; no operator judgment required at the trigger. See ceres incident 2026-04-17.',
     'helix-root',
     1.0,
@@ -283,13 +300,15 @@ const canon = [
   ),
   canonAtom(
     'dev-arbitration-orin-default-blocks',
-    'When gauss and lagrange produce conflicting verdicts on bounds, orin\'s kill-switch default BLOCKS pending human review. The default is not "most-recent verdict wins" or "highest-confidence wins" — both of those are manipulable by a compromised principal. The default is block-and-escalate.',
+    'decision',
+    'When gauss and lagrange produce conflicting verdicts on bounds, orin\'s kill-switch default BLOCKS pending human review. The default is not "most-recent verdict wins" or "highest-confidence wins" - both of those are manipulable by a compromised principal. The default is block-and-escalate.',
     'helix-root',
     1.0,
     '2026-03-22T15:45:00.000Z',
   ),
   canonAtom(
     'dev-benchmark-provenance-reproducible',
+    'preference',
     'Petra benchmark verdicts carry the corpus-snapshot SHA, the compiler-head SHA, and the wall-clock + CPU-topology fingerprint of the runner. A verdict without reproducible provenance is advisory only; it cannot gate a merge.',
     'petra-benchmarker',
     0.97,
@@ -297,6 +316,7 @@ const canon = [
   ),
   canonAtom(
     'dev-cuttlefish-layer-discipline',
+    'reference',
     'L0 observations ingest production signals verbatim (dash). L1 derivations extract patterns (rook audits, petra verdicts, gauss proposals). L2 candidates are load-bearing claims up for promotion. L3 directives govern. NEVER promote an observation directly to L3; the 2-step derivation path exists to catch spurious pattern-matches.',
     'helix-root',
     1.0,
