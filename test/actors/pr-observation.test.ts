@@ -240,6 +240,51 @@ describe('renderPrObservationBody', () => {
     expect(body).toContain('arch-pr-state-observation-via-actor-only');
   });
 
+  it('renders per-item details for unresolved line comments and body-nits (not just counts)', () => {
+    const body = renderPrObservationBody({
+      owner: 'o',
+      repo: 'r',
+      number: 42,
+      status: mkStatus({
+        lineComments: [
+          {
+            id: 'c1',
+            author: 'coderabbitai',
+            body: '**Thread-safety issue in foo.ts**\n\nlong body...',
+            createdAt: '2026-04-21T03:00:00Z',
+            resolved: false,
+            path: 'src/foo.ts',
+            line: 42,
+          },
+        ],
+        bodyNits: [
+          {
+            id: 'body-nit:99:src/bar.ts:7',
+            author: 'coderabbitai[bot]',
+            body: 'Minor wording suggestion.',
+            createdAt: '2026-04-21T03:00:00Z',
+            resolved: false,
+            path: 'src/bar.ts',
+            line: 7,
+            kind: 'body-nit',
+          },
+        ],
+      }),
+      headSha: 'abc123def456',
+      observedAt: '2026-04-21T04:00:00.000Z' as Time,
+    });
+    // Must include per-item details so the fresh-atom path in
+    // pr-status.mjs can surface WHICH items are unresolved, not just
+    // counts.
+    expect(body).toMatch(/unresolved line comments: 1/);
+    expect(body).toContain('src/foo.ts:42');
+    expect(body).toContain('coderabbitai');
+    expect(body).toContain('Thread-safety issue in foo.ts');
+    expect(body).toMatch(/body-scoped nits: 1/);
+    expect(body).toContain('src/bar.ts:7');
+    expect(body).toContain('Minor wording suggestion.');
+  });
+
   it('surfaces partial status with failed surfaces listed', () => {
     const body = renderPrObservationBody({
       owner: 'o',

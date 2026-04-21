@@ -163,11 +163,37 @@ export function renderPrObservationBody(args: {
   for (const s of status.legacyStatuses) {
     lines.push(`  - ${s.context}: ${s.state}`);
   }
+  // Details under unresolved comments + body-nits. The pr-status.mjs
+  // fresh-atom path rehydrates counts from metadata and prints
+  // atom.content; if the renderer only shows counts, the atom
+  // reports "3 unresolved line comments" without saying which ones.
+  // Include each item's location + author + first-line headline.
   lines.push(`unresolved line comments: ${status.lineComments.length}`);
+  for (const c of status.lineComments) {
+    lines.push(renderCommentLine(c));
+  }
   lines.push(`body-scoped nits: ${status.bodyNits.length}`);
+  for (const c of status.bodyNits) {
+    lines.push(renderCommentLine(c));
+  }
   lines.push('');
   lines.push('_Emitted by run-pr-landing.mjs --observe-only. Session agents read this atom (via pr-status.mjs) rather than polling GitHub directly, per canon `arch-pr-state-observation-via-actor-only`._');
   return lines.join('\n');
+}
+
+function renderCommentLine(c: {
+  readonly id: string;
+  readonly author: string;
+  readonly body: string;
+  readonly path?: string;
+  readonly line?: number;
+}): string {
+  const loc = c.path
+    ? `${c.path}${c.line !== undefined ? `:${c.line}` : ''}`
+    : `comment ${c.id}`;
+  const head = c.body.split(/\r?\n/).find((l) => l.trim().length > 0) ?? '(empty)';
+  const stripped = head.replace(/^\*\*/, '').replace(/\*\*$/, '');
+  return `  - ${loc} ${c.author}: ${stripped.slice(0, 160)}`;
 }
 
 /**

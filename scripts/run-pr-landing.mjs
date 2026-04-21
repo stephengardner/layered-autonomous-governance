@@ -534,13 +534,34 @@ async function runObserveOnly({ host, principal, review, owner, repo, number, li
     );
   }
 
+  // Resolve the HEAD SHA. If GitHub cannot give us a commit id for
+  // this PR (draft, pre-branch, API transient), refuse to write an
+  // atom keyed on a placeholder - that would collapse observations
+  // across distinct commits into a single id and later commits would
+  // be treated as already observed. Emit a failed-observation atom
+  // so the failure has a durable surface + exit non-zero.
   const headSha = await resolveHeadSha({ review, owner, repo, number });
+  if (!headSha) {
+    console.error('[pr-landing:observe-only] could not resolve head SHA; refusing to write an atom under a placeholder id');
+    try {
+      await writeFailedObservation({
+        host, principal, owner, repo, number, origin,
+        reason: 'head SHA unresolvable (draft PR? pre-branch-push? transient GraphQL failure?)',
+      });
+    } catch {
+      // already-logged-above path; the underlying error is the
+      // primary signal.
+    }
+    process.exit(1);
+  }
+
   const atomId = mkPrObservationAtomId(owner, repo, number, headSha);
   const existing = await host.atoms.get(atomId);
 
   const nowIso = new Date().toISOString();
   const body = renderPrObservationBody({ owner, repo, number, status, headSha, observedAt: nowIso });
 
+  let atomWritten = false;
   if (existing === null) {
     const priorId = await findPriorObservationId({ host, owner, repo, number, skipId: atomId });
     const atom = mkPrObservationAtom({
@@ -556,27 +577,58 @@ async function runObserveOnly({ host, principal, review, owner, repo, number, li
       origin,
       priorId,
     });
-    await host.atoms.put(atom);
-    console.log(`[pr-landing:observe-only] wrote pr-observation atom ${atomId}`);
+    // Race guard: two observe-only runs can both see existing===null
+    // and then contend on put(). The loser's put throws ConflictError;
+    // catch it and treat as if we found the existing atom (idempotent
+    // by deterministic id). Any other error still propagates.
+    try {
+      await host.atoms.put(atom);
+      atomWritten = true;
+      console.log(`[pr-landing:observe-only] wrote pr-observation atom ${atomId}`);
+    } catch (err) {
+      const code = err?.code ?? err?.kind;
+      if (code === 'conflict' || /already exists/i.test(String(err?.message ?? ''))) {
+        console.log(`[pr-landing:observe-only] pr-observation atom ${atomId} already exists for head ${headSha} (won by a concurrent run); not reposting`);
+      } else {
+        throw err;
+      }
+    }
+  } else {
+    console.log(`[pr-landing:observe-only] pr-observation atom ${atomId} already exists for head ${headSha}; not reposting`);
+  }
 
-    // Post the summary comment under lag-pr-landing[bot]. Adapter
-    // dry-run short-circuits the network call internally.
+  // PR comment delivery. Live mode: the comment is the durable
+  // operator-visible surface (the atom can disappear with the CI
+  // runner's .lag/ filesystem). A failed post in live mode means
+  // the observation is effectively invisible - fail non-zero so the
+  // runner reports it. Dry-run: adapter short-circuits internally;
+  // log the intent.
+  //
+  // Only post when we actually wrote the atom this run; re-runs
+  // against an existing atom should not repost the comment.
+  if (atomWritten) {
     if (live) {
       try {
         const outcome = await review.postPrComment({ owner, repo, number }, body);
         if (outcome.posted) {
           console.log(`[pr-landing:observe-only] posted PR comment ${outcome.commentId ?? '(id unknown)'}`);
         } else if (outcome.dryRun) {
-          console.log('[pr-landing:observe-only] (dry-run) would have posted PR comment');
+          // Live path never returns dryRun:true from the production
+          // adapter, but stub adapters might; log and treat as success.
+          console.log('[pr-landing:observe-only] adapter signalled dryRun despite --live; not treating as failure');
+        } else {
+          // posted:false without dryRun is a silent failure from the
+          // adapter; treat as a delivery failure in live mode.
+          console.error('[pr-landing:observe-only] PR comment post returned posted:false in live mode; failing');
+          process.exit(1);
         }
       } catch (commentErr) {
-        console.warn(`[pr-landing:observe-only] PR comment post failed: ${commentErr?.message ?? commentErr}`);
+        console.error(`[pr-landing:observe-only] PR comment post failed in live mode: ${commentErr?.message ?? commentErr}`);
+        process.exit(1);
       }
     } else {
       console.log('[pr-landing:observe-only] (dry-run) skipping PR comment post');
     }
-  } else {
-    console.log(`[pr-landing:observe-only] pr-observation atom ${atomId} already exists for head ${headSha}; not reposting`);
   }
 
   console.log(`[pr-landing:observe-only] done. atom_id=${atomId} head_sha=${headSha} mergeState=${status.mergeStateStatus ?? '?'}`);
@@ -587,10 +639,11 @@ async function runObserveOnly({ host, principal, review, owner, repo, number, li
 
 async function resolveHeadSha({ review, owner, repo, number }) {
   // We already have getPrReviewStatus, but the composite does NOT
-  // return the head SHA directly - it fetches it internally via GQL
-  // and then hangs the check-run + legacy-status fetches off it.
-  // Ask the raw GraphQL endpoint for just the SHA so the atom id
-  // can key on it deterministically.
+  // return the head SHA directly. Ask the raw GraphQL endpoint for
+  // just the SHA so the atom id can key on it deterministically.
+  // Return null (not a 'unknown' placeholder) when GitHub cannot give
+  // us a commit id - the caller refuses to write an atom under a
+  // placeholder that would collapse multiple commits into one id.
   const query = `
     query HeadSha($owner: String!, $repo: String!, $number: Int!) {
       repository(owner: $owner, name: $repo) {
@@ -599,18 +652,18 @@ async function resolveHeadSha({ review, owner, repo, number }) {
     }
   `;
   const variables = { owner, repo, number };
-  // The review adapter exposes its client indirectly; use the
-  // adapter's getPrReviewStatus to also capture SHA via a second
-  // call would be duplicative. Do a single GraphQL call through
-  // createGhClient directly.
   const client = createGhClient();
-  const data = await client.graphql(query, variables);
-  const sha = data?.repository?.pullRequest?.headRefOid ?? 'unknown';
-  // Mark the review adapter reference as used; actual access is via
-  // client above. This is a deliberate narrow fetch to avoid threading
-  // the SHA through getPrReviewStatus's return shape just for the
-  // atom id.
+  let data;
+  try {
+    data = await client.graphql(query, variables);
+  } catch (err) {
+    console.error(`[pr-landing:observe-only] head SHA fetch failed: ${err?.message ?? err}`);
+    void review;
+    return null;
+  }
+  const sha = data?.repository?.pullRequest?.headRefOid;
   void review;
+  if (typeof sha !== 'string' || sha.length === 0) return null;
   return sha;
 }
 
@@ -619,10 +672,23 @@ async function findPriorObservationId({ host, owner, repo, number, skipId }) {
   // this (owner, repo, pr) so the new atom can chain via
   // provenance.derived_from. Not guaranteed to find one; if none
   // exists we return null and the chain starts fresh.
+  //
+  // Filters on BOTH metadata.kind === 'pr-observation' AND
+  // metadata.pr.{owner,repo,number} equality. The prefix match on
+  // atom id alone is ambiguous: repos named `bar` vs `bar-1` share
+  // the `pr-observation-o-bar-` prefix, and a fresh atom for
+  // another PR would satisfy startsWith. Filtering on persisted PR
+  // identity is the source of truth.
   try {
     const { atoms } = await host.atoms.query({ type: ['observation'] }, 200);
-    const prefix = `pr-observation-${owner}-${repo}-${number}-`;
-    const matches = atoms.filter((a) => String(a.id).startsWith(prefix) && String(a.id) !== skipId);
+    const matches = atoms.filter((a) => {
+      if (String(a.id) === skipId) return false;
+      const md = a.metadata;
+      if (!md || md.kind !== 'pr-observation') return false;
+      const pr = md.pr;
+      if (!pr) return false;
+      return pr.owner === owner && pr.repo === repo && pr.number === number;
+    });
     if (matches.length === 0) return null;
     matches.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     return String(matches[0].id);

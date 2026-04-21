@@ -217,8 +217,18 @@ async function readLatestPrObservation({ owner, repo, number }) {
   try {
     const host = await createFileHost({ rootDir: STATE_DIR });
     const { atoms } = await host.atoms.query({ type: ['observation'] }, 500);
-    const prefix = `pr-observation-${owner}-${repo}-${number}-`;
-    const matches = atoms.filter((a) => String(a.id).startsWith(prefix) && a.metadata?.kind === 'pr-observation');
+    // Filter on persisted PR identity in metadata, not just the atom
+    // id prefix. Id-prefix alone collides between repos like `bar` vs
+    // `bar-1`: id `pr-observation-o-bar-1-42-<sha>` matches BOTH the
+    // `pr-observation-o-bar-` and `pr-observation-o-bar-1-` prefixes.
+    // metadata.pr.{owner,repo,number} is the source of truth.
+    const matches = atoms.filter((a) => {
+      const md = a.metadata;
+      if (!md || md.kind !== 'pr-observation') return false;
+      const pr = md.pr;
+      if (!pr) return false;
+      return pr.owner === owner && pr.repo === repo && pr.number === number;
+    });
     if (matches.length === 0) return null;
     matches.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     const latest = matches[0];
