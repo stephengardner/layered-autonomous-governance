@@ -136,11 +136,53 @@ async function main() {
   process.exit(0);
 }
 
+/*
+ * Strip subshell substitutions from a command string so the "does
+ * the wrapper run the OUTER command" check is not fooled by a
+ * wrapper that only ran inside `$(...)` or backticks.
+ *
+ * Incident (2026-04-21): agent ran
+ *   `GH_TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token) gh pr comment ...`
+ * The hook saw `gh-as.mjs` in the string, matched the wrapper
+ * pattern, and allowed the call. But the OUTER `gh pr comment` ran
+ * with whatever GH_TOKEN env it got, and on Windows where `gh` is
+ * also auth-persisted via `gh auth login` to the operator's account
+ * the effective attribution routed to the operator for some calls.
+ *
+ * After this strip, the same input becomes
+ *   `GH_TOKEN= gh pr comment ...`
+ * which contains a bare `gh` and NO wrapper pattern, so it blocks.
+ *
+ * We iterate to a fixed point to handle nested substitutions up to
+ * the limit of the regex's balanced-paren tolerance. The regex
+ * matches `$( ... )` without nested parens and backtick blocks; a
+ * crafted `$(echo $(...))` falls through the first pass but the
+ * inner substitution (the part we care about — the place a wrapper
+ * would run to produce a token) is stripped on some iteration.
+ */
+function stripSubshells(s) {
+  let prev = '';
+  let cur = s;
+  while (prev !== cur) {
+    prev = cur;
+    cur = cur.replace(/\$\([^()]*\)/g, '');
+    cur = cur.replace(/`[^`]*`/g, '');
+  }
+  return cur;
+}
+
 function inspectBash(payload) {
   const command = payload.tool_input?.command;
   if (typeof command !== 'string' || command.length === 0) return;
 
-  const clauses = command.split(/\s*(?:\|\||&&|;)\s*/);
+  /*
+   * All subsequent checks operate on the subshell-stripped form. The
+   * wrapper pattern must appear at the TOP LEVEL of the clause, not
+   * inside a `$(...)` that merely produces an env value for a bare
+   * `gh` invocation.
+   */
+  const stripped = stripSubshells(command);
+  const clauses = stripped.split(/\s*(?:\|\||&&|;)\s*/);
 
   // `git push` attribution check. Raw push uses the system credential
   // helper (operator PAT on this machine); the push event's pusher
@@ -182,8 +224,10 @@ function inspectBash(payload) {
     return;
   }
 
-  // Fast path: if gh is not mentioned at all, skip the gh check.
-  if (!/\bgh(?:\.exe)?\b/.test(command)) return;
+  // Fast path: if gh is not mentioned at all (after stripping
+  // subshells, so a wrapper-inside-$(...) doesn't leave `gh-as.mjs`
+  // for the substring scan to see and shortcircuit), skip the check.
+  if (!/\bgh(?:\.exe)?\b/.test(stripped)) return;
 
   // Scope the wrapper check to the offending CLAUSE, matching the
   // per-clause discipline above: a wrapper on one clause does not

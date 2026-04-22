@@ -404,3 +404,117 @@ describe('enforce-lag-ceo-for-gh hook (git push attribution)', () => {
     expect(result.decision).toBe('allow');
   });
 });
+
+/*
+ * Subshell token-injection bypass tests.
+ *
+ * Incident (2026-04-21): the agent ran a command of the shape
+ *   `GH_TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token) gh pr comment ...`
+ * The pre-fix hook matched the wrapper pattern anywhere in the
+ * command string and allowed the call, but the OUTER `gh pr comment`
+ * ran with whatever GH_TOKEN was produced by the subshell - and on a
+ * machine where `gh auth login` has cached an operator-scoped token,
+ * the effective auth for the outer `gh` could still be operator-
+ * attributed for certain operations.
+ *
+ * The correct rule: the wrapper must be the PRIMARY INVOCATION, not
+ * merely a subshell producing a value. These tests pin that contract.
+ */
+describe('enforce-lag-ceo-for-gh hook (subshell token-injection bypass)', () => {
+  it('blocks GH_TOKEN=$(...gh-as.mjs...) gh pr comment (the 2026-04-21 incident)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'GH_TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token) gh pr comment 90 --body "hello"',
+      },
+    });
+    expect(result.decision).toBe('block');
+    expect(result.reason).toMatch(/gh/);
+  });
+
+  it('blocks GH_TOKEN=$(...gh-as.mjs...) gh pr merge variant', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command:
+          'GH_TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token 2>/dev/null | tail -1) gh pr merge 90 --squash --admin',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks backtick subshell variant: GH_TOKEN=`...gh-as.mjs...` gh pr create', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'GH_TOKEN=`node scripts/gh-as.mjs lag-ceo auth token` gh pr create --title "x" --body "y"',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks nested subshell: GH_TOKEN=$(echo $(node ...gh-as.mjs...)) gh ...', async () => {
+    /*
+     * The strip-subshells pass iterates to a fixed point, so the
+     * innermost $(...) (where the wrapper lives) is removed. Outer
+     * $(echo ...) becomes $(echo) which is also stripped. Bare gh
+     * remains and blocks.
+     */
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'GH_TOKEN=$(echo $(node scripts/gh-as.mjs lag-ceo auth token)) gh pr comment 1 --body "x"',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks TOKEN=... variable then gh in a single clause', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token | tail -1) && GH_TOKEN=$TOKEN gh pr comment 90 --body "x"',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks a git push variant with token subshell', async () => {
+    /*
+     * `TOKEN=$(...gh-as.mjs...) && git push https://x-access-token:$TOKEN@github.com/... HEAD:branch`
+     * The first clause is fine (it's not a gh / git push on its own).
+     * The second clause contains raw git push without the git-as.mjs
+     * wrapper - block.
+     */
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command:
+          'TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token | tail -1) && git push "https://x-access-token:${TOKEN}@github.com/foo/bar.git" HEAD:main',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('still allows a legitimate top-level gh-as.mjs invocation (regression guard)', async () => {
+    // The fix must not break the legitimate path: the wrapper AS the
+    // primary process.
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'node scripts/gh-as.mjs lag-ceo pr comment 90 --body "hello"',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('still allows commands without any gh / git push (regression guard)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token) && echo "got token"',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+});
