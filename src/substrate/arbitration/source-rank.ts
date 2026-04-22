@@ -8,9 +8,9 @@
  *   1. Layer: L3 canon > L2 curated > L1 extracted > L0 raw.
  *   2. Provenance kind: user-directive > canon-promoted > llm-refined
  *      > agent-inferred > agent-observed.
- *   3. Principal hierarchy depth (added in Phase 34): lower depth (closer
- *      to root) wins. A root principal's atom outranks a deeply-nested
- *      principal's atom when layer + provenance are otherwise equal.
+ *   3. Principal hierarchy depth: lower depth (closer to root) wins. A
+ *      root principal's atom outranks a deeply-nested principal's atom
+ *      when layer + provenance are otherwise equal.
  *   4. Confidence: higher wins (integer scale, 0-10).
  *
  * Principal depth is supplied by the caller because computing it requires

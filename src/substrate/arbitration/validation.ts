@@ -46,7 +46,11 @@ export async function validationDecide(
   const va = await registry.validate(pair.a, host);
   const vb = await registry.validate(pair.b, host);
 
-  if (va === 'verified' && vb !== 'verified') {
+  // Only conclusive opposite results decide a winner. An 'unverifiable'
+  // side means missing validator coverage, not a negative vote, and must
+  // fall through so the next rule can try. (Module JSDoc: "Unverifiable
+  // atoms fall through to the next rule.")
+  if (va === 'verified' && vb === 'invalid') {
     return {
       kind: 'winner',
       winner: pair.a.id,
@@ -54,7 +58,7 @@ export async function validationDecide(
       reason: `validation: a verified, b ${vb}`,
     };
   }
-  if (vb === 'verified' && va !== 'verified') {
+  if (vb === 'verified' && va === 'invalid') {
     return {
       kind: 'winner',
       winner: pair.b.id,
@@ -62,22 +66,6 @@ export async function validationDecide(
       reason: `validation: b verified, a ${va}`,
     };
   }
-  if (va === 'invalid' && vb !== 'invalid') {
-    return {
-      kind: 'winner',
-      winner: pair.b.id,
-      loser: pair.a.id,
-      reason: 'validation: a invalid',
-    };
-  }
-  if (vb === 'invalid' && va !== 'invalid') {
-    return {
-      kind: 'winner',
-      winner: pair.a.id,
-      loser: pair.b.id,
-      reason: 'validation: b invalid',
-    };
-  }
-  // Both verified, both invalid, or both unverifiable: inconclusive.
+  // Ties, matching categories, or either side unverifiable: inconclusive.
   return null;
 }
