@@ -8,4 +8,5 @@
  */
 
 export * from './agent-process.js';
+export * from './checkpoint.js';
 export * from './coordinator.js';
