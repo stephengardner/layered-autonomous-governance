@@ -2,9 +2,6 @@
  * Host interface. The boundary between LAG framework logic and any concrete
  * implementation (stores, LLM providers, notification channels, schedulers,
  * filesystem, git, MCP). LAG never reaches around this interface.
- *
- * See `design/host-interface.md` for the full specification, sandboxing
- * requirements, concurrency model, and conformance contract.
  */
 
 import type {
