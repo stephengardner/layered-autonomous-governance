@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "pol-two-principal-approve-for-l3-merges",
+  "content": "Merges to main or promotion to L3 canon require approval atoms from two distinct principals: the authoring principal and at least one reviewer principal. The coordinator checks this constraint by atom id; changing the rule is a canon edit, not a runtime override.",
+  "type": "preference",
+  "layer": "L3",
+  "provenance": {
+    "kind": "operator-seeded",
+    "source": {
+      "session_id": "bootstrap-virtual-org",
+      "agent_id": "bootstrap"
+    },
+    "derived_from": []
+  },
+  "confidence": 1,
+  "created_at": "2026-04-22T00:00:00.000Z",
+  "last_reinforced_at": "2026-04-22T00:00:00.000Z",
+  "expires_at": null,
+  "supersedes": [],
+  "superseded_by": [],
+  "scope": "project",
+  "signals": {
+    "agrees_with": [],
+    "conflicts_with": [],
+    "validation_status": "unchecked",
+    "last_validated_at": null
+  },
+  "principal_id": "helix-root",
+  "taint": "clean",
+  "metadata": {
+    "policy": {
+      "subject": "two-principal-approve-for-l3-merges",
+      "authoring_principal_self_approval": false,
+      "minimum_distinct_approvers": 2
+    }
+  }
+}
