@@ -299,9 +299,17 @@ export function createKillSwitch(
 export function isKillSwitchAbortReason(
   reason: unknown,
 ): reason is KillSwitchAbortReason {
-  return (
-    typeof reason === 'object' &&
-    reason !== null &&
-    (reason as { kind?: unknown }).kind === 'kill-switch'
-  );
+  if (typeof reason !== 'object' || reason === null) return false;
+  const r = reason as Record<string, unknown>;
+  // Validate every field the KillSwitchAbortReason interface declares
+  // before narrowing. A third-party AbortSignal that happens to carry
+  // `{ kind: 'kill-switch' }` but lacks `trigger` / `trippedAt` /
+  // `sentinelPath` would otherwise satisfy the type guard and then
+  // crash a consumer that dereferences the missing fields. Validate
+  // shape, not just discriminant.
+  if (r.kind !== 'kill-switch') return false;
+  if (typeof r.trigger !== 'string') return false;
+  if (typeof r.trippedAt !== 'string') return false;
+  if (typeof r.sentinelPath !== 'string') return false;
+  return true;
 }

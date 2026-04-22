@@ -50,7 +50,24 @@ export class PromotionEngine {
   constructor(
     private readonly host: Host,
     private readonly options: PromotionEngineOptions,
-  ) {}
+  ) {
+    // Validate humanGateTimeoutMs at construction so a bad value
+    // surfaces here, not at the setInterval / awaitDisposition
+    // deadline math later. NaN / Infinity / negative / non-integer
+    // all produce unpredictable notifier behaviour.
+    const t = options.humanGateTimeoutMs;
+    if (
+      t !== undefined
+      && (typeof t !== 'number'
+        || !Number.isFinite(t)
+        || !Number.isInteger(t)
+        || t <= 0)
+    ) {
+      throw new Error(
+        '[promotion] humanGateTimeoutMs must be a finite positive integer (ms)',
+      );
+    }
+  }
 
   /**
    * Build PromotionCandidates for every content-hash class at the source
@@ -129,6 +146,36 @@ export class PromotionEngine {
       if (gate.kind !== 'promoted') {
         await this.auditGated(decision, gate);
         return gate;
+      }
+      // Re-check candidate eligibility after the approval wait. An
+      // atom that was clean + unsuperseded when we started the gate
+      // can become tainted (compromise cascade) or superseded
+      // (another concurrent promotion) during the wait. Approving a
+      // stale snapshot would promote a no-longer-eligible atom.
+      const fresh = await this.host.atoms.get(decision.candidate.atom.id);
+      if (!fresh) {
+        await this.auditGated(decision, {
+          decision,
+          kind: 'rejected-by-policy',
+          promotedAtomId: null,
+          reason: 'candidate atom disappeared during human gate',
+        });
+        return {
+          decision,
+          kind: 'rejected-by-policy',
+          promotedAtomId: null,
+          reason: 'candidate atom disappeared during human gate',
+        };
+      }
+      if (fresh.taint !== 'clean' || fresh.superseded_by.length > 0) {
+        const gateReject: PromotionOutcome = {
+          decision,
+          kind: 'rejected-by-policy',
+          promotedAtomId: null,
+          reason: `candidate became ineligible during human gate (taint=${fresh.taint}, superseded_by=${fresh.superseded_by.length})`,
+        };
+        await this.auditGated(decision, gateReject);
+        return gateReject;
       }
     }
 
@@ -214,9 +261,19 @@ export class PromotionEngine {
       .digest('hex')
       .slice(0, 24) as AtomId;
 
-    // Idempotent: if already promoted, return existing.
+    // Idempotent: if already promoted, repair the source atom's
+    // superseded_by link if a prior partial run created the promoted
+    // atom but didn't get to the update. The membership check keeps
+    // the AtomPatch-append contract idempotent (same fix as
+    // arbitration.applyDecision).
     const existing = await this.host.atoms.get(newId);
-    if (existing) return newId;
+    if (existing) {
+      const sourceNow = await this.host.atoms.get(src.id);
+      if (sourceNow && !sourceNow.superseded_by.includes(newId)) {
+        await this.host.atoms.update(src.id, { superseded_by: [newId] });
+      }
+      return newId;
+    }
 
     const now = this.host.clock.now();
     const promoted: Atom = {

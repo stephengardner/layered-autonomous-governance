@@ -33,7 +33,14 @@ import { NotFoundError } from '../errors.js';
 
 export interface TaintReport {
   readonly principalId: PrincipalId;
-  readonly compromisedAt: Time;
+  /**
+   * When the principal was marked compromised. Null when the principal
+   * is not compromised (the function returns early with this shape so
+   * callers can distinguish "no work to do" from "zero atoms were
+   * reachable"). Previously synthesised as `'' as Time` for the early
+   * return, which type-lied a valid ISO timestamp.
+   */
+  readonly compromisedAt: Time | null;
   /** Atoms newly transitioned clean -> tainted. */
   readonly atomsTainted: number;
   /** Total atoms inspected across all iterations. */
@@ -62,6 +69,27 @@ export async function propagateCompromiseTaint(
 ): Promise<TaintReport> {
   const maxIterations = options.maxIterations ?? 20;
   const pageSize = options.pageSize ?? 10_000;
+  // Validate budgets: non-finite, non-integer, or non-positive values
+  // break the pagination / fixpoint loops. Fail at entry, not silently
+  // later inside the scan.
+  if (
+    !Number.isFinite(maxIterations)
+    || !Number.isInteger(maxIterations)
+    || maxIterations <= 0
+  ) {
+    throw new Error(
+      '[taint/propagate] maxIterations must be a finite positive integer',
+    );
+  }
+  if (
+    !Number.isFinite(pageSize)
+    || !Number.isInteger(pageSize)
+    || pageSize <= 0
+  ) {
+    throw new Error(
+      '[taint/propagate] pageSize must be a finite positive integer',
+    );
+  }
 
   const principal = await host.principals.get(principalId);
   if (!principal) {
@@ -71,7 +99,7 @@ export async function propagateCompromiseTaint(
     // Nothing to do; principal is not marked compromised.
     return {
       principalId,
-      compromisedAt: '' as Time,
+      compromisedAt: null,
       atomsTainted: 0,
       atomsScanned: 0,
       iterations: 0,
@@ -216,7 +244,24 @@ async function applyTaint(
   responderId: PrincipalId,
   mode: 'direct' | 'transitive',
 ): Promise<void> {
+  // Re-read the atom right before patching. The scan captured an atom
+  // snapshot; between capture and this update, a concurrent compromise
+  // cascade (or manual operator action) may have already set taint to
+  // 'quarantined' or 'tainted'. Overwriting 'quarantined' with 'tainted'
+  // is a silent downgrade - quarantined is strictly stronger than
+  // tainted. Check current state and skip or refine the patch.
+  const fresh = await host.atoms.get(atom.id);
+  if (!fresh) return; // atom vanished between scan and update; nothing to do.
+  if (fresh.taint === 'quarantined') return; // don't downgrade
+  if (fresh.taint === 'tainted' && atom.taint === 'tainted') return; // no-op; audit already written by earlier run
   await host.atoms.update(atom.id, { taint: 'tainted' });
+  // The "every transition is logged" invariant needs the audit write
+  // to succeed; if the auditor throws, the atom is now tainted in the
+  // store but no audit record exists. Try-catch + best-effort rollback
+  // would be heavier than the primitive warrants. Instead, let the
+  // auditor error propagate so the CALLER knows the transition's audit
+  // trail is broken - the caller decides whether to re-audit or mark
+  // the taint pass as partial.
   await host.auditor.log({
     kind: 'atom.tainted',
     principal_id: responderId,
@@ -225,10 +270,10 @@ async function applyTaint(
     details: {
       mode,
       trigger_principal: triggerPrincipal,
-      prior_taint: atom.taint,
-      atom_layer: atom.layer,
-      atom_type: atom.type,
-      atom_principal: atom.principal_id,
+      prior_taint: fresh.taint,
+      atom_layer: fresh.layer,
+      atom_type: fresh.type,
+      atom_principal: fresh.principal_id,
     },
   });
 }

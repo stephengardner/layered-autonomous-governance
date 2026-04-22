@@ -26,7 +26,6 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   'directive',
   'decision',
   'preference',
-  'architecture' as AtomType, // future-safe; currently falls through
   'reference',
   'plan',
   'question',
@@ -96,12 +95,10 @@ export function renderCanonMarkdown(
   lines.push(`_Last updated: ${now}_`);
   lines.push('');
 
-  if (atoms.length === 0) {
-    lines.push('_No canon atoms yet._');
-    return lines.join('\n');
-  }
-
-  // Group by type.
+  // Group by type AND filter out superseded / tainted atoms. Emptiness
+  // must be checked AFTER the filter: a caller can legitimately pass a
+  // list where every atom is superseded, and the rendered file should
+  // still show the "no canon" placeholder (not an empty body).
   const byType = new Map<AtomType, Atom[]>();
   for (const atom of atoms) {
     if (atom.superseded_by.length > 0) continue; // skip superseded
@@ -109,6 +106,11 @@ export function renderCanonMarkdown(
     const bucket = byType.get(atom.type) ?? [];
     bucket.push(atom);
     byType.set(atom.type, bucket);
+  }
+
+  if (byType.size === 0) {
+    lines.push('_No canon atoms yet._');
+    return lines.join('\n');
   }
 
   const orderedTypes: AtomType[] = [
@@ -121,7 +123,14 @@ export function renderCanonMarkdown(
     if (!group || group.length === 0) continue;
     const sorted = [...group].sort((a, b) => {
       if (b.confidence !== a.confidence) return b.confidence - a.confidence;
-      return b.created_at.localeCompare(a.created_at);
+      if (b.created_at !== a.created_at) return b.created_at.localeCompare(a.created_at);
+      // Final tie-breaker: atom id. Confidence and created_at can both
+      // match across atoms (hand-authored bulk seeds, deterministic test
+      // fixtures); without this, sort order is engine-defined and the
+      // canon file can flip between runs, breaking the "byte-stable
+      // rerender on unchanged atoms" contract that the applier's
+      // skip-when-unchanged optimization relies on.
+      return a.id.localeCompare(b.id);
     });
     const heading = TYPE_HEADINGS[type] ?? capitalize(type);
     lines.push(`## ${heading}`);
