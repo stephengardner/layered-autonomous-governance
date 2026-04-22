@@ -36,13 +36,24 @@ export function parseBaseBranch(args) {
 // hasn't fetched recently. Returns `{ count, ref }` on success or
 // null when no candidate ref resolves (caller decides whether to block
 // or skip the precheck).
+//
+// Uses two-dot diff (`ref HEAD`) rather than three-dot (`ref...HEAD`).
+// Three-dot resolves to `git diff $(merge-base) HEAD` - "files changed
+// on HEAD since it forked from ref" - which can undercount whenever
+// origin/<base> has advanced past the fork point with unrelated
+// commits. Two-dot is a direct tree-vs-tree compare and matches what
+// CodeRabbit loads for review AND what the CI gate (ci.yml :: PR
+// under CodeRabbit file-review limit) computes. The two gates MUST
+// agree on counts for the same PR; a three-dot local gate that says
+// "allow" while CI says "block" (or vice versa) defeats the
+// fast-fail-mirror framing.
 export function countChangedFilesAgainstBase(base, deps = {}) {
   const run = deps.execaSync ?? execaSync;
   const candidates = [`origin/${base}`, base];
   for (const ref of candidates) {
     const verify = run('git', ['rev-parse', '--verify', ref], { reject: false });
     if (verify.exitCode !== 0) continue;
-    const diff = run('git', ['diff', '--name-only', `${ref}...HEAD`], { reject: false });
+    const diff = run('git', ['diff', '--name-only', ref, 'HEAD'], { reject: false });
     if (diff.exitCode !== 0) continue;
     const lines = diff.stdout.split('\n').filter((l) => l.length > 0);
     return { count: lines.length, ref };
@@ -66,6 +77,11 @@ export function decideCrFileLimit(ghArgs, options = {}) {
   if (env[CR_FILE_LIMIT_ENV] === '1') {
     return { action: 'skip', reason: 'env-bypass' };
   }
+  // Assumption: this repo's default branch is `main` (see ci.yml's
+  // `push: branches: [main]`). For a reusable port of this module,
+  // resolve via `git symbolic-ref refs/remotes/origin/HEAD` when
+  // --base is absent; that's deferred until a consumer with a
+  // non-main default branch shows up.
   const base = parseBaseBranch(ghArgs) ?? 'main';
   const result = counter(base);
   if (result === null) {
