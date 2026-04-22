@@ -414,7 +414,7 @@ const canon = [
     { provenance: { kind: 'operator-seeded', source: { agent_id: 'euler-curator', session_id: 'helix-bootstrap' }, derived_from: ['dev-benchmark-provenance-reproducible'] } },
   ),
   canonAtom(
-    'dec-sunset-one-quarter-cooldown',
+    'dec-sunset-thirty-day-cooldown',
     'decision',
     'Passes flagged for sunset stay live for a 30-day cooldown during which petra runs parity verdicts between the sunsetting pass and its replacement. If parity diverges >0.5% on any corpus the sunset is halted and the replacement is re-evaluated. Institutional memory loss is worse than one extra month of dead code.',
     'vega-archivist',
