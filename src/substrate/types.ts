@@ -86,7 +86,7 @@ export type PlanState =
   | 'abandoned';
 
 /**
- * Lifecycle for atoms with `type: 'question'`.
+ * Lifecycle for atoms with `type: 'question'` (Phase 50b).
  *
  * Questions are HIL-addressed requests for input. The state machine
  * disambiguates Q-A binding under network delay: every answer is
@@ -119,7 +119,8 @@ export type ProvenanceKind =
   // Atoms written by a bootstrap script at initial seeding time. Distinct
   // from `user-directive` (which implies a conversational claim from a
   // live session) because seed atoms are foundational and come from an
-  // operator-authored script.
+  // operator-authored script. Used by bootstrap-cto-actor-canon,
+  // bootstrap-pr-landing-canon, bootstrap-inbox-canon, and similar.
   | 'operator-seeded';
 
 export type Action =
@@ -236,6 +237,7 @@ export interface Proposal {
    * canon edit that does not map 1:1 to a single atom (e.g. a hand-
    * crafted governance change, or a consolidation of many atoms). When
    * set, the proposal is a promotion/commit carrying a specific atom.
+   * Q26 (design/open-questions.md).
    */
   readonly atom_id: AtomId | null;
   readonly diff: Diff;
