@@ -10,20 +10,26 @@
  */
 
 /*
- * Clamp autonomyDial to the documented [0..1] range. Per the
- * KillSwitchState contract on the client side, autonomyDial is
- * a scalar in [0 (fully gated), 1 (fully autonomous)]. A malformed
- * state file (NaN, Infinity, negative, >1) must not be allowed to
- * escalate runtime posture past what the tier allows.
+ * Validate + clamp a candidate autonomyDial to the documented [0..1]
+ * range. Returns the sanitized number if the input is a bona fide,
+ * finite number (clamped to the legal range). Returns `null` on any
+ * other input — NaN, Infinity, strings, objects, nullish — signalling
+ * "malformed payload" to the caller.
  *
- * Fallback on non-number / non-finite is 1 so the behaviour
- * matches an absent state file: "fully autonomous, no tier active".
- * In-range values pass through. Out-of-range finite values clamp
- * to the nearest bound.
+ * This helper is deliberately NOT fail-open: the kill-switch is a
+ * safety primitive, and a present-but-corrupt state file should NOT
+ * be interpreted as "fully autonomous" (which is what a silent
+ * fallback to 1 would do). The caller distinguishes:
+ *   - file absent  → default to 1 (no tier active)
+ *   - file malformed → fail closed (0, fully gated)
+ *   - file valid    → pass through the sanitized dial
+ * That split lives at the call site, not here. `parseAutonomyDial`
+ * only answers "is this a well-formed number in range? if so, here
+ * it is; if not, null."
  */
-export function parseAutonomyDial(value: unknown): number {
-  if (typeof value !== 'number') return 1;
-  if (!Number.isFinite(value)) return 1;
+export function parseAutonomyDial(value: unknown): number | null {
+  if (typeof value !== 'number') return null;
+  if (!Number.isFinite(value)) return null;
   if (value < 0) return 0;
   if (value > 1) return 1;
   return value;

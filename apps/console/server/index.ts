@@ -788,16 +788,23 @@ async function readKillSwitchState(): Promise<{
       reason?: string | null;
       autonomyDial?: number;
     };
+    /*
+     * Three-way fallback for autonomyDial, per the kill-switch safety
+     * contract:
+     *   - valid number in [0..1] → pass through (clamped by helper).
+     *   - malformed payload (NaN, Infinity, non-number) from a
+     *     present state file → fail CLOSED to 0 (fully gated).
+     *     A torn state file must not silently escalate runtime
+     *     posture to "fully autonomous".
+     *   - absent state file → caught by the outer try/catch below,
+     *     falls back to 1 (no tier active).
+     */
+    const sanitized = parseAutonomyDial(parsed.autonomyDial);
     return {
       tier: parsed.tier ?? 'off',
       since: parsed.since ?? null,
       reason: parsed.reason ?? null,
-      // Strict bounds: autonomyDial is documented as [0..1]; clamp
-      // silently so a malformed state file (NaN, Infinity, negative,
-      // >1) can't escalate the runtime posture beyond what the tier
-      // allows. Non-number / invalid values fall back to 1 (same as
-      // an absent state file: "fully autonomous, no tier active").
-      autonomyDial: parseAutonomyDial(parsed.autonomyDial),
+      autonomyDial: sanitized === null ? 0 : sanitized,
     };
   } catch {
     // Absent state file = fully autonomous, no tier active.
