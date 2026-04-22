@@ -13,8 +13,12 @@
  *   }
  */
 
-import type { Atom } from '../types.js';
+import type { Atom, Principal } from '../types.js';
 import { renderCanonMarkdown, type RenderOptions } from './generator.js';
+import {
+  renderForPrincipal,
+  type RenderForOptions,
+} from './render-for.js';
 import {
   CANON_END,
   CANON_START,
@@ -69,6 +73,36 @@ export class CanonMdManager {
     const after = replaceSection(before, rendered);
     return { before, after, changed: before !== after };
   }
+
+  /**
+   * Render a principal-scoped canon view and write it to the target file.
+   *
+   * Filters atoms to what the principal is permitted to read per
+   * `permitted_layers.read`, optionally biases by role-scoped tags, and
+   * prepends a header identifying the principal (id, role, goals,
+   * constraints). The result is written to the bracketed canon section
+   * of the target file, preserving content outside the markers.
+   *
+   * Used by the virtual-org runtime to give each agent its own
+   * CLAUDE.md; the global `applyCanon` remains available for the
+   * top-level project canon.
+   */
+  async renderFor(args: {
+    principal: Principal;
+    atoms: ReadonlyArray<Atom>;
+    roleTagFilter?: Readonly<Record<string, readonly string[]>>;
+    renderOptions?: RenderForOptions;
+  }): Promise<CanonSectionWriteResult> {
+    const rendered = renderForPrincipal({
+      principal: args.principal,
+      atoms: args.atoms,
+      ...(args.roleTagFilter !== undefined
+        ? { roleTagFilter: args.roleTagFilter }
+        : {}),
+      ...(args.renderOptions ?? {}),
+    });
+    return writeSection(this.options.filePath, rendered);
+  }
 }
 
 export {
@@ -81,5 +115,7 @@ export {
   writeSection,
 } from './section.js';
 export { renderCanonMarkdown } from './generator.js';
+export { renderForPrincipal } from './render-for.js';
 export type { CanonSectionWriteResult } from './section.js';
 export type { RenderOptions } from './generator.js';
+export type { RenderForOptions, RenderForArgs } from './render-for.js';
