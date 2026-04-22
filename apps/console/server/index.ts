@@ -27,6 +27,7 @@ import {
   isAllowedOrigin as isAllowedOriginPure,
   makeAllowedOriginSet,
 } from './security';
+import { parseAutonomyDial } from './kill-switch-state';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -802,14 +803,6 @@ async function readKillSwitchState(): Promise<{
     // Absent state file = fully autonomous, no tier active.
     return { tier: 'off', since: null, reason: null, autonomyDial: 1 };
   }
-}
-
-export function parseAutonomyDial(value: unknown): number {
-  if (typeof value !== 'number') return 1;
-  if (!Number.isFinite(value)) return 1;
-  if (value < 0) return 0;
-  if (value > 1) return 1;
-  return value;
 }
 
 async function handleDaemonStatus(): Promise<{

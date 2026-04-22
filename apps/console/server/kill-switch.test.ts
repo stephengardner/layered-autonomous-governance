@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseAutonomyDial } from './index';
+import { parseAutonomyDial } from './kill-switch-state';
 
 /*
  * autonomyDial is documented as [0..1] (see handleKillSwitchTransition
