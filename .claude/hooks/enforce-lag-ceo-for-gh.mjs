@@ -79,6 +79,27 @@ const RAW_GH_PATTERN = /(^|[\s;&|`(])(?:\.\/|\.\\)?gh(?:\.exe)?(?:\s|$)/;
 // of push (e.g. `git push --force-with-lease`, `git push origin`).
 const RAW_GIT_PUSH_PATTERN = /(^|[\s;&|`(])(?:\.\/|\.\\)?git(?:\.exe)?\s+(?:-[^\s]+\s+)*push(?:\s|$)/;
 
+// Match direct curl / wget invocations that issue a mutating HTTP
+// request to GitHub's API host. Third bypass vector after `gh` CLI
+// (2026-04-21 incident) and `git push`. Without this check, a
+// determined caller could hit api.github.com directly with whatever
+// bearer/Basic auth is in scope and attribute the write to whoever
+// owns that token. The agent should use
+//   node scripts/gh-as.mjs lag-ceo api -X POST /repos/...
+// which wraps `gh api` with the bot installation token.
+//
+// Block criteria require BOTH:
+//   (1) a mutating HTTP method (-X POST/PUT/PATCH/DELETE or
+//       --request POST/PUT/PATCH/DELETE)
+//   (2) a target host matching github.com or api.github.com
+// Reads (GET, or no -X at all) against api.github.com stay allowed
+// because they don't change state and carry no attribution risk.
+// Escape hatch: `# allow-raw-http-gh`.
+const RAW_HTTP_CLIENT_PATTERN = /(^|[\s;&|`(])(?:\.\/|\.\\)?(?:curl|wget)(?:\.exe)?(?:\s|$)/;
+const HTTP_MUTATING_METHOD_PATTERN = /(?:-X\s*|--request\s+)(?:POST|PUT|PATCH|DELETE)\b/i;
+const GITHUB_HOST_PATTERN = /\b(?:api\.)?github\.com\b/;
+const ALLOWED_HTTP_GH_PATTERNS = [/#\s*allow-raw-http-gh\b/];
+
 const MCP_GITHUB_PREFIX = 'mcp__github__';
 
 // Read-side MCP github tool names (no attribution risk). Any
@@ -219,6 +240,41 @@ function inspectBash(payload) {
       `For a narrowly-scoped legitimate case (e.g. pushing a local`,
       `branch that must be under operator identity), append`,
       `\`# allow-raw-git-push\` to the offending clause.`,
+    ].join('\n');
+    process.stdout.write(JSON.stringify({ decision: 'block', reason }));
+    return;
+  }
+
+  // curl / wget against github.com or api.github.com with a mutating
+  // HTTP method. Third bypass vector after `gh` CLI and `git push`.
+  // Same per-clause discipline: each clause that makes a GitHub HTTP
+  // mutation must carry the escape hatch or use the gh-as.mjs api
+  // wrapper. Read-only calls (no -X or explicit -X GET) are allowed.
+  const offendingHttp = clauses.find(
+    (c) => RAW_HTTP_CLIENT_PATTERN.test(c)
+      && HTTP_MUTATING_METHOD_PATTERN.test(c)
+      && GITHUB_HOST_PATTERN.test(c)
+      && !ALLOWED_HTTP_GH_PATTERNS.some((p) => p.test(c)),
+  );
+  if (offendingHttp !== undefined) {
+    const reason = [
+      `Raw mutating HTTP call to GitHub blocked by .claude/hooks/enforce-lag-ceo-for-gh.mjs.`,
+      ``,
+      `The clause below issues a POST/PUT/PATCH/DELETE against github.com`,
+      `or api.github.com without routing through the lag-ceo[bot] wrapper.`,
+      `Whatever bearer/Basic auth that curl/wget picks up attributes the`,
+      `write to its owner - typically the operator's cached PAT on this`,
+      `machine, which defeats the same rule that blocks raw \`gh\` and`,
+      `\`git push\`.`,
+      ``,
+      `Rewrite via the gh-as.mjs api wrapper (handles the token):`,
+      ``,
+      `    node scripts/gh-as.mjs lag-ceo api -X POST /repos/OWNER/REPO/... --input -`,
+      ``,
+      `For a narrowly-scoped legitimate case (webhook test, audit tool),`,
+      `append \`# allow-raw-http-gh\` to the offending clause.`,
+      ``,
+      `Offending clause: ${offendingHttp.trim()}`,
     ].join('\n');
     process.stdout.write(JSON.stringify({ decision: 'block', reason }));
     return;

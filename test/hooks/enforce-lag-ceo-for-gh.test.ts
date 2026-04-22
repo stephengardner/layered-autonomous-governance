@@ -518,3 +518,119 @@ describe('enforce-lag-ceo-for-gh hook (subshell token-injection bypass)', () => 
     expect(result.decision).toBe('allow');
   });
 });
+
+/*
+ * Raw HTTP (curl / wget) to GitHub's API is the third bypass vector.
+ * After the hook blocks `gh` (2026-04-21 incident) and `git push`, a
+ * determined caller could still issue a mutating HTTP request straight
+ * at api.github.com with whatever bearer/Basic auth is in scope, and
+ * the call would attribute to whoever owns that token - defeating the
+ * rule that the gh / git-push checks enforce.
+ *
+ * Read-side curl (no -X or explicit -X GET) is NOT blocked because it
+ * doesn't change state and carries no attribution risk.
+ */
+describe('enforce-lag-ceo-for-gh hook (raw HTTP client bypass)', () => {
+  it('blocks curl -X POST against api.github.com', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command:
+          'curl -X POST -H "Authorization: token $TOKEN" https://api.github.com/repos/x/y/issues -d \'{"title":"t"}\'',
+      },
+    });
+    expect(result.decision).toBe('block');
+    expect(result.reason).toMatch(/HTTP|gh-as.mjs/);
+  });
+
+  it('blocks curl --request DELETE against api.github.com', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command:
+          'curl --request DELETE -H "Authorization: Bearer $PAT" https://api.github.com/repos/x/y/issues/comments/1',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks curl -XPATCH (no space after -X) against api.github.com', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -XPATCH https://api.github.com/repos/x/y -H "Authorization: token $T" -d \'{"name":"z"}\'',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks wget -X POST against api.github.com', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'wget -X POST https://api.github.com/repos/x/y/pulls',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks curl -X POST against github.com (non-api subdomain)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -X POST https://github.com/login/oauth/access_token -d "..."',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('allows curl with no mutating method against api.github.com (read)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -H "Authorization: token $TOKEN" https://api.github.com/user',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows curl -X GET against api.github.com (explicit read)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -X GET https://api.github.com/repos/x/y',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows curl -X POST against a non-github host (out of scope)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -X POST https://api.example.com/hook -d "{...}"',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows curl -X POST to github with # allow-raw-http-gh escape hatch', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -X POST https://api.github.com/repos/x/y/issues -d "{...}" # allow-raw-http-gh',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows gh-as wrapper for the API mutation (the suggested rewrite)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'node scripts/gh-as.mjs lag-ceo api -X POST /repos/x/y/issues --input issue.json',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+});
