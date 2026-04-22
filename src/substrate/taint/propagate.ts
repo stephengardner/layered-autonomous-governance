@@ -161,9 +161,14 @@ export async function propagateCompromiseTaint(
           reachableTaintedIds.add(atom.id);
           continue;
         }
-        await applyTaint(host, atom, principalId, responderId, 'direct');
-        reachableTaintedIds.add(atom.id);
-        newlyTaintedIds.add(atom.id);
+        // Branch on applyTaint's outcome so the bookkeeping matches what
+        // actually happened. Before this branch, both sets were always
+        // updated, which inflated atomsTainted in the report (for races
+        // where the atom was already-tainted by another writer) and
+        // seeded vanished atoms as reachable (wrong transitive set).
+        const result = await applyTaint(host, atom, principalId, responderId, 'direct');
+        if (result !== 'missing') reachableTaintedIds.add(atom.id);
+        if (result === 'transitioned') newlyTaintedIds.add(atom.id);
       }
       if (page.nextCursor === null) break;
       cursor = page.nextCursor;
@@ -212,10 +217,21 @@ export async function propagateCompromiseTaint(
           }
           continue;
         }
-        await applyTaint(host, atom, principalId, responderId, 'transitive');
+        // Same branching as the direct pass: honour applyTaint's actual
+        // outcome so atomsTainted and the reachable set both reflect
+        // reality (no race-induced double-count, no vanished atoms
+        // propagating further). Both 'transitioned' and
+        // 'already-non-clean' count as forward progress for the
+        // fixpoint loop: they both add a new source to reachableTaintedIds
+        // (we only call applyTaint when scan-time atom.taint was 'clean',
+        // so the id was not in reachableTaintedIds before this call).
+        // Only 'missing' is a true no-op. Only 'transitioned' counts
+        // toward newlyTaintedIds (and thus the reported atomsTainted).
+        const result = await applyTaint(host, atom, principalId, responderId, 'transitive');
+        if (result === 'missing') continue;
         reachableTaintedIds.add(atom.id);
-        newlyTaintedIds.add(atom.id);
         newlyTainted += 1;
+        if (result === 'transitioned') newlyTaintedIds.add(atom.id);
       }
       if (page.nextCursor === null) break;
       cursor = page.nextCursor;
@@ -258,13 +274,30 @@ export async function propagateCompromiseTaint(
   };
 }
 
+/**
+ * Outcome of an applyTaint call. Callers branch on this to decide how to
+ * update their bookkeeping sets:
+ *   - 'transitioned': the atom was clean when re-read, was flipped to
+ *     tainted, and an audit event fired. Caller should add to BOTH
+ *     reachableTaintedIds (propagation) and newlyTaintedIds (report).
+ *   - 'already-non-clean': the atom vanished-from-clean between scan
+ *     and update (concurrent taint/quarantine by another writer, or
+ *     quarantined stronger than tainted). No store write, no audit.
+ *     Caller should add to reachableTaintedIds (still a propagation
+ *     source) but NOT newlyTaintedIds (no transition this invocation).
+ *   - 'missing': the atom was deleted between scan and update. No store
+ *     write, no audit. Caller should add to NEITHER set (a deleted atom
+ *     is not reachable and did not transition).
+ */
+type ApplyTaintResult = 'transitioned' | 'already-non-clean' | 'missing';
+
 async function applyTaint(
   host: Host,
   atom: Atom,
   triggerPrincipal: PrincipalId,
   responderId: PrincipalId,
   mode: 'direct' | 'transitive',
-): Promise<void> {
+): Promise<ApplyTaintResult> {
   // Re-read the atom right before patching. The scan captured an atom
   // snapshot; between capture and this update, a concurrent compromise
   // cascade (or manual operator action) may have already set taint to
@@ -272,9 +305,14 @@ async function applyTaint(
   // is a silent downgrade - quarantined is strictly stronger than
   // tainted. Check current state and skip or refine the patch.
   const fresh = await host.atoms.get(atom.id);
-  if (!fresh) return; // atom vanished between scan and update; nothing to do.
-  if (fresh.taint === 'quarantined') return; // don't downgrade
-  if (fresh.taint === 'tainted' && atom.taint === 'tainted') return; // no-op; audit already written by earlier run
+  if (!fresh) return 'missing'; // atom vanished between scan and update; nothing to do.
+  // Any non-clean state (tainted or quarantined) is a no-op: quarantined
+  // must not be downgraded, and an already-tainted atom's audit was
+  // written by the writer that tainted it. Returning 'already-non-clean'
+  // (rather than 'transitioned') keeps newlyTaintedIds honest - no
+  // transition happened this invocation - while still letting the caller
+  // track reachability for transitive propagation.
+  if (fresh.taint !== 'clean') return 'already-non-clean';
   await host.atoms.update(atom.id, { taint: 'tainted' });
   // The "every transition is logged" invariant needs the audit write
   // to succeed; if the auditor throws, the atom is now tainted in the
@@ -297,4 +335,5 @@ async function applyTaint(
       atom_principal: fresh.principal_id,
     },
   });
+  return 'transitioned';
 }
