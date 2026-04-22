@@ -103,16 +103,31 @@ describe('matchSpecificity (pure)', () => {
 });
 
 describe('checkToolPolicy', () => {
-  it('default-allow when canon has no policies', async () => {
+  it('fail-closed (escalate) when canon has no policies', async () => {
     const host = createMemoryHost();
     const result = await checkToolPolicy(host, {
       tool: 'Bash',
       origin: 'terminal',
       principal: operator,
     });
+    // Default is fail-closed: a governance gap surfaces as an HIL
+    // escalation rather than silently allowing the action. Callers
+    // opt into permissive behavior explicitly via
+    // options.fallbackDecision.
+    expect(result.decision).toBe('escalate');
+    expect(result.specificity).toBe(0);
+    expect(result.reason).toMatch(/No clean, unsuperseded tool-use policies/);
+  });
+
+  it('allows when caller opts into permissive fallback', async () => {
+    const host = createMemoryHost();
+    const result = await checkToolPolicy(
+      host,
+      { tool: 'Bash', origin: 'terminal', principal: operator },
+      { fallbackDecision: 'allow' },
+    );
     expect(result.decision).toBe('allow');
     expect(result.specificity).toBe(0);
-    expect(result.reason).toMatch(/No tool-use policies/);
   });
 
   it('exact match wins over wildcard fallback', async () => {
@@ -202,11 +217,14 @@ describe('checkToolPolicy', () => {
       action: 'deny',
       reason: 'should be ignored (L1)',
     }, { layer: 'L1' }));
-    const result = await checkToolPolicy(host, {
-      tool: 'Bash',
-      origin: 'terminal',
-      principal: operator,
-    });
+    // With the L1 policy filtered out by layer, the fail-closed default
+    // (escalate) applies. Caller opts into 'allow' to prove the L1
+    // deny was actually ignored (not collapsed via escalate fallback).
+    const result = await checkToolPolicy(
+      host,
+      { tool: 'Bash', origin: 'terminal', principal: operator },
+      { fallbackDecision: 'allow' },
+    );
     expect(result.decision).toBe('allow');
   });
 
@@ -264,9 +282,16 @@ describe('checkToolPolicy', () => {
       tool: 'Edit', origin: 'telegram', principal: agent,
     });
     expect(b.decision).toBe('escalate');
-    const c = await checkToolPolicy(host, {
-      tool: 'Read', origin: 'telegram', principal: agent,
-    });
+    // Read is outside the (Write|Edit|MultiEdit) regex, so the regex
+    // policy doesn't match. With no matching policy, the fail-closed
+    // default would return 'escalate'; opt into permissive to assert
+    // the regex genuinely did not match (as opposed to collapsing
+    // through the fallback).
+    const c = await checkToolPolicy(
+      host,
+      { tool: 'Read', origin: 'telegram', principal: agent },
+      { fallbackDecision: 'allow' },
+    );
     expect(c.decision).toBe('allow');
   });
 });

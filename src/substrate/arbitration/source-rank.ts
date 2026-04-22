@@ -6,11 +6,14 @@
  *
  * Priority, highest first:
  *   1. Layer: L3 canon > L2 curated > L1 extracted > L0 raw.
- *   2. Provenance kind: user-directive > canon-promoted > llm-refined
- *      > agent-inferred > agent-observed.
- *   3. Principal hierarchy depth: lower depth (closer to root) wins. A
- *      root principal's atom outranks a deeply-nested principal's atom
- *      when layer + provenance are otherwise equal.
+ *   2. Provenance kind: operator-seeded = user-directive
+ *      > canon-promoted > llm-refined > agent-inferred
+ *      > agent-observed. `operator-seeded` and `user-directive`
+ *      tie at the top tier while preserving distinct provenance
+ *      origins; see PROVENANCE_RANK below.
+ *   3. Principal hierarchy depth: lower depth (closer to root) wins.
+ *      A root principal's atom outranks a deeply-nested principal's
+ *      atom when layer + provenance are otherwise equal.
  *   4. Confidence: higher wins (integer scale, 0-10).
  *
  * Principal depth is supplied by the caller because computing it requires
@@ -32,9 +35,9 @@ const LAYER_RANK: Record<Layer, number> = {
 };
 
 const PROVENANCE_RANK: Record<ProvenanceKind, number> = {
-  // Bootstrap-seeded atoms rank with user-directives: both are operator-
-  // authored claims; 'operator-seeded' comes from a script at init, while
-  // 'user-directive' comes from a live session. Equal authority.
+  // Bootstrap-seeded atoms rank with user-directives while retaining
+  // distinct provenance semantics: 'operator-seeded' comes from a script
+  // at init, while 'user-directive' comes from a live session.
   'operator-seeded': 100,
   'user-directive': 100,
   'canon-promoted': 80,

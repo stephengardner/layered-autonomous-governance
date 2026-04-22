@@ -88,6 +88,15 @@ describe('Autonomous flow: atoms -> loop -> human-approved promotion -> CLAUDE.m
     const runner = new LoopRunner(host, {
       principalId: principal,
       l3HumanGateTimeoutMs: 2_000,
+      // This integration test doesn't wire a ValidatorRegistry; opt out
+      // of the L3 requireValidation default so the human-gate path is
+      // exercised end-to-end. Production deployments should supply a
+      // validator via PromotionEngine.options.validators or override
+      // this the same way.
+      promotionThresholds: {
+        L2: { minConfidence: 0.7, minConsensus: 2, requireValidation: false },
+        L3: { minConfidence: 0.9, minConsensus: 3, requireValidation: false, requireHumanApproval: true },
+      },
     });
 
     // 3. Concurrent human-approval harness: poll FileNotifier.listPending()

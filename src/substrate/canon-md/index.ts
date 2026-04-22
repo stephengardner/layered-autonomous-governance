@@ -1,12 +1,16 @@
 /**
- * Canon-md: read, generate, and write the bracketed canon section in a
- * target CLAUDE.md (or any markdown) file.
+ * Canon-md: read, generate, and write a bracketed canon section in a
+ * target markdown file. Target-neutral - the file path and title are
+ * caller-supplied; this module does not assume CLAUDE.md or any
+ * specific product.
  *
  * Usage:
- *   const mgr = new CanonMdManager({ filePath: '/path/CLAUDE.md' });
+ *   const mgr = new CanonMdManager({ filePath: '/path/to/target.md' });
  *   const atoms = (await host.atoms.query({ layer: ['L3'] }, 1000)).atoms;
  *   const result = await mgr.applyCanon(atoms);
- *   if (result.changed) console.log(`wrote ${atoms.length} atoms to ${filePath}`);
+ *   if (result.changed) {
+ *     // wrote a changed section; caller decides how to announce it.
+ *   }
  */
 
 import type { Atom } from '../types.js';

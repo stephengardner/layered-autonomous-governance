@@ -57,13 +57,17 @@ export function evaluate(
   }
 
   if (thr.requireValidation) {
-    // ValidationResult is 'verified' | 'invalid' | 'unverifiable'.
-    // requireValidation=true means we will NOT promote atoms the validator
-    // has flagged invalid. 'unverifiable' still passes (no validator could
-    // judge; policy accepts absence of evidence).
-    if (candidate.validation === 'invalid') {
+    // `requireValidation` means the threshold demands POSITIVE
+    // validation - the validator has to have examined this candidate
+    // and returned `verified`. Treating `unverifiable` (no validator
+    // could judge) as acceptable would contradict the threshold
+    // docstring and let unvalidated atoms promote under a strict
+    // threshold. Fail closed: require `verified` explicitly.
+    if (candidate.validation !== 'verified') {
       canPromote = false;
-      reasons.push('validation: invalid (threshold requires non-invalid)');
+      reasons.push(
+        `validation: ${candidate.validation} (threshold requires verified)`,
+      );
     }
   }
 

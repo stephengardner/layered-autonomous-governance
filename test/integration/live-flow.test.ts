@@ -78,6 +78,13 @@ describe('Live flow: loop with canon applier + concurrent operator', () => {
       principalId: principal,
       l3HumanGateTimeoutMs: 5_000,
       canonTargetPath: claudeMdPath,
+      // Opt out of L3 requireValidation (no ValidatorRegistry wired in
+      // this integration test); production deployments thread in a
+      // validator via PromotionEngine.options.validators.
+      promotionThresholds: {
+        L2: { minConfidence: 0.7, minConsensus: 2, requireValidation: false },
+        L3: { minConfidence: 0.9, minConsensus: 3, requireValidation: false, requireHumanApproval: true },
+      },
       onTick: report => {
         tickReports.push(report);
       },
