@@ -2,16 +2,17 @@
  * Auto-approve low-stakes proposed plans.
  *
  * Scans `plan` atoms in state `proposed` and transitions qualifying
- * ones to `approved` in-place, so the plan-dispatch loop (PR E) can
- * pick them up. The qualifying filter is read from a policy atom
- * (pol-plan-auto-approve-low-stakes) so tuning is a canon edit,
+ * ones to `approved` in-place, so downstream plan-dispatch can pick
+ * them up. The qualifying filter is read from a directive atom with
+ * subject `plan-auto-approve-low-stakes` so tuning is a canon edit,
  * never a framework release.
  *
  * Default qualification rules:
  * - Plan's metadata.planning_actor_version is present (sanity: only
  *   plans produced by a recognized planner are auto-approved).
  * - Plan's metadata.delegation.sub_actor_principal_id is in the
- *   allowlist (default: ['auditor-actor']; read-only actors only).
+ *   policy-provided allowlist. Framework default is the empty
+ *   allowlist (fail-closed); canon supplies the real list.
  * - Plan's confidence >= min_confidence (default 0.55).
  * - Plan is not tainted, not superseded.
  *

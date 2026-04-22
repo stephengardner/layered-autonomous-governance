@@ -1,16 +1,12 @@
 /**
- * PlanningActor subpath (Phase 55a).
+ * Planning runtime subpath.
  *
- * The CTO-role planning mechanism for LAG. Synthesizes Plan atoms
- * grounded in the org's canon + decisions + relevant atoms. Composes
- * with runActor from `/actors` for the driver + policy gate + audit.
+ * Exposes the planning actor, context aggregation helper, judgment
+ * adapter surface, and shared planning types. Composes with runActor
+ * from `/actors` for the driver + policy gate + audit.
  *
  *   import { PlanningActor } from 'layered-autonomous-governance/actors/planning';
  *   import { aggregateRelevantContext } from 'layered-autonomous-governance/actors/planning';
- *
- * 55b wires the real LLM-backed PlanningJudgment; 55c adds sub-actor
- * delegation so an approved plan can invoke PrLandingActor /
- * DeployActor / etc.
  */
 
 export { PlanningActor } from './planning-actor.js';

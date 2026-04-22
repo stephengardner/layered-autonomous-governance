@@ -2,14 +2,13 @@
  * The Actor interface.
  *
  * An Actor is a named mechanism with a five-phase lifecycle
- * (observe -> classify -> propose -> apply -> reflect), per the MAPE-K
- * lineage documented in design/prior-art-actor-frameworks.md. Actors
+ * (observe -> classify -> propose -> apply -> reflect). Actors
  * do not drive themselves; the runActor driver in run-actor.ts does.
  *
  * Actors compose with:
  *   - a Host (governance primitives: atoms, canon, llm, notifier, etc.)
  *   - a Principal (authority the actor runs under)
- *   - declared ActorAdapters (external-system effects; see D17)
+ *   - declared ActorAdapters (external-system effects)
  *
  * Type parameters:
  *   Obs      - what observe() produces (e.g., list of review comments)

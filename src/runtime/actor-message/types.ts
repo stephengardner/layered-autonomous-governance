@@ -7,9 +7,9 @@
  * atom whose `derived_from` points at the original message.
  *
  * Transport is the AtomStore. There is no new Host sub-interface for
- * messaging; AtomStore.put + AtomStore.list are sufficient. That keeps
- * the existing boundary (D3, D14) and lets any AtomStore adapter
- * (memory, file, postgres) carry the inbox for free.
+ * messaging; AtomStore.put + AtomStore.list are sufficient. Any
+ * AtomStore adapter (memory, file, postgres) carries the inbox for
+ * free without widening the Host boundary.
  *
  * Write discipline: every `actor-message` is validated at write time
  * against:
@@ -23,8 +23,8 @@
  * V1 core fields are additive-only. Future fields (thread_id,
  * capabilities_requested, reply_to, tracing) ride in `metadata`
  * with a graduation rule: keys reaching >=3 consumers are promoted
- * to core via ADR. This protects both old atoms from schema
- * migrations and new consumers from rigidity.
+ * to core. This protects both old atoms from schema migrations and
+ * new consumers from rigidity.
  */
 
 import type { AtomId, PrincipalId, Time } from '../../types.js';

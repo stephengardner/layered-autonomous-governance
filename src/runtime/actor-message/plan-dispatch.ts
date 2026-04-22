@@ -87,10 +87,9 @@ export async function runDispatchTick(
     // Limitation: the AtomStore interface does not expose a true
     // compare-and-swap today, so the claim is best-effort between
     // get() and update(). The memory/file adapters serialize calls
-    // in practice and avoid the race; a Postgres adapter with
-    // native `UPDATE ... WHERE plan_state='approved'` is required
-    // for multi-process concurrency. See the load-test commitment
-    // in design/inbox-v1-load-test-commitment.md for the gate.
+    // in practice and avoid the race; a multi-process adapter needs
+    // a native conditional update (e.g., `UPDATE ... WHERE
+    // plan_state='approved'`) for correctness.
     const fresh = await host.atoms.get(plan.id);
     if (fresh === null || fresh.plan_state !== 'approved') {
       // Another tick claimed it, or the plan was revoked. Skip.

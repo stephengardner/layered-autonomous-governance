@@ -1,16 +1,16 @@
 /**
- * PlanningActor types (Phase 55a).
+ * PlanningActor types.
  *
- * The PlanningActor is LAG's CTO-role mechanism: it takes an operator
- * request and synthesizes a Plan atom grounded in the org's canon,
- * prior decisions, relevant atoms, and active principals. It has no
+ * The PlanningActor is the mechanism that turns an operator request
+ * into a proposed `plan` atom grounded in canon directives, prior
+ * decisions, relevant atoms, and active principals. It has no
  * opinions of its own -- its "soul" comes from the atom set. Every
  * plan it proposes cites the atoms it derived from.
  *
- * This file is vendor-neutral: no Claude-specific types, no Telegram,
- * nothing about concrete LLM providers. The actor composes with any
- * Host (via its LLM sub-interface) and any set of ActorAdapters
- * declared at the type level.
+ * This file is vendor-neutral: no provider-specific types, no
+ * channel-specific coupling. The actor composes with any Host (via
+ * its LLM sub-interface) and any set of ActorAdapters declared at the
+ * type level.
  */
 
 import type { Atom, AtomId, PrincipalId, Time } from '../../../types.js';
@@ -108,7 +108,8 @@ export interface ProposedPlan {
   }>;
   /**
    * Short answer to "what breaks if we revisit this plan in 3
-   * months". Mandated by dev-forward-thinking-no-regrets.
+   * months". A canon directive may require this field; the framework
+   * only typechecks that it's present.
    */
   readonly whatBreaksIfRevisit: string;
   /**
@@ -121,9 +122,9 @@ export interface ProposedPlan {
 /**
  * Hooks the PlanningActor uses for its LLM-backed judgment. Injected
  * so the actor is testable without a real LLM and so prompt templates
- * (Phase 55b) can swap without touching the actor code. A stub
- * implementation returns deterministic answers; production wires an
- * LLM adapter that reads versioned prompts from disk.
+ * can swap without touching the actor code. A stub implementation
+ * returns deterministic answers; production wires an LLM adapter that
+ * reads versioned prompts from disk.
  */
 export interface PlanningJudgment {
   /**

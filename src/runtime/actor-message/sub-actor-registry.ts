@@ -1,7 +1,8 @@
 /**
- * SubActorRegistry: the 55c delegation seam.
+ * SubActorRegistry: the delegation seam between an approving actor
+ * and an invokable sub-actor.
  *
- * A plan approved by the PlanningActor can declare a sub-actor it
+ * A plan approved by an upstream actor can declare a sub-actor it
  * wants to invoke via `metadata.delegation.sub_actor_principal_id`.
  * The plan-dispatch loop scans for such approved plans and calls
  * `registry.invoke(principalId, payload, correlationId)`; the
@@ -19,8 +20,8 @@
  *   atoms later. V1 keeps both shapes in the result union for
  *   forward-compatibility.
  * - Unregistered principalId triggers a ValidationError. The caller
- *   turns that into an escalation atom via the existing
- *   `pol-cto-plan-escalate` path; the registry itself stays
+ *   turns that into an escalation atom via the deployment's
+ *   configured escalation-policy path; the registry itself stays
  *   mechanism-only.
  */
 
