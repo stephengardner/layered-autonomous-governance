@@ -60,14 +60,28 @@ export class PromotionEngine {
     targetLayer: PromotableLayer,
   ): Promise<PromotionCandidate[]> {
     const sourceLayer = sourceLayerFor(targetLayer);
-    const { atoms } = await this.host.atoms.query({ layer: [sourceLayer] }, 100_000);
+    // Paginate: a 100_000 limit silently truncates large stores and
+    // buffers the whole world in memory at once. Walk the cursor so
+    // promotion reasons over every eligible atom.
+    const PAGE = 1000;
     const byHash = new Map<string, Atom[]>();
-    for (const atom of atoms) {
-      const h = this.host.atoms.contentHash(atom.content);
-      const arr = byHash.get(h) ?? [];
-      arr.push(atom);
-      byHash.set(h, arr);
-    }
+    let cursor: string | undefined = undefined;
+    do {
+      const page = await this.host.atoms.query({ layer: [sourceLayer] }, PAGE, cursor);
+      for (const atom of page.atoms) {
+        // Fail-closed in-code guards: tainted or superseded atoms must
+        // never promote, regardless of whether the adapter's AtomFilter
+        // enforces these bits. AtomFilter enforcement varies; the
+        // correctness floor is the in-code check here.
+        if (atom.taint !== 'clean') continue;
+        if (atom.superseded_by.length > 0) continue;
+        const h = this.host.atoms.contentHash(atom.content);
+        const arr = byHash.get(h) ?? [];
+        arr.push(atom);
+        byHash.set(h, arr);
+      }
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
 
     const candidates: PromotionCandidate[] = [];
     for (const group of byHash.values()) {

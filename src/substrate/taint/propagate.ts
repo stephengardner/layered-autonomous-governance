@@ -132,12 +132,19 @@ export async function propagateCompromiseTaint(
   }
 
   // --- Iterate transitive propagation to fixpoint -------------------------
+  // `lastNewlyTainted` captures the progress count of the most recent
+  // iteration. If we exit because the fixpoint converged, this is 0. If
+  // we exit because we hit the safety ceiling WHILE still making
+  // progress, it is > 0 - a taint leak with no obvious signal to the
+  // operator. Audit the ceiling hit so governance reviewers can see
+  // the event.
+  let lastNewlyTainted = 0;
   while (iterations < maxIterations) {
     iterations += 1;
     let newlyTainted = 0;
     // Scan all atoms, paginating through EVERY page. For the V0 scale
-    // this is fine; if the palace grows, this is the place to add a
-    // derived_from -> atom_id index on the AtomStore.
+    // this is fine; a derived_from -> atom_id index on the AtomStore is
+    // the natural next step when atom volume grows.
     let cursor: string | undefined = undefined;
     for (;;) {
       const page = await host.atoms.query({ superseded: true }, pageSize, cursor);
@@ -166,7 +173,27 @@ export async function propagateCompromiseTaint(
       if (page.nextCursor === null) break;
       cursor = page.nextCursor;
     }
+    lastNewlyTainted = newlyTainted;
     if (newlyTainted === 0) break;
+  }
+
+  // Ceiling hit while still making progress is a governance gap: the
+  // returned report would otherwise look identical to a clean
+  // convergence, hiding a taint leak. Surface via the auditor so it
+  // shows up in the audit log and reflection hooks.
+  if (iterations >= maxIterations && lastNewlyTainted > 0) {
+    await host.auditor.log({
+      kind: 'taint.propagate.ceiling_hit',
+      principal_id: responderId,
+      timestamp: host.clock.now() as Time,
+      refs: { atom_ids: [...newlyTaintedIds] },
+      details: {
+        principal_id_compromised: principalId,
+        max_iterations: maxIterations,
+        iterations,
+        last_newly_tainted: lastNewlyTainted,
+      },
+    });
   }
 
   return {

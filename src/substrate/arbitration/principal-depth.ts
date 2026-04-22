@@ -2,29 +2,29 @@
  * Compute a principal's depth from root via the `signed_by` chain.
  *
  * Conventions:
- *   - Depth 0 = a root principal (signed_by === null). Typically the human
- *     operator or a top-level org directive principal.
- *   - Depth 1 = a principal signed by a root. e.g. VP-eng reports to root.
- *   - Depth 2 = grandchild. e.g. alice reports to vp-eng who reports to root.
- *   - Unknown / broken chains return MAX_PRINCIPAL_DEPTH as a fail-safe so
- *     unrooted principals do not accidentally outrank properly-rooted ones.
+ *   - Depth 0 = a root principal (signed_by === null).
+ *   - Depth N = N hops along `signed_by` to reach a root.
+ *   - Unknown / broken chains return MAX_PRINCIPAL_DEPTH as a fail-safe
+ *     so unrooted principals do not accidentally outrank properly-rooted
+ *     ones.
  *
- * Cycle guard: if a chain loops (should never happen under normal use) the
- * walker halts at MAX_PRINCIPAL_DEPTH.
+ * Cycle guard: if a chain loops (should never happen under normal use)
+ * the walker halts at MAX_PRINCIPAL_DEPTH.
  *
- * This is the primitive that makes source-rank hierarchy-aware. The
- * autonomous-organization story (a vp-eng atom beats an agent alice atom
- * even when their layer / provenance / confidence are equal) is realized by
- * feeding this depth into `sourceRank(atom, depth)`.
+ * This is the primitive that makes source-rank hierarchy-aware: a
+ * shallower principal's atom outranks a deeper one when layer /
+ * provenance / confidence are equal, via `sourceRank(atom, depth)`.
  */
 
 import type { PrincipalStore } from '../interface.js';
 import type { PrincipalId } from '../types.js';
 
 /**
- * Principal chains deeper than this are capped. Exceeds realistic org
- * depth (human -> CEO -> VP -> director -> manager -> IC -> agent is 6);
- * 9 leaves headroom.
+ * Principal chains deeper than this are capped. 9 is chosen as a
+ * conservative upper bound that covers deeply-nested delegation chains
+ * with room to spare; orgs with a shallower ladder never hit it, and
+ * the arbitration rank math (depth multiplier 11) stays within a
+ * single 100-point provenance step.
  */
 export const MAX_PRINCIPAL_DEPTH = 9;
 

@@ -97,8 +97,22 @@ export async function applyDecision(
 ): Promise<void> {
   if (decision.outcome.kind === 'winner') {
     const { winner, loser } = decision.outcome;
-    await host.atoms.update(loser, { superseded_by: [winner] });
-    await host.atoms.update(winner, { supersedes: [loser] });
+    // AtomPatch arrays are APPEND, not union (see adapter contract in
+    // adapters/memory/atom-store.ts). Re-running applyDecision on the
+    // same winning pair would duplicate entries in both arrays; guard
+    // with a membership check. Best-effort without a true CAS; adapters
+    // serialize in practice and a true set-semantics patch is the
+    // long-term fix when the Postgres adapter lands.
+    const [loserAtom, winnerAtom] = await Promise.all([
+      host.atoms.get(loser),
+      host.atoms.get(winner),
+    ]);
+    if (loserAtom && !loserAtom.superseded_by.includes(winner)) {
+      await host.atoms.update(loser, { superseded_by: [winner] });
+    }
+    if (winnerAtom && !winnerAtom.supersedes.includes(loser)) {
+      await host.atoms.update(winner, { supersedes: [loser] });
+    }
   }
 
   const audit: AuditEvent = {

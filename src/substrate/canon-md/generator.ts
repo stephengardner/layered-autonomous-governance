@@ -19,6 +19,7 @@
  *   - Within each type, atoms are sorted by confidence desc, then created_at desc for stability.
  */
 
+import { CANON_END, CANON_START } from './section.js';
 import type { Atom, AtomType } from '../types.js';
 
 const TYPE_ORDER: ReadonlyArray<AtomType> = [
@@ -126,9 +127,10 @@ export function renderCanonMarkdown(
     lines.push(`## ${heading}`);
     lines.push('');
     for (const atom of sorted) {
+      const content = escapeCanonMarkers(atom.content);
       const line = showConfidence
-        ? `- ${atom.content} _(confidence ${atom.confidence.toFixed(2)})_`
-        : `- ${atom.content}`;
+        ? `- ${content} _(confidence ${atom.confidence.toFixed(2)})_`
+        : `- ${content}`;
       lines.push(line);
     }
     lines.push('');
@@ -139,4 +141,18 @@ export function renderCanonMarkdown(
 
 function capitalize(s: string): string {
   return s.length === 0 ? s : s[0]!.toUpperCase() + s.slice(1);
+}
+
+// Prevent atom content from prematurely closing the managed canon
+// section. A clean atom carrying the literal `<!-- lag:canon-end -->`
+// sequence would otherwise terminate the block early, and the next
+// replace pass would treat the trailing generated text as human-owned.
+// Rewrite both markers into a safe literal that will never be matched
+// by the section extractor. Cheap and deterministic.
+function escapeCanonMarkers(s: string): string {
+  return s
+    .split(CANON_START)
+    .join('<!-- lag:canon-start escaped -->')
+    .split(CANON_END)
+    .join('<!-- lag:canon-end escaped -->');
 }

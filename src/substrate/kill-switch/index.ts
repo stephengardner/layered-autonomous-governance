@@ -121,8 +121,37 @@ export function createKillSwitch(
   }
 
   const sentinelFilename = options.sentinelFilename ?? DEFAULT_SENTINEL;
+  // Reject anything that could resolve outside stateDir. `fs.watch`
+  // below only observes stateDir; an out-of-root sentinel silently
+  // breaks the kill-switch contract. Narrow acceptance: a single
+  // filename component (no slash / backslash / drive prefix / dot).
+  if (
+    sentinelFilename.length === 0
+    || sentinelFilename === '.'
+    || sentinelFilename === '..'
+    || /[\\/]/u.test(sentinelFilename)
+    || /^[A-Za-z]:/u.test(sentinelFilename)
+  ) {
+    throw new Error(
+      '[kill-switch] sentinelFilename must be a single filename under stateDir',
+    );
+  }
   const sentinelPath = resolve(options.stateDir, sentinelFilename);
   const pollMs = options.pollFallbackMs ?? DEFAULT_POLL_MS;
+  // pollFallbackMs drives setInterval. Non-finite, non-integer, or
+  // non-positive values either throw at setInterval time or yield
+  // unexpected behaviour (Infinity, NaN, 0). Validate up-front so the
+  // failure surfaces at construction, not silently later.
+  if (
+    typeof pollMs !== 'number'
+    || !Number.isFinite(pollMs)
+    || !Number.isInteger(pollMs)
+    || pollMs <= 0
+  ) {
+    throw new Error(
+      '[kill-switch] pollFallbackMs must be a finite positive integer (milliseconds)',
+    );
+  }
 
   const controller = new AbortController();
 
