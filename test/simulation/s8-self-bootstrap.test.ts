@@ -126,7 +126,10 @@ describe('s8: self-bootstrap produces a valid canon file', () => {
     // Structural markers.
     expect(text).toContain('<!-- lag:canon-start -->');
     expect(text).toContain('<!-- lag:canon-end -->');
-    expect(text).toContain('# LAG Canon');
+    // Renderer default title is the neutral 'Canon'. A real deployment
+    // would pass `{ title: 'LAG Canon' }` through the render options;
+    // this simulation exercises the substrate default.
+    expect(text).toContain('# Canon');
 
     // Every type group present.
     expect(text).toContain('## Directives');

@@ -1,10 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { PromotionEngine } from '../../src/promotion/engine.js';
+import { DEFAULT_THRESHOLDS } from '../../src/substrate/promotion/types.js';
 import type { AtomId, PrincipalId } from '../../src/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const principal = 'engine-test' as PrincipalId;
+
+// Test-local threshold override: these L3 tests exercise the
+// human-gate flow without wiring a validator, so `requireValidation`
+// is turned off for this suite. Production L3 promotion defaults to
+// requireValidation:true (fail-closed per CR governance guidance);
+// instance config provides `verified` evidence via a ValidatorRegistry.
+const NO_VALIDATION_L3_THRESHOLDS = {
+  ...DEFAULT_THRESHOLDS,
+  L3: { ...DEFAULT_THRESHOLDS.L3, requireValidation: false },
+};
 
 describe('PromotionEngine.findCandidates', () => {
   it('groups atoms by content-hash, counts distinct principals', async () => {
@@ -170,6 +181,7 @@ describe('PromotionEngine.promote (L3 with human gate)', () => {
     const engine = new PromotionEngine(host, {
       principalId: principal,
       humanGateTimeoutMs: 500,
+      thresholds: NO_VALIDATION_L3_THRESHOLDS,
     });
     const cands = await engine.findCandidates('L3');
     expect(cands.length).toBe(1);
@@ -211,6 +223,7 @@ describe('PromotionEngine.promote (L3 with human gate)', () => {
     const engine = new PromotionEngine(host, {
       principalId: principal,
       humanGateTimeoutMs: 500,
+      thresholds: NO_VALIDATION_L3_THRESHOLDS,
     });
     const cands = await engine.findCandidates('L3');
     const promotePromise = engine.promote(cands[0]!, 'L3');
@@ -244,6 +257,7 @@ describe('PromotionEngine.promote (L3 with human gate)', () => {
     const engine = new PromotionEngine(host, {
       principalId: principal,
       humanGateTimeoutMs: 50,
+      thresholds: NO_VALIDATION_L3_THRESHOLDS,
     });
     const cands = await engine.findCandidates('L3');
     const out = await engine.promote(cands[0]!, 'L3');

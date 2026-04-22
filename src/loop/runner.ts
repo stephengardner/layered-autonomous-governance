@@ -88,10 +88,22 @@ export class LoopRunner {
       l3HumanGateTimeoutMs: options.l3HumanGateTimeoutMs ?? 250,
     };
     const principal = this.options.principalId as PrincipalId;
-    this.l2Engine = new PromotionEngine(host, { principalId: principal });
+    // `promotionThresholds` is passed through so callers can opt out of
+    // the L3 requireValidation default (e.g. when a ValidatorRegistry
+    // isn't wired yet). Production paths should provide a validator;
+    // this escape hatch exists for tests + zero-config bootstrapping.
+    this.l2Engine = new PromotionEngine(host, {
+      principalId: principal,
+      ...(options.promotionThresholds !== undefined
+        ? { thresholds: options.promotionThresholds }
+        : {}),
+    });
     this.l3Engine = new PromotionEngine(host, {
       principalId: principal,
       humanGateTimeoutMs: this.options.l3HumanGateTimeoutMs,
+      ...(options.promotionThresholds !== undefined
+        ? { thresholds: options.promotionThresholds }
+        : {}),
     });
     this.canonTargets = resolveCanonTargets(options);
     this.onTick = options.onTick ?? null;

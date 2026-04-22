@@ -6,7 +6,9 @@ import { sampleAtom } from '../fixtures.js';
 describe('renderCanonMarkdown', () => {
   it('renders a placeholder when no atoms', () => {
     const md = renderCanonMarkdown([]);
-    expect(md).toContain('LAG Canon');
+    // Default title is 'Canon' (instance-neutral); a caller can pass
+    // `{ title: 'LAG Canon' }` to carry a product-specific brand.
+    expect(md).toContain('# Canon');
     expect(md).toContain('No canon atoms yet');
   });
 
@@ -17,9 +19,18 @@ describe('renderCanonMarkdown', () => {
     // `<!-- lag:canon-end -->` it found was in the note, not the real end).
     const md = renderCanonMarkdown([sampleAtom()]);
     expect(md).toContain('Auto-managed');
-    expect(md).toContain('LAG Canon');
+    expect(md).toContain('# Canon');
     expect(md).not.toContain('lag:canon-start');
     expect(md).not.toContain('lag:canon-end');
+  });
+
+  it('lets callers override title and notice (instance-config at the edge)', () => {
+    const md = renderCanonMarkdown([sampleAtom()], {
+      title: 'LAG Canon',
+      notice: 'Auto-managed by LAG: do not edit the bracketed section.',
+    });
+    expect(md).toContain('# LAG Canon');
+    expect(md).toContain('Auto-managed by LAG');
   });
 
   it('groups atoms by type with section headings', () => {

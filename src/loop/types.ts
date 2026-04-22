@@ -9,6 +9,7 @@
 
 import type { AtomFilter, AtomType, Time } from '../types.js';
 import type { RenderOptions } from '../canon-md/index.js';
+import type { PromotionThresholds } from '../promotion/index.js';
 
 export interface HalfLifeConfig {
   /** Per-atom-type half-life in milliseconds. `directive` long, `ephemeral` short. */
@@ -69,6 +70,15 @@ export interface LoopOptions {
    * raise this to match their human-response SLA.
    */
   readonly l3HumanGateTimeoutMs?: number;
+  /**
+   * Override the promotion thresholds threaded into both the L2 and L3
+   * engines. Defaults to the substrate-wide `DEFAULT_THRESHOLDS`, which
+   * requires `validation === 'verified'` on the L3 path. Tests and
+   * zero-config bootstrapping paths that don't have a
+   * `ValidatorRegistry` wired can override with
+   * `{ L3: { ..., requireValidation: false } }`.
+   */
+  readonly promotionThresholds?: PromotionThresholds;
   /**
    * Single-target canon (legacy, still supported). If set, the runner
    * renders all non-superseded L3 atoms into this file's bracketed

@@ -250,7 +250,19 @@ export async function runActor<
       }
       let policyResult: Awaited<ReturnType<typeof checkToolPolicy>>;
       try {
-        policyResult = await checkToolPolicy(options.host, policyContextFor(action, options));
+        // Actor-layer default is permissive (allow) because runActor is
+        // a generic loop primitive used by zero-config callers that
+        // haven't provisioned a policy atom yet. The substrate primitive
+        // defaults to escalate (fail-closed) when no policy matches;
+        // this caller opts into the legacy permissive behavior.
+        // Downstream operators tighten by seeding a deny / escalate
+        // policy atom at L3 - still strictly more restrictive than
+        // this default.
+        policyResult = await checkToolPolicy(
+          options.host,
+          policyContextFor(action, options),
+          { fallbackDecision: 'allow' },
+        );
       } catch (err) {
         haltReason = 'error';
         lastNote = `policy check failed for ${action.tool}: ${errString(err)}`;

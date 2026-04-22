@@ -2,21 +2,23 @@
  * Render a collection of L3 atoms as a deterministic markdown section.
  *
  * Output structure:
- *   # LAG Canon
+ *   # <title>
  *
- *   Auto-managed by LAG. Do not edit between the markers.
+ *   <notice>
  *   Last updated: <ISO timestamp>
  *
- *   ## decisions
+ *   ## <group heading>
  *   - ... (confidence: 0.95)
  *   - ...
  *
- *   ## architecture
- *   - ...
+ * `title` and `notice` are caller-supplied via RenderOptions so the
+ * substrate stays instance-neutral; defaults are `'Canon'` and a
+ * generic auto-managed warning.
  *
  * Sorted:
- *   - Types in a stable order (decision > preference > directive > reference > observation > ephemeral).
- *   - Within each type, atoms are sorted by confidence desc, then created_at desc for stability.
+ *   - Types in a stable order.
+ *   - Within each type, atoms are sorted by confidence desc, then
+ *     created_at desc for stability.
  */
 
 import { CANON_END, CANON_START } from './section.js';
@@ -32,9 +34,9 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   'observation',
   'ephemeral',
   // Inbox runtime types are L0/L1; the canon applier filters to L3 so
-  // these never appear in CLAUDE.md. Included here for deterministic
-  // ordering if a caller explicitly renders a non-L3 atom set (e.g. a
-  // debugging dump or the `lag inbox` CLI).
+  // these never appear in the rendered target. Included here for
+  // deterministic ordering if a caller explicitly renders a non-L3
+  // atom set (e.g. a debugging dump or an inbox inspection tool).
   'actor-message',
   'actor-message-ack',
   'circuit-breaker-trip',
@@ -66,7 +68,23 @@ export interface RenderOptions {
   readonly now?: string;
   /** If true, include the confidence value after each bullet. */
   readonly showConfidence?: boolean;
+  /**
+   * Heading text for the rendered section (H1). Defaults to `'Canon'`
+   * so the framework stays instance-neutral; a caller can pass
+   * `'Team Canon'`, `'Engineering Canon'`, or a product-specific
+   * brand without touching the substrate.
+   */
+  readonly title?: string;
+  /**
+   * Notice shown under the heading. Defaults to a neutral auto-managed
+   * warning; a caller can override to mention a specific tool name or
+   * add instance-specific guidance.
+   */
+  readonly notice?: string;
 }
+
+const DEFAULT_TITLE = 'Canon';
+const DEFAULT_NOTICE = 'Auto-managed: do NOT edit the bracketed section; changes will be overwritten on the next application.';
 
 function deriveNowFromAtoms(atoms: ReadonlyArray<Atom>): string {
   let best: string | null = null;
@@ -85,12 +103,12 @@ export function renderCanonMarkdown(
   const now = options.now ?? deriveNowFromAtoms(atoms);
   const showConfidence = options.showConfidence ?? true;
 
+  const title = options.title ?? DEFAULT_TITLE;
+  const notice = options.notice ?? DEFAULT_NOTICE;
   const lines: string[] = [];
-  lines.push('# LAG Canon');
+  lines.push(`# ${title}`);
   lines.push('');
-  lines.push(
-    'Auto-managed by LAG. Do NOT edit the auto-canon section; changes will be overwritten on the next canon application.',
-  );
+  lines.push(notice);
   lines.push('');
   lines.push(`_Last updated: ${now}_`);
   lines.push('');

@@ -312,7 +312,13 @@ async function applyPromotionPass(
       promotedAtomId: outcome.promotedAtomId ? String(outcome.promotedAtomId) : null,
       reason: outcome.reason,
     });
-    if (outcome.kind === 'promoted') superseded += 1;
+    // Count every consensus atom actually superseded by this promotion.
+    // Group-supersede (introduced in the substrate/policy refactor to
+    // close the re-promote-under-different-id seam) means one promotion
+    // event can supersede N consensus atoms, not just the representative.
+    if (outcome.kind === 'promoted') {
+      superseded += candidate.consensusAtoms.length;
+    }
   }
   return { superseded };
 }

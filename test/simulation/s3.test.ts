@@ -26,7 +26,7 @@ describe('Simulation scenario 3 (end-to-end promotion)', () => {
     expect(l2[0]?.content.toLowerCase()).toContain('postgres');
   });
 
-  it('representative L1 atom is superseded by the new L2 atom', async () => {
+  it('every consensus L1 atom is superseded by the new L2 atom', async () => {
     const host = createMemoryHost();
     const result = await runScenario(scenarioS3, host, principal);
     const promotion = result.promotions[0]!;
@@ -39,13 +39,16 @@ describe('Simulation scenario 3 (end-to-end promotion)', () => {
     )).atoms;
     expect(allL1.length).toBe(3);
 
+    // Every atom in the content-hash class must be superseded: leaving
+    // a clean sibling would let a later tick re-promote the identical
+    // content under a different source-derived id (findCandidates would
+    // pick a different representative on the next pass). Group-supersede
+    // closes that seam.
     const supersededL1 = allL1.filter(a => a.superseded_by.length > 0);
-    expect(supersededL1.length).toBe(1);
-    expect(supersededL1[0]?.superseded_by).toContain(l2Id);
-
-    // The other two L1 siblings remain unsuperseded (preserve distinct provenance).
-    const unsupersededL1 = allL1.filter(a => a.superseded_by.length === 0);
-    expect(unsupersededL1.length).toBe(2);
+    expect(supersededL1.length).toBe(3);
+    for (const a of supersededL1) {
+      expect(a.superseded_by).toContain(l2Id);
+    }
   });
 
   it('audit log records the promotion', async () => {
@@ -87,6 +90,10 @@ describe('Simulation scenario 3 (end-to-end promotion)', () => {
     const host = createMemoryHost();
     const result = await runScenario(scenarioS3, host, principal);
     expect(result.atomsWritten).toBe(3);
-    expect(result.atomsSuperseded).toBe(1); // the representative L1
+    // All three consensus L1 atoms are now superseded by the new L2
+    // atom (group-supersede prevents re-promotion under a different
+    // source-derived id). Was 1 (representative only) before the
+    // group-supersede fix on this PR.
+    expect(result.atomsSuperseded).toBe(3);
   });
 });

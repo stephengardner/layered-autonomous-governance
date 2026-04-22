@@ -20,11 +20,21 @@ export const DETECT_SCHEMA = DETECT_CONFLICT.jsonSchema;
 export const DETECT_SYSTEM = DETECT_CONFLICT.systemPrompt;
 
 export interface DetectOptions {
+  /**
+   * Model identifier passed through to the Host LLM adapter. Optional:
+   * when omitted, the detector passes the neutral sentinel `'default'`
+   * and compliant Host LLM adapters interpret it as "use your built-in
+   * default". Substrate never names a specific vendor/model string;
+   * consumers that want a concrete vendor choice pass it explicitly.
+   */
   readonly model?: string;
   readonly maxBudgetUsd?: number;
 }
 
-const DEFAULT_MODEL = 'claude-haiku-4-5';
+// Budget is framework-neutral (a USD cap, not a vendor choice). Model
+// sentinel `'default'` means "adapter's built-in default"; no specific
+// vendor is named here.
+const HOST_DEFAULT_MODEL = 'default';
 const DEFAULT_BUDGET = 0.02;
 
 export async function detectConflict(
@@ -61,7 +71,7 @@ export async function detectConflict(
       },
     },
     {
-      model: options.model ?? DEFAULT_MODEL,
+      model: options.model ?? HOST_DEFAULT_MODEL,
       max_budget_usd: options.maxBudgetUsd ?? DEFAULT_BUDGET,
       temperature: 0,
     },

@@ -62,20 +62,32 @@ describe('promotion policy.evaluate', () => {
     expect(decision.reasons.some(r => r.includes('consensus'))).toBe(true);
   });
 
-  it('L3 promotion requires validation != invalid when requireValidation=true', () => {
+  it('L3 promotion requires validation=verified when requireValidation=true', () => {
+    // Fail-closed: requireValidation demands positive 'verified' evidence.
+    // 'invalid' blocks (it always did) but 'unverifiable' now also blocks
+    // (it used to pass permissively, which was a governance gap -
+    // absence of a validator decision should not satisfy a strict
+    // threshold).
     const atom = sampleAtom({ layer: 'L2', confidence: 0.95 });
-    const decision = evaluate(
+    const invalidDecision = evaluate(
       candidate(atom, { consensusCount: 5, validation: 'invalid' }),
       'L3',
     );
-    expect(decision.canPromote).toBe(false);
-    expect(decision.reasons.some(r => r.includes('validation'))).toBe(true);
+    expect(invalidDecision.canPromote).toBe(false);
+    expect(invalidDecision.reasons.some(r => r.includes('validation'))).toBe(true);
+
+    const unverifiableDecision = evaluate(
+      candidate(atom, { consensusCount: 5, validation: 'unverifiable' }),
+      'L3',
+    );
+    expect(unverifiableDecision.canPromote).toBe(false);
+    expect(unverifiableDecision.reasons.some(r => r.includes('validation'))).toBe(true);
   });
 
-  it('L3 promotion allows validation=unverifiable by default', () => {
+  it('L3 promotion passes when validation=verified', () => {
     const atom = sampleAtom({ layer: 'L2', confidence: 0.95 });
     const decision = evaluate(
-      candidate(atom, { consensusCount: 5, validation: 'unverifiable' }),
+      candidate(atom, { consensusCount: 5, validation: 'verified' }),
       'L3',
     );
     expect(decision.canPromote).toBe(true);
