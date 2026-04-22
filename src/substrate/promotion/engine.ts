@@ -265,7 +265,11 @@ export class PromotionEngine {
     // superseded_by link if a prior partial run created the promoted
     // atom but didn't get to the update. The membership check keeps
     // the AtomPatch-append contract idempotent (same fix as
-    // arbitration.applyDecision).
+    // arbitration.applyDecision). AtomPatch.superseded_by is APPEND
+    // by the adapter contract (see AtomPatch JSDoc in types.ts and
+    // MemoryAtomStore.update), so `{ superseded_by: [newId] }`
+    // results in `existing.superseded_by ++ [newId]`; a concurrent
+    // write that appended its own id is preserved.
     const existing = await this.host.atoms.get(newId);
     if (existing) {
       const sourceNow = await this.host.atoms.get(src.id);
@@ -314,6 +318,11 @@ export class PromotionEngine {
     };
 
     await this.host.atoms.put(promoted);
+    // AtomPatch.superseded_by is APPEND-by-adapter-contract (see JSDoc
+    // in types.ts, verified in MemoryAtomStore.update). Passing
+    // `[newId]` results in the source's array being extended with
+    // newId; a concurrent arbitration winner or second promotion
+    // target that also appended is preserved. No overwrite risk.
     await this.host.atoms.update(src.id, { superseded_by: [newId] });
     return newId;
   }

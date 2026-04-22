@@ -29,7 +29,7 @@
 
 import type { Host } from '../interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../types.js';
-import { NotFoundError } from '../errors.js';
+import { NotFoundError, ValidationError } from '../errors.js';
 
 export interface TaintReport {
   readonly principalId: PrincipalId;
@@ -71,14 +71,17 @@ export async function propagateCompromiseTaint(
   const pageSize = options.pageSize ?? 10_000;
   // Validate budgets: non-finite, non-integer, or non-positive values
   // break the pagination / fixpoint loops. Fail at entry, not silently
-  // later inside the scan.
+  // later inside the scan. ValidationError (not generic Error) so
+  // callers can string-match the HostError.kind instead of the message
+  // to distinguish "caller passed bad options" from a mid-scan runtime
+  // failure on the atom store.
   if (
     !Number.isFinite(maxIterations)
     || !Number.isInteger(maxIterations)
     || maxIterations <= 0
   ) {
-    throw new Error(
-      '[taint/propagate] maxIterations must be a finite positive integer',
+    throw new ValidationError(
+      'maxIterations must be a finite positive integer',
     );
   }
   if (
@@ -86,8 +89,8 @@ export async function propagateCompromiseTaint(
     || !Number.isInteger(pageSize)
     || pageSize <= 0
   ) {
-    throw new Error(
-      '[taint/propagate] pageSize must be a finite positive integer',
+    throw new ValidationError(
+      'pageSize must be a finite positive integer',
     );
   }
 
@@ -128,6 +131,14 @@ export async function propagateCompromiseTaint(
   // with taint-leak consequences. Also add an explicit in-code
   // principal_id check because AtomFilter enforcement varies across
   // adapters (some ignore filters); belt + suspenders.
+  //
+  // Note: the direct pass is counted in the reported `iterations`
+  // (so `iterations=1` in the report means direct-only, as the JSDoc
+  // above documents). The safety ceiling `maxIterations` is applied
+  // only to the transitive fixpoint loop below - an option documenting
+  // "max transitive iterations" must not silently consume the budget
+  // on the direct pass, or `maxIterations=1` would perform zero
+  // transitive passes despite the option name.
   iterations += 1;
   {
     let cursor: string | undefined = undefined;
@@ -166,8 +177,16 @@ export async function propagateCompromiseTaint(
   // progress, it is > 0 - a taint leak with no obvious signal to the
   // operator. Audit the ceiling hit so governance reviewers can see
   // the event.
+  //
+  // `transitiveIterations` is a separate counter for the fixpoint
+  // budget. The direct pass above consumes an entry in the reported
+  // `iterations` field but does NOT consume `transitiveIterations`,
+  // so callers who pass `maxIterations=1` still get one transitive
+  // pass (matching the option's documented semantics).
   let lastNewlyTainted = 0;
-  while (iterations < maxIterations) {
+  let transitiveIterations = 0;
+  while (transitiveIterations < maxIterations) {
+    transitiveIterations += 1;
     iterations += 1;
     let newlyTainted = 0;
     // Scan all atoms, paginating through EVERY page. For the V0 scale
@@ -208,8 +227,9 @@ export async function propagateCompromiseTaint(
   // Ceiling hit while still making progress is a governance gap: the
   // returned report would otherwise look identical to a clean
   // convergence, hiding a taint leak. Surface via the auditor so it
-  // shows up in the audit log and reflection hooks.
-  if (iterations >= maxIterations && lastNewlyTainted > 0) {
+  // shows up in the audit log and reflection hooks. Test against the
+  // TRANSITIVE counter - that's what `maxIterations` is meant to bound.
+  if (transitiveIterations >= maxIterations && lastNewlyTainted > 0) {
     await host.auditor.log({
       kind: 'taint.propagate.ceiling_hit',
       principal_id: responderId,
@@ -219,6 +239,7 @@ export async function propagateCompromiseTaint(
         principal_id_compromised: principalId,
         max_iterations: maxIterations,
         iterations,
+        transitive_iterations: transitiveIterations,
         last_newly_tainted: lastNewlyTainted,
       },
     });
