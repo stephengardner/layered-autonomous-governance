@@ -144,10 +144,17 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -e
-          # actions/checkout@v4 does a shallow fetch by default; the
-          # base SHA may not be reachable. Fetch it explicitly.
-          git fetch origin "$BASE_SHA" --depth=1 || git fetch origin
-          N=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" | wc -l)
+          # actions/checkout@v4 does a shallow fetch by default so the
+          # base SHA is not reachable. Fetch just that commit first; if
+          # the repo is already fully cloned the fetch is a cheap no-op.
+          git fetch origin "$BASE_SHA" --depth=1 || git fetch --unshallow origin
+          # Two-dot diff is a direct tree-vs-tree compare (no merge-base
+          # lookup), so it works against shallow history. Three-dot
+          # would need both commits reachable to compute the merge-base,
+          # which shallow clones cannot guarantee. Two-dot also matches
+          # what CodeRabbit actually loads for review: every file that
+          # differs between base and head.
+          N=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" | wc -l)
           LIMIT=150
           echo "changed files: $N (CodeRabbit limit: $LIMIT)"
           if [ "$N" -gt "$LIMIT" ]; then
