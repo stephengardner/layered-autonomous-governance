@@ -164,7 +164,105 @@ async function cmdNew(args) {
   console.log(`Branch: ${branch} (from ${from} @ ${baseSha})`);
   console.log(`Next: edit NOTES.md, then cd ${wtPath} and start work.`);
 }
-async function cmdList(args) { throw new Error('not implemented'); }
+async function cmdList(args) {
+  const repoRoot = (await execa('git', ['rev-parse', '--show-toplevel'])).stdout.trim();
+  const wtList = await execa('git', ['worktree', 'list', '--porcelain']);
+  const records = parseGitWorktreeList(wtList.stdout);
+
+  const staleDays = Number(process.env.WT_STALE_DAYS ?? 14);
+  const thresholdMs = staleDays * 24 * 60 * 60 * 1000;
+  const activityWindowMs = (Number(process.env.WT_ACTIVITY_MIN ?? 10)) * 60 * 1000;
+  const now = Date.now();
+
+  const rows = [];
+  for (const rec of records) {
+    if (!rec.path) continue;
+    const isPrimary = rec.path === repoRoot;
+    const slug = isPrimary ? '(main)' : rec.path.split(/[\\/]/).pop() ?? rec.path;
+    const branch = rec.branch ?? (rec.detached ? '(detached)' : '?');
+
+    // Ahead/behind main.
+    let ahead = 0, behind = 0;
+    if (!isPrimary) {
+      try {
+        ahead = Number((await execa('git', ['-C', rec.path, 'rev-list', '--count', 'origin/main..HEAD'])).stdout.trim()) || 0;
+        behind = Number((await execa('git', ['-C', rec.path, 'rev-list', '--count', 'HEAD..origin/main'])).stdout.trim()) || 0;
+      } catch { /* offline or no origin/main - leave 0 */ }
+    }
+
+    // NOTES.md mtime.
+    let notesMtimeMs = 0;
+    try { notesMtimeMs = (await stat(join(rec.path, 'NOTES.md'))).mtimeMs; } catch {}
+
+    // Activity.
+    const gitAdminDir = isPrimary
+      ? join(repoRoot, '.git')
+      : join(repoRoot, '.git', 'worktrees', rec.path.split(/[\\/]/).pop() ?? '');
+    let headMtimeMs = 0, indexMtimeMs = 0, hasLockfile = false;
+    try { headMtimeMs = (await stat(join(gitAdminDir, 'HEAD'))).mtimeMs; } catch {}
+    try { indexMtimeMs = (await stat(join(gitAdminDir, 'index'))).mtimeMs; } catch {}
+    try { hasLockfile = existsSync(join(gitAdminDir, 'index.lock')); } catch {}
+    let dirty = false;
+    try {
+      const st = await execa('git', ['-C', rec.path, 'status', '--porcelain']);
+      dirty = st.stdout.trim().length > 0;
+    } catch {}
+    const activity = detectActivity({ headMtimeMs, indexMtimeMs, hasLockfile, dirty, now, windowMs: activityWindowMs });
+
+    // Last commit time.
+    let lastCommitMs = 0;
+    try {
+      const ts = (await execa('git', ['-C', rec.path, 'log', '-1', '--format=%ct'])).stdout.trim();
+      if (ts) lastCommitMs = Number(ts) * 1000;
+    } catch {}
+
+    // PR state via gh (graceful fallback).
+    let prState = 'none';
+    if (!isPrimary && branch && branch !== '(detached)') {
+      try {
+        const res = await execa('gh', ['pr', 'view', branch, '--json', 'state', '--jq', '.state']);
+        prState = res.stdout.trim() || 'none';
+      } catch { prState = 'none'; }
+    }
+
+    // Branch merged check.
+    let branchMerged = false;
+    if (!isPrimary && branch && branch !== '(detached)') {
+      try {
+        const merged = await execa('git', ['branch', '--merged', 'origin/main', '--list', branch]);
+        branchMerged = merged.stdout.trim().length > 0;
+      } catch {}
+    }
+
+    const stale = isPrimary ? { stale: false, reasons: [] } : detectStale({
+      lastCommitMs: lastCommitMs || now,
+      notesMtimeMs: notesMtimeMs || now,
+      branchMerged,
+      prClosed: prState === 'CLOSED',
+      now,
+      thresholdMs,
+    });
+
+    rows.push({ slug, branch, ahead, behind, active: activity.active, stale: stale.stale, staleReasons: stale.reasons, prState, isPrimary });
+  }
+
+  // Render aligned table.
+  const cols = ['SLUG', 'BRANCH', 'AHEAD', 'BEHIND', 'ACTIVE', 'PR', 'FLAGS'];
+  const data = rows.map(r => [
+    r.slug,
+    r.branch,
+    String(r.ahead),
+    String(r.behind),
+    r.active ? 'yes' : 'no',
+    r.prState,
+    r.stale ? `[stale] ${r.staleReasons.join(', ')}` : '',
+  ]);
+  const widths = cols.map((c, i) => Math.max(c.length, ...data.map(row => row[i].length)));
+  const fmt = (row) => row.map((cell, i) => cell.padEnd(widths[i])).join('  ');
+  console.log(fmt(cols));
+  console.log(widths.map(w => '-'.repeat(w)).join('  '));
+  for (const row of data) console.log(fmt(row));
+}
 async function cmdRm(args) { throw new Error('not implemented'); }
 async function cmdClean(args) { throw new Error('not implemented'); }
 async function cmdStack(args) { throw new Error('not implemented'); }
