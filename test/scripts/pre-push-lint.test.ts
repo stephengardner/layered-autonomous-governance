@@ -84,6 +84,36 @@ describe('pre-push-lint', () => {
       const r = runLint(tree, ['--rule=emdash']);
       expect(r.status).toBe(0);
     });
+
+    // Regression: CI's package-hygiene step greps
+    //   src/ test/ docs/ design/ README.md examples/
+    // A pre-#122 version of this script dropped `test/` from the
+    // scope, so an emdash under test/ would pass locally and then
+    // fail CI -- exactly the ~10min-after-push gap the script exists
+    // to close. CodeRabbit flagged the divergence on PR #122.
+    it('flags an emdash under test/ (lint-vs-CI scope must match)', () => {
+      mkdirSync(join(tree, 'test'));
+      writeFileSync(join(tree, 'test', 't.test.ts'), "// a \u2014 emdash in a test file\n");
+      const r = runLint(tree, ['--rule=emdash']);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('[emdash]');
+      expect(r.stderr).toContain('test/t.test.ts:1');
+    });
+
+    // Emdash rule still skips `fixtures` directories -- CI's emdash
+    // step uses `--exclude-dir=fixtures` because test fixtures
+    // capture external output verbatim (e.g., CodeRabbit review
+    // bodies the parser must handle). Rewriting emdashes in fixtures
+    // would make format-drift tests lie.
+    it('does NOT flag emdash inside a fixtures/ dir (mirrors CI --exclude-dir=fixtures)', () => {
+      mkdirSync(join(tree, 'test', 'fixtures'), { recursive: true });
+      writeFileSync(
+        join(tree, 'test', 'fixtures', 'external.md'),
+        'external content with an \u2014 emdash preserved verbatim\n',
+      );
+      const r = runLint(tree, ['--rule=emdash']);
+      expect(r.status).toBe(0);
+    });
   });
 
   describe('rule: private-terms', () => {
@@ -99,6 +129,25 @@ describe('pre-push-lint', () => {
       writeFileSync(join(tree, 'README.md'), 'This has no deny-list terms.\n');
       const r = runLint(tree, ['--rule=private-terms']);
       expect(r.status).toBe(0);
+    });
+
+    // Regression: pre-#122 the script globally skipped `fixtures/`
+    // for every rule, but CI's private-terms step scans tracked
+    // files via `git ls-files | xargs grep` -- no fixtures
+    // exclusion. A private term added under fixtures/ would pass
+    // local lint and then fail CI. CodeRabbit flagged the divergence
+    // on PR #122. The fix: scope the fixtures skip to the emdash
+    // rule only.
+    it('flags a deny-list term inside a fixtures/ dir (private-terms does NOT skip fixtures)', () => {
+      mkdirSync(join(tree, 'test', 'fixtures'), { recursive: true });
+      writeFileSync(
+        join(tree, 'test', 'fixtures', 'legacy-body.md'),
+        'a captured message mentioning ' + 'P' + 'hoenix verbatim\n',
+      );
+      const r = runLint(tree, ['--rule=private-terms']);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('[private-terms]');
+      expect(r.stderr).toContain('test/fixtures/legacy-body.md:1');
     });
   });
 

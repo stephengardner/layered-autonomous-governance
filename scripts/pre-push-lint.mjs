@@ -4,27 +4,30 @@
  * but ~1s before the push instead of ~10min after.
  *
  * Rules (each a lightweight grep against the tree; no type-check, no
- * build, no network):
+ * build, no network). Exactly four rules ship; expansions require a
+ * post-merge grep of `main` proving the pattern was actually flagged
+ * (see docs/dev/pre-push-lint.md "When the lint is wrong").
  *
- *   1. Emdashes (U+2014) or en-dashes (U+2013) anywhere in tracked
- *      src/, docs/, design/, README.md, examples/ -- mirrors the
- *      package-hygiene CI step. Fixtures are excluded.
- *   2. Private terms (operator-configured deny list) anywhere in
- *      tracked files -- mirrors the package-hygiene CI step. The
- *      canonical pattern lives in the CI workflow; this script
- *      reproduces it at runtime via string concatenation so the
- *      lint source itself does not trip the rule.
- *   3. design/ADR paths in src/*.ts JSDoc -- CR flags as
- *      framework-code-mechanism-only violation.
- *   4. Canon-id prefixes (`arch-`, `pol-`, `inv-`, `dev-`, `adr-`)
- *      inside src/ comments -- same class.
- *   5. Instance-specific role vocabulary (`thinking CTO`, `our CTO`,
- *      `the cto-actor principal`, `the auditor role`) in src/ --
- *      same class; CI hygiene catches a subset but this is finer.
- *   6. dogfooding docs without a `YYYY-MM-DD-` prefix -- CR flagged
- *      this on PR #113 as a convention violation.
- *   7. Redundant `UTC` after an ISO-8601 Z timestamp in docs/ --
- *      CR nitpick on PR #115; Z already means UTC per ISO-8601.
+ *   1. emdash -- U+2014 (emdash) or U+2013 (en-dash) in tracked
+ *      src/, test/, docs/, design/, examples/, README.md. Mirrors the
+ *      CI package-hygiene grep scope exactly. The `fixtures`
+ *      directory is excluded (emdash only), matching CI's
+ *      --exclude-dir=fixtures.
+ *   2. private-terms -- operator-configured deny-list tokens anywhere
+ *      in tracked files. Mirrors the CI package-hygiene grep scope:
+ *      `git ls-files | xargs grep` with no fixture exclusion, so a
+ *      private term inside a fixture file IS a finding here (a
+ *      divergence CodeRabbit caught on PR #122). The canonical
+ *      pattern lives in the CI workflow; this script reproduces it
+ *      via string concatenation so the lint source itself does not
+ *      trip the rule.
+ *   3. dogfooding-date-prefix -- docs/dogfooding/*.md without a
+ *      `YYYY-MM-DD-` filename prefix. CR convention, first flagged on
+ *      PR #113.
+ *   4. z-utc-redundant -- `<digit>Z<whitespace>UTC` in docs/ or
+ *      README.md or design/. The `Z` suffix already means UTC per
+ *      ISO-8601; the trailing " UTC" is redundant. CR nit first
+ *      flagged on PR #115.
  *
  * Exit code 0 = clean; 1 = violations found (with a report of each).
  *
@@ -55,7 +58,10 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // File walker
 // ---------------------------------------------------------------------------
 
-const SKIP_DIRS = new Set([
+// Directories we never walk: generated output, external code, runtime
+// state, or our own tool caches. A path inside any of these is never
+// part of the lint surface.
+const GLOBAL_SKIP_DIRS = new Set([
   'node_modules',
   '.git',
   'dist',
@@ -64,16 +70,24 @@ const SKIP_DIRS = new Set([
   '.claude',
   '.lag',
   '.superpowers',
-  'fixtures', // rule 1 excludes; other rules don't walk into fixtures anyway
 ]);
+
+// Per-rule skips. `fixtures` belongs to the emdash rule alone because
+// CI's emdash step runs `grep -rP --exclude-dir=fixtures ...` but CI's
+// private-terms step runs `git ls-files | xargs grep ...` with no
+// fixtures exclusion. Globally skipping fixtures would let a private
+// term added under a fixture pass this script while failing CI -- the
+// exact lint-vs-CI divergence this tool exists to prevent.
+const EMDASH_EXTRA_SKIP_DIRS = new Set(['fixtures']);
 
 /**
  * Walk `root` recursively, yielding file paths relative to REPO_ROOT
  * that match any of `includePrefixes` (empty array = all tracked
- * shapes). Skips entries in SKIP_DIRS and any file >1MB (likely
- * binaries or generated output we don't want to scan).
+ * shapes). Skips entries in GLOBAL_SKIP_DIRS and any names in
+ * `extraSkipDirs` (per-rule additional scoping). Any file >1MB is
+ * skipped (likely a binary or generated blob we don't want to scan).
  */
-function* walk(root, includePrefixes) {
+function* walk(root, includePrefixes, extraSkipDirs = new Set()) {
   const stack = [root];
   while (stack.length > 0) {
     const dir = stack.pop();
@@ -84,7 +98,8 @@ function* walk(root, includePrefixes) {
       continue;
     }
     for (const entry of entries) {
-      if (SKIP_DIRS.has(entry.name)) continue;
+      if (GLOBAL_SKIP_DIRS.has(entry.name)) continue;
+      if (extraSkipDirs.has(entry.name)) continue;
       const p = join(dir, entry.name);
       if (process.env['PRE_PUSH_LINT_DEBUG']) {
         process.stderr.write(`walk: ${entry.isDirectory() ? 'dir' : 'file'} ${p}\n`);
@@ -116,12 +131,18 @@ function read(rel) {
 // Rule runners. Each returns an array of { rule, file, line, msg }.
 // ---------------------------------------------------------------------------
 
-const EMDASH_ROOTS = ['src', 'docs', 'design', 'examples', 'README.md'];
+// Mirrors the CI `package-hygiene` step's grep scope:
+//   grep -rP --exclude-dir=fixtures $'\u2014' src/ test/ docs/ design/ README.md examples/
+// `test/` is included because test fixtures assembled from prose (CR
+// review bodies, LLM output captures, docs mirrors) are a vector for
+// emdash regressions; the fixtures *directory* itself is excluded via
+// EMDASH_EXTRA_SKIP_DIRS so verbatim external captures stay intact.
+const EMDASH_ROOTS = ['src', 'test', 'docs', 'design', 'examples', 'README.md'];
 const EMDASH_RE = /[\u2013\u2014]/;
 
 function ruleEmdash() {
   const hits = [];
-  for (const rel of walk(REPO_ROOT, EMDASH_ROOTS)) {
+  for (const rel of walk(REPO_ROOT, EMDASH_ROOTS, EMDASH_EXTRA_SKIP_DIRS)) {
     // Text files only; skip known binary extensions.
     if (/\.(png|jpg|jpeg|gif|webp|ico|pdf|zip|tgz|mp4)$/i.test(rel)) continue;
     const body = read(rel);
