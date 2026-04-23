@@ -149,6 +149,21 @@ describe('pre-push-lint', () => {
       expect(r.stderr).toContain('[private-terms]');
       expect(r.stderr).toContain('test/fixtures/legacy-body.md:1');
     });
+
+    // Regression: scripts/pre-push-lint.mjs contains the private-term
+    // literals by construction (its regex reproduces the CI deny
+    // list). It must self-exclude via PRIVATE_TERMS_SELF_EXCLUDE or
+    // the script would fail its own rule on every run. The copy in
+    // the temp tree already lives at scripts/pre-push-lint.mjs, so
+    // invoking the rule on an otherwise empty tree is a direct test
+    // of the self-exclusion path.
+    it('does NOT flag the lint script itself (PRIVATE_TERMS_SELF_EXCLUDE is load-bearing)', () => {
+      // No other files; only scripts/pre-push-lint.mjs from beforeEach.
+      const r = runLint(tree, ['--rule=private-terms']);
+      expect(r.status).toBe(0);
+      expect(r.stderr).not.toContain('[private-terms]');
+      expect(r.stdout).toContain('OK');
+    });
   });
 
   describe('rule: dogfooding-date-prefix', () => {
@@ -171,6 +186,32 @@ describe('pre-push-lint', () => {
     it('accepts README.md without a date prefix (index doc)', () => {
       mkdirSync(join(tree, 'docs', 'dogfooding'), { recursive: true });
       writeFileSync(join(tree, 'docs', 'dogfooding', 'README.md'), '# index\n');
+      const r = runLint(tree, ['--rule=dogfooding-date-prefix']);
+      expect(r.status).toBe(0);
+    });
+
+    // Regression: pre-second-pass the rule only walked the top level
+    // of docs/dogfooding/, so a misnamed .md in a subdir (e.g., a
+    // future per-quarter layout) would silently evade the
+    // convention. The rule now recurses and flags nested files too.
+    it('flags a misnamed md nested under docs/dogfooding/<subdir>/', () => {
+      mkdirSync(join(tree, 'docs', 'dogfooding', '2026-q2'), { recursive: true });
+      writeFileSync(
+        join(tree, 'docs', 'dogfooding', '2026-q2', 'bad-name.md'),
+        '# retro\n',
+      );
+      const r = runLint(tree, ['--rule=dogfooding-date-prefix']);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('[dogfooding-date-prefix]');
+      expect(r.stderr).toContain('docs/dogfooding/2026-q2/bad-name.md');
+    });
+
+    it('accepts a correctly-dated nested dogfooding md', () => {
+      mkdirSync(join(tree, 'docs', 'dogfooding', '2026-q2'), { recursive: true });
+      writeFileSync(
+        join(tree, 'docs', 'dogfooding', '2026-q2', '2026-04-23-nested-ok.md'),
+        '# retro\n',
+      );
       const r = runLint(tree, ['--rule=dogfooding-date-prefix']);
       expect(r.status).toBe(0);
     });
@@ -197,6 +238,40 @@ describe('pre-push-lint', () => {
       );
       const r = runLint(tree, ['--rule=z-utc-redundant']);
       expect(r.status).toBe(0);
+    });
+  });
+
+  // Path-boundary anchor: walk() previously accepted any prefix
+  // substring match, so `design` would match `designs-archive/`.
+  // The fix requires either an exact match or a `/`-boundary after
+  // the prefix. No defect today (no sibling dir exists), but the
+  // rule is framework-level and needs to stay correct under any
+  // future layout.
+  describe('walk path-boundary semantics', () => {
+    it('does NOT match a prefix that straddles a path boundary (design vs designs-archive)', () => {
+      // Sibling directory with a name that *starts* with `design`
+      // but isn't the `design/` directory. Put an emdash inside so
+      // the rule WOULD flag if the boundary check is missing.
+      mkdirSync(join(tree, 'designs-archive'));
+      writeFileSync(
+        join(tree, 'designs-archive', 'old.md'),
+        "archived content with an \u2014 emdash\n",
+      );
+      const r = runLint(tree, ['--rule=emdash']);
+      expect(r.status).toBe(0);
+      expect(r.stderr).not.toContain('[emdash]');
+    });
+
+    it('DOES match the exact prefix directory (design/foo.md)', () => {
+      mkdirSync(join(tree, 'design'));
+      writeFileSync(
+        join(tree, 'design', 'spec.md'),
+        "spec with an \u2014 emdash\n",
+      );
+      const r = runLint(tree, ['--rule=emdash']);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('[emdash]');
+      expect(r.stderr).toContain('design/spec.md:1');
     });
   });
 

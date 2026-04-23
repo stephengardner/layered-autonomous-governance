@@ -108,7 +108,18 @@ function* walk(root, includePrefixes, extraSkipDirs = new Set()) {
         stack.push(p);
       } else if (entry.isFile()) {
         const rel = relative(REPO_ROOT, p).replace(/\\/g, '/');
-        if (includePrefixes.length === 0 || includePrefixes.some((pre) => rel.startsWith(pre) || rel === pre)) {
+        // Path-boundary anchor: `rel.startsWith(pre)` alone would
+        // accept `designs-archive/foo.md` under the `design` prefix or
+        // `docsrc/x` under `docs`. Exact-equal handles single-file
+        // prefixes like `README.md`; the `+ '/'` form requires a
+        // directory boundary. Normalize trailing-slash form so
+        // callers can pass `docs/` or `docs` interchangeably.
+        if (
+          includePrefixes.length === 0 ||
+          includePrefixes.some(
+            (pre) => rel === pre || rel.startsWith(pre.endsWith('/') ? pre : pre + '/'),
+          )
+        ) {
           let sz = 0;
           try { sz = statSync(p).size; } catch { continue; }
           if (sz > 1_000_000) continue;
@@ -211,23 +222,37 @@ const DOGFOOD_DATE_PREFIX_RE = /^(\d{4})-(\d{2})-(\d{2})-/;
 function ruleDogfoodingFilename() {
   const hits = [];
   const dogDir = resolve(REPO_ROOT, 'docs/dogfooding');
-  let entries;
-  try {
-    entries = readdirSync(dogDir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    if (!entry.name.endsWith('.md')) continue;
-    if (entry.name === 'README.md') continue;
-    if (!DOGFOOD_DATE_PREFIX_RE.test(entry.name)) {
-      hits.push({
-        rule: 'dogfooding-date-prefix',
-        file: `docs/dogfooding/${entry.name}`,
-        line: 0,
-        msg: 'dogfooding file must start with YYYY-MM-DD- (local date) prefix',
-      });
+  // Recursive walk: if docs/dogfooding/ grows subfolders (e.g.,
+  // per-quarter or per-agent retros), nested .md files must still be
+  // checked. A non-recursive readdirSync would silently stop
+  // enforcing the naming convention the moment a subdir appears.
+  const stack = [dogDir];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (!entry.name.endsWith('.md')) continue;
+      if (entry.name === 'README.md') continue;
+      if (!DOGFOOD_DATE_PREFIX_RE.test(entry.name)) {
+        const rel = relative(REPO_ROOT, full).replace(/\\/g, '/');
+        hits.push({
+          rule: 'dogfooding-date-prefix',
+          file: rel,
+          line: 0,
+          msg: 'dogfooding file must start with YYYY-MM-DD- (local date) prefix',
+        });
+      }
     }
   }
   return hits;
