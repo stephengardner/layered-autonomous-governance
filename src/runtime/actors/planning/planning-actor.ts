@@ -64,6 +64,30 @@ export interface PlanningActorOptions {
    * undefined, the context's host.clock.now() is used.
    */
   readonly nowOverride?: () => Time;
+  /**
+   * If a Question atom drove this planning run, propagate its id +
+   * verbatim body into the produced Plan atom's metadata as
+   * `question_id` + `question_prompt`. Mirrors the agent-sdk
+   * executor seam (src/integrations/agent-sdk/executor.ts) so both
+   * planning paths produce Plan atoms with the same metadata shape
+   * when a Question is the provenance root.
+   *
+   * The downstream CodeAuthor drafter reads `question_prompt` from
+   * Plan metadata as ground-truth payload for the diff; absent this
+   * propagation, a Decision whose governance-layer prose paraphrases
+   * the Question (e.g. reduces "replace the specified line" to an
+   * abstract reference) leaves the drafter with no literal to
+   * implement and it emits an empty diff.
+   *
+   * Omit-when-empty: empty id or empty prompt strings produce the
+   * same metadata shape as no originatingQuestion at all, so
+   * callers synthesising a Question-shaped object with blank fields
+   * do not change the plan-atom hash (fixture / MemoryLLM parity).
+   */
+  readonly originatingQuestion?: {
+    readonly id: AtomId;
+    readonly prompt: string;
+  };
 }
 
 export interface PlanningObservation {
@@ -80,6 +104,27 @@ export interface PlanningActionPayload {
 export interface PlanningOutcome {
   readonly planAtomId: AtomId;
   readonly notificationHandle: string | null;
+}
+
+/**
+ * Map the optional `originatingQuestion` option into the Plan
+ * atom's metadata, with the same omit-when-empty contract the
+ * agent-sdk executor seam uses (empty id or empty prompt yields
+ * no corresponding key so the Plan metadata shape stays identical
+ * to the no-Question baseline).
+ */
+function buildQuestionMetadata(
+  origin: PlanningActorOptions['originatingQuestion'],
+): Record<string, unknown> {
+  if (origin === undefined) return {};
+  const out: Record<string, unknown> = {};
+  if (typeof origin.id === 'string' && origin.id.length > 0) {
+    out.question_id = origin.id;
+  }
+  if (typeof origin.prompt === 'string' && origin.prompt.length > 0) {
+    out.question_prompt = origin.prompt;
+  }
+  return out;
 }
 
 export class PlanningActor implements Actor<
@@ -216,6 +261,18 @@ export class PlanningActor implements Actor<
         principles_applied: [...plan.principlesApplied],
         alternatives_rejected: plan.alternativesRejected.map((a) => a.option),
         what_breaks_if_revisit: plan.whatBreaksIfRevisit,
+        // Propagate the originating Question's id + verbatim body
+        // into metadata. Load-bearing for the CodeAuthor drafter:
+        // plan_content is the governance-layer Decision (may
+        // paraphrase), question_prompt is the literal payload.
+        // Mirrors src/integrations/agent-sdk/executor.ts's
+        // enrichment so both planning paths land the same metadata
+        // shape when a Question drives the run. Omit-when-empty
+        // parity means no originatingQuestion (or empty fields)
+        // leaves the metadata byte-identical to the pre-seam
+        // baseline -- MemoryLLM fixture keys + downstream
+        // `'question_id' in metadata` checks stay honest.
+        ...buildQuestionMetadata(this.options.originatingQuestion),
       },
     };
 

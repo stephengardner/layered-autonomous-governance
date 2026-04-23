@@ -36,6 +36,7 @@ import {
   PlanningActor,
 } from '../dist/actors/planning/index.js';
 import { loadLlmToolPolicy } from '../dist/llm-tool-policy.js';
+import { askQuestion } from '../dist/runtime/questions/index.js';
 
 // Instance configuration lives here, NOT in src/. Framework code
 // stays mechanism-focused; vendor model ids are the caller's choice.
@@ -290,9 +291,38 @@ async function main() {
         ...(toolPolicy ? { disallowedTools: toolPolicy.disallowedTools } : {}),
       });
 
+  // Seed a Question atom for this request BEFORE running the
+  // planning actor. Two load-bearing reasons:
+  //
+  // 1. Provenance: the autonomous path is `Question -> CTO -> Plan ->
+  //    CodeAuthor -> PR`. Skipping Question atom creation breaks the
+  //    provenance chain the canon assumes and leaves the planning run
+  //    without a stable atom id to cite downstream.
+  // 2. Drafter literal: the CodeAuthor drafter reads the Plan atom's
+  //    metadata.question_prompt as ground-truth payload for the diff.
+  //    Without this, a Decision whose prose paraphrases the operator
+  //    request reduces "replace the specified line" to an abstract
+  //    reference and the drafter emits an empty diff. Propagating the
+  //    originating Question's id + body via PlanningActorOptions.
+  //    originatingQuestion means the Plan metadata carries the
+  //    literal payload through to the drafter. Observed and documented
+  //    in docs/dogfooding/2026-04-23-virtual-org-phase-3-git-as-push-auth.md.
+  const questionAtom = await askQuestion(host, {
+    content: args.request,
+    asker: principal.id,
+    metadata: {
+      asked_via: 'run-cto-actor',
+    },
+  });
+  console.log(`[cto-actor] seeded question atom ${questionAtom.id}`);
+
   const actor = new PlanningActor({
     request: args.request,
     judgment,
+    originatingQuestion: {
+      id: questionAtom.id,
+      prompt: args.request,
+    },
   });
 
   // Size the deadline so we never budget-deadline a run whose LLM

@@ -200,6 +200,143 @@ describe('PlanningActor', () => {
     expect(report.escalations.some((e) => e.startsWith('deny:'))).toBe(true);
   });
 
+  it('originatingQuestion: when omitted, plan metadata has no question_id or question_prompt (baseline parity)', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'bare request, no question atom',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [planOne({ title: 'Plan No-Q' })],
+      ),
+      // originatingQuestion intentionally not set
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const all = await host.atoms.query({ type: ['plan'] }, 10);
+    expect(all.atoms).toHaveLength(1);
+    const plan = all.atoms[0]!;
+    // Absent-when-omitted is load-bearing: pre-seam callers' plan
+    // metadata shape must not change or MemoryLLM data-hash-keyed
+    // fixtures break and downstream consumers that `'question_id' in
+    // metadata` check would see a false positive.
+    expect('question_id' in plan.metadata).toBe(false);
+    expect('question_prompt' in plan.metadata).toBe(false);
+  });
+
+  it('originatingQuestion: id + prompt propagate into plan metadata (mirrors agent-sdk executor seam)', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'concrete request derived from a Question atom',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [planOne({ title: 'Plan With-Q' })],
+      ),
+      originatingQuestion: {
+        id: 'q-abc123-2026-04-23T12-00-00-000Z' as AtomId,
+        prompt: 'Replace the `7Z UTC` line in docs/retro.md with `7Z`.',
+      },
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const all = await host.atoms.query({ type: ['plan'] }, 10);
+    const plan = all.atoms[0]!;
+    expect(plan.metadata.question_id).toBe('q-abc123-2026-04-23T12-00-00-000Z');
+    expect(plan.metadata.question_prompt).toBe(
+      'Replace the `7Z UTC` line in docs/retro.md with `7Z`.',
+    );
+    // Pre-existing baseline metadata keys stay present (no overwrite).
+    expect(plan.metadata.title).toBe('Plan With-Q');
+    expect(plan.metadata.planning_actor_version).toBeDefined();
+  });
+
+  it('originatingQuestion: empty id or empty prompt is omitted (parity with agent-sdk seam)', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'edge: caller passed a Question-shaped object with empty fields',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [planOne({ title: 'Plan Empty-Q' })],
+      ),
+      originatingQuestion: {
+        id: '' as AtomId,
+        prompt: '',
+      },
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const all = await host.atoms.query({ type: ['plan'] }, 10);
+    const plan = all.atoms[0]!;
+    expect('question_id' in plan.metadata).toBe(false);
+    expect('question_prompt' in plan.metadata).toBe(false);
+  });
+
+  it('originatingQuestion: only id populated -> question_id present, question_prompt absent', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'asymmetric edge: id known, prompt missing',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [planOne({ title: 'Plan Id-Only' })],
+      ),
+      originatingQuestion: {
+        id: 'q-only-id-2026-04-23' as AtomId,
+        prompt: '',
+      },
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const plan = (await host.atoms.query({ type: ['plan'] }, 10)).atoms[0]!;
+    expect(plan.metadata.question_id).toBe('q-only-id-2026-04-23');
+    expect('question_prompt' in plan.metadata).toBe(false);
+  });
+
+  it('originatingQuestion: only prompt populated -> question_prompt present, question_id absent', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'asymmetric edge: prompt known, id missing',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [planOne({ title: 'Plan Prompt-Only' })],
+      ),
+      originatingQuestion: {
+        id: '' as AtomId,
+        prompt: 'Do the thing described in this verbatim prompt.',
+      },
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const plan = (await host.atoms.query({ type: ['plan'] }, 10)).atoms[0]!;
+    expect(plan.metadata.question_prompt).toBe(
+      'Do the thing described in this verbatim prompt.',
+    );
+    expect('question_id' in plan.metadata).toBe(false);
+  });
+
   it('renders principles + alternatives + what-breaks into the plan body', async () => {
     const host = await seedHost();
     const actor = new PlanningActor({
