@@ -69,15 +69,14 @@ export interface PlanReconcileTickResult {
    - Read the Plan id. Two sources, in priority order:
      a. `metadata.plan_id` on the pr-observation atom itself (populated by pr-landing on observe; requires a small `src/runtime/actors/pr-landing/pr-observation.ts` change to parse the PR body footer and stamp it).
      b. Fallback: fetch the PR body via the adapter, parse the YAML footer, extract `plan_id`. Used when pre-stamping didn't happen.
-   - Idempotency: if an atom of type `plan-merge-settled` with `derived_from: [plan_id, pr_observation_id]` already exists, skip.
-3. Load the Plan atom. Accept current states `'executing'` and `'approved'` (the latter for plans that skipped the executing step); reject others loudly.
+   - **Claim step (race-safe, not just idempotency check).** Compute a deterministic marker id: `marker_id = 'plan-merge-settled-' + sha256(plan_id + '|' + pr_observation_id).slice(0, 16)`. Attempt `host.atoms.put({ id: marker_id, type: 'plan-merge-settled', ... })`. The atom store rejects duplicate ids, so the first worker to write wins and subsequent workers get a conflict/already-exists error, which they treat as "another worker claimed this; skip". This turns the marker into a mutual-exclusion claim, not just a post-hoc idempotency check, and is correct even under concurrent ticks. `AtomStore` does not expose a general compare-and-swap primitive; deterministic-id + put-is-unique is the workaround pattern used by the existing `runDispatchTick` for plan-state claims.
+3. Load the Plan atom (only after claim succeeded). Verify `taint === 'clean'` and `superseded_by.length === 0` in code (not just query predicate). Accept current states `'executing'` and `'approved'` (the latter for plans that skipped the executing step); reject others loudly. If the guard fails, log and skip — the claim marker stays and prevents retry on this observation.
 4. Determine terminal transition:
    - `merged` → `'succeeded'`
    - `closed` + PR not merged → `'abandoned'`
    - anything else → no-op, observation filtered out upstream.
-5. Write:
-   - `host.atoms.update(planId, { plan_state: next, metadata: { merged_pr: {...}, plan_state_reason: 'pr-merge-reconcile', plan_state_changed_at: now } })`.
-   - Marker atom `plan-merge-settled` with `derived_from: [plan_id, pr_observation_id]`. Prevents re-processing on the next tick.
+5. Write the plan update: `host.atoms.update(planId, { plan_state: next, metadata: { merged_pr: {...}, plan_state_reason: 'pr-merge-reconcile', plan_state_changed_at: now } })`.
+   - The claim marker written in step 2 is the record of the reconciliation event itself; no additional marker is needed.
 
 ### Safety
 
@@ -192,7 +191,7 @@ metadata:
 1. Paginated query for plans in `plan_state === 'proposed'` with `taint === 'clean'` and non-empty `metadata.delegation.sub_actor_principal_id`.
 2. Skip if target not in `policy.allowed_sub_actors`.
 3. Skip if `plan.confidence < policy.min_plan_confidence`.
-4. Query all `plan-approval-vote` atoms with `derived_from.includes(plan.id)` and `taint === 'clean'`.
+4. Query all `plan-approval-vote` atoms with `derived_from.includes(plan.id)`. **In-code guard (not just query predicate):** filter the returned atoms to `atom.taint === 'clean' && atom.superseded_by.length === 0` before counting. Adapter-level predicate enforcement can vary; enforcing these invariants in the pass itself guarantees superseded/revoked votes never contribute regardless of adapter behavior. Same guard applies to the plan atom loaded in step 1.
 5. Filter votes by freshness (`voted_at >= now - max_age_ms`); count staleness for return value.
 6. If `hard_reject_on_any_reject === true` and any fresh vote has `metadata.vote === 'reject'`: transition plan to `'abandoned'` with `metadata.abandoned_reason = 'hard-reject-by-<principal>'`, log audit, increment `rejected` counter. Continue to next plan.
 7. Otherwise, count distinct `principal_id` with `vote === 'approve'` AND `confidence >= policy.min_vote_confidence`.
@@ -208,7 +207,7 @@ Both passes are called by the same upstream runner (a new `scripts/run-approval-
 
 ### Safety
 
-- Fail-closed by default. Empty `allowed_sub_actors` or empty `required_roles` means nothing auto-approves; operator widens explicitly.
+- Fail-closed by default. Empty `allowed_sub_actors` means nothing auto-approves (this is the hard gate; operator widens the allowlist explicitly to enable the pass for a given sub-actor). Empty `required_roles` means "no role constraint" — the vote-count and confidence thresholds still apply, but no role-based veto is checked. These two fields are intentionally different knobs: `allowed_sub_actors` is the pass's on/off switch; `required_roles` is the intersection requirement on top of vote-count when the pass is on.
 - Vote atoms carry `principal_id`. Write permissions on the atom store determine who can vote for whom. Compromise propagation (existing taint mechanism) automatically invalidates votes from compromised principals.
 - Single reject abandons the plan : gives any reviewer a veto. Matches real-org governance.
 - `max_age_ms` prevents stale approval reuse. A week-old approve vote on a since-edited plan doesn't auto-approve a re-derived version.
