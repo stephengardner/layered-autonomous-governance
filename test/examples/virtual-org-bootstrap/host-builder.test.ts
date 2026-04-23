@@ -18,7 +18,7 @@ import { buildVirtualOrgHost } from '../../../src/examples/virtual-org-bootstrap
 import { MemoryLLM } from '../../../src/adapters/memory/llm.js';
 import { MemoryClock } from '../../../src/adapters/memory/clock.js';
 import type { LLM } from '../../../src/substrate/interface.js';
-import type { AtomId, PrincipalId } from '../../../src/substrate/types.js';
+import type { AtomId, Principal, PrincipalId } from '../../../src/substrate/types.js';
 
 const OPERATOR_ID = 'test-operator' as PrincipalId;
 
@@ -29,6 +29,28 @@ const asAtomId = (id: string): AtomId => id as AtomId;
 
 function mockLlm(): LLM {
   return new MemoryLLM(new MemoryClock());
+}
+
+function testOperatorPrincipal(): Principal {
+  return {
+    id: OPERATOR_ID,
+    name: 'Test Operator',
+    role: 'root',
+    active: true,
+    signed_by: null,
+    compromised_at: null,
+    created_at: '2026-04-22T00:00:00.000Z',
+    permitted_scopes: {
+      read: ['session', 'project', 'user', 'global'],
+      write: ['session', 'project', 'user', 'global'],
+    },
+    permitted_layers: {
+      read: ['L0', 'L1', 'L2', 'L3'],
+      write: ['L0', 'L1', 'L2', 'L3'],
+    },
+    goals: [],
+    constraints: [],
+  };
 }
 
 let stateDir: string;
@@ -47,6 +69,7 @@ describe('buildVirtualOrgHost', () => {
       stateDir,
       llm: mockLlm(),
       operatorPrincipalId: OPERATOR_ID,
+      seedPrincipals: [testOperatorPrincipal()],
     });
     try {
       expect(host.atoms).toBeDefined();
@@ -67,6 +90,7 @@ describe('buildVirtualOrgHost', () => {
       stateDir,
       llm: mockLlm(),
       operatorPrincipalId: OPERATOR_ID,
+      seedPrincipals: [testOperatorPrincipal()],
     });
     try {
       const required = [
@@ -110,6 +134,7 @@ describe('buildVirtualOrgHost', () => {
       stateDir,
       llm: mockLlm(),
       operatorPrincipalId: OPERATOR_ID,
+      seedPrincipals: [testOperatorPrincipal()],
       // Fence seeding is idempotent; default-on is fine but we want to
       // assert plain atom round-trip, not just seeded fences.
     };
@@ -160,12 +185,16 @@ describe('buildVirtualOrgHost', () => {
       stateDir,
       llm: mockLlm(),
       operatorPrincipalId: OPERATOR_ID,
+      seedPrincipals: [testOperatorPrincipal()],
     });
     await first.close();
 
     // Same stateDir, default seeding on: the seeder must no-op on each
     // atom id that already exists. A naive put() would throw
-    // ConflictError here.
+    // ConflictError here. Second build omits seedPrincipals to
+    // exercise the "operator already persisted from prior build"
+    // case: file-backed principal store round-trips the record, so
+    // the operator remains resolvable without re-registration.
     const second = await buildVirtualOrgHost({
       stateDir,
       llm: mockLlm(),
@@ -189,6 +218,7 @@ describe('buildVirtualOrgHost', () => {
         // @ts-expect-error: intentionally omitted to cover the runtime guard.
         llm: undefined,
         operatorPrincipalId: OPERATOR_ID,
+        seedPrincipals: [testOperatorPrincipal()],
       }),
     ).rejects.toThrow(/llm/i);
   });
@@ -215,6 +245,67 @@ describe('buildVirtualOrgHost', () => {
       // unused, so the builder did not need it.
       const atom = await host.atoms.get(asAtomId('pol-code-author-signed-pr-only'));
       expect(atom).toBeNull();
+    } finally {
+      await close();
+    }
+  });
+
+  it('throws when operatorPrincipalId is set but the principal is not registered', async () => {
+    // Fence atoms attributed to an unregistered principal would taint
+    // the authority chain: downstream arbitration relies on every
+    // atom's principal_id resolving to a live Principal in the store.
+    // A hardcoded operator id that the caller forgot to register must
+    // fail fast rather than silently stamp fences with a dangling
+    // author.
+    await expect(
+      buildVirtualOrgHost({
+        stateDir,
+        llm: mockLlm(),
+        operatorPrincipalId: 'ghost-operator' as PrincipalId,
+      }),
+    ).rejects.toThrow(/ghost-operator/);
+  });
+
+  it('registers seedPrincipals into the host before fence seeding', async () => {
+    // The caller can thread a list of principals through the builder so
+    // the operator (and any other pre-seed principal) is registered
+    // before fence seeding runs. This closes the chicken-and-egg gap
+    // where the operator id in `operatorPrincipalId` must be resolvable
+    // at fence-seed time but the only writable surface for principal
+    // registration is the Host that is being built.
+    const operatorPrincipal: Principal = {
+      id: OPERATOR_ID,
+      name: 'Test Operator',
+      role: 'root',
+      active: true,
+      signed_by: null,
+      compromised_at: null,
+      created_at: '2026-04-22T00:00:00.000Z',
+      permitted_scopes: {
+        read: ['session', 'project', 'user', 'global'],
+        write: ['session', 'project', 'user', 'global'],
+      },
+      permitted_layers: {
+        read: ['L0', 'L1', 'L2', 'L3'],
+        write: ['L0', 'L1', 'L2', 'L3'],
+      },
+      goals: [],
+      constraints: [],
+    };
+
+    const { host, close } = await buildVirtualOrgHost({
+      stateDir,
+      llm: mockLlm(),
+      operatorPrincipalId: OPERATOR_ID,
+      seedPrincipals: [operatorPrincipal],
+    });
+    try {
+      const registered = await host.principals.get(OPERATOR_ID);
+      expect(registered).not.toBeNull();
+      expect(registered!.id).toBe(OPERATOR_ID);
+      const fence = await host.atoms.get(asAtomId('pol-code-author-signed-pr-only'));
+      expect(fence).not.toBeNull();
+      expect(fence!.principal_id).toBe(OPERATOR_ID);
     } finally {
       await close();
     }

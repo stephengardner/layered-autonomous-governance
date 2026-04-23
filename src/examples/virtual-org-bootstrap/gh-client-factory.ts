@@ -1,11 +1,12 @@
 /**
  * GhClient factory for the virtual-org example.
  *
- * Reads a provisioned Actor App record + private key from
- * `<stateDir>/apps/<role>.{json,pem}` and builds an App-backed
- * `GhClient`. The on-disk layout matches `createCredentialsStore`'s
- * convention (same record shape, same key-file path), so credentials
- * produced by the provisioning script load as-is.
+ * Reads a provisioned Actor App record from `<stateDir>/apps/<role>.json`
+ * plus a private key from `<stateDir>/apps/keys/<role>.pem` and builds
+ * an App-backed `GhClient`. The on-disk layout matches
+ * `createCredentialsStore`'s convention (same record shape, same key-
+ * file path), so credentials produced by the provisioning script load
+ * as-is.
  *
  * `fetchImpl` threads into `AppAuthOptions.fetchImpl` so tests can
  * intercept the installation-token mint + downstream REST/GraphQL

@@ -111,10 +111,12 @@ describe('runDeliberation --execute integration', () => {
     expect(codeAuthorFn).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves the memory-host default path (no executorConfig, no deliberate injection)', async () => {
-    // The memory-host + mocked codeAuthorFn path that existing callers
-    // use MUST continue to work untouched. Exercise the same seam via
-    // a simple injected codeAuthorFn spy; deliberate is still stubbed.
+  it('runs execute:true with a memory host and injected codeAuthorFn + deliberate', async () => {
+    // Exercises the execute-mode wiring on a memory-backed Host so the
+    // seam stays testable without file-system state. Both codeAuthorFn
+    // and deliberate are injected so no GitHub / git call and no LLM
+    // round-trip happens under test; the assertion surface is the
+    // PrOpenedAtom returned from the codeAuthorFn spy.
     const host = createMemoryHost();
     const codeAuthorFn = vi.fn(async (): Promise<InvokeResult> => ({
       kind: 'dispatched',

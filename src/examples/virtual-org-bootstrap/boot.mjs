@@ -25,6 +25,13 @@
  *   --role <lag-ceo|lag-cto|lag-pr-landing>  (default: lag-ceo)
  *   --model <name>                     (default: claude-opus-4-7)
  *
+ * Env flags:
+ *   LAG_OPERATOR_ID                    operator principal id that should
+ *                                      author seeded fence atoms. Defaults
+ *                                      to reading the `role: "root"`
+ *                                      principal from the seed principals
+ *                                      directory.
+ *
  * All substrate imports resolve to `../../../dist/` (the compiled
  * output). Run `npm run build` before `node boot.mjs`.
  */
@@ -136,21 +143,37 @@ async function main() {
         : resolve(CWD, execCfg.stateDir);
       mkdirSync(stateDirAbs, { recursive: true });
 
+      // Operator principal resolution: LAG_OPERATOR_ID takes precedence
+      // so a production deployment can point at its own operator
+      // identity without touching source. Fallback is the first
+      // `role: "root"` principal discovered in the seed directory; we
+      // pass the full Principal record through seedPrincipals so the
+      // fence-atom seeder writes against a resolvable author (the
+      // runtime validation in buildVirtualOrgHost throws otherwise).
+      const operatorSeed = resolveOperatorPrincipal(seeds, process.env.LAG_OPERATOR_ID);
       const built = await buildVirtualOrgHost({
         stateDir: stateDirAbs,
         llm: createVirtualOrgLLM(),
-        operatorPrincipalId: 'helix-root',
+        operatorPrincipalId: operatorSeed.principal.id,
+        seedPrincipals: [operatorSeed.principal],
       });
       lifecycle.push(built);
       host = built.host;
-      // Seed the principals + canon fixtures into the built host so
-      // the deliberator sees them (createFileHost starts empty).
+      // Seed the participating principals + canon fixtures into the
+      // built host so the deliberator sees them (createFileHost
+      // starts empty; operator already registered via seedPrincipals).
       for (const seed of participating) await host.principals.put(seed.principal);
       for (const atom of canonAtoms) await host.atoms.put(atom);
 
+      // Credentials + bot identity share the resolved state root so a
+      // caller-supplied --state-dir applies uniformly. Splitting the
+      // two would allow the file-backed Host to read from
+      // `<custom>/virtual-org-state/` while the GhClient keeps
+      // loading credentials from `<cwd>/.lag/apps/*`; that asymmetry
+      // was the CR finding on the first iteration of this wiring.
       const ghClient = createVirtualOrgGhClient({
         role: execCfg.role,
-        stateDir: STATE_DIR,
+        stateDir: stateDirAbs,
       });
       codeAuthorFn = createVirtualOrgCodeAuthorFn({
         host,
@@ -158,7 +181,7 @@ async function main() {
         owner: execCfg.owner,
         repo: execCfg.repo,
         repoDir: execCfg.repoDir,
-        gitIdentity: buildBotGitIdentity(execCfg.role, STATE_DIR),
+        gitIdentity: buildBotGitIdentity(execCfg.role, stateDirAbs),
         model: execCfg.model,
       });
     } else {
@@ -200,6 +223,33 @@ async function main() {
       try { await built.close(); } catch { /* ignore */ }
     }
   }
+}
+
+function resolveOperatorPrincipal(seeds, envOperatorId) {
+  // Env override first so a production deployment can redirect the
+  // operator identity without editing source. The override must name a
+  // principal that exists in the loaded seeds; an unknown id would
+  // stamp fence atoms with a dangling author, and buildVirtualOrgHost's
+  // runtime validation would already throw, but failing here keeps the
+  // error site close to the CLI surface.
+  if (envOperatorId) {
+    const match = seeds.find((s) => String(s.principal.id) === envOperatorId);
+    if (!match) {
+      throw new Error(
+        `[boot] LAG_OPERATOR_ID='${envOperatorId}' does not match any seed principal in `
+        + `src/examples/virtual-org-bootstrap/principals/. Provision a seed for this id or `
+        + `unset the env var to fall back to the role: "root" principal.`,
+      );
+    }
+    return match;
+  }
+  const root = seeds.find((s) => s.principal.role === 'root');
+  if (!root) {
+    throw new Error(
+      '[boot] no seed principal has role: "root"; set LAG_OPERATOR_ID to the intended operator id.',
+    );
+  }
+  return root;
 }
 
 function buildBotGitIdentity(role, stateDir) {
