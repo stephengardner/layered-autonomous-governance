@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateSlug, parseGitWorktreeList, detectActivity } from '../../scripts/lib/wt.mjs';
+import { validateSlug, parseGitWorktreeList, detectActivity, detectStale } from '../../scripts/lib/wt.mjs';
 
 describe('validateSlug', () => {
   it('accepts kebab-case slugs', () => {
@@ -108,5 +108,45 @@ describe('detectActivity', () => {
     });
     expect(r.active).toBe(false);
     expect(r.reasons).toEqual([]);
+  });
+});
+
+describe('detectStale', () => {
+  const now = new Date('2026-04-21T22:00:00Z').getTime();
+  const DAY = 24 * 60 * 60 * 1000;
+  it('flags worktrees with no commits for 14+ days', () => {
+    const r = detectStale({
+      lastCommitMs: now - 15 * DAY,
+      notesMtimeMs: now - 1 * DAY,
+      branchMerged: false,
+      prClosed: false,
+      now,
+      thresholdMs: 14 * DAY,
+    });
+    expect(r.stale).toBe(true);
+    expect(r.reasons).toContain('no commits for 14+ days');
+  });
+  it('flags merged branches', () => {
+    const r = detectStale({
+      lastCommitMs: now,
+      notesMtimeMs: now,
+      branchMerged: true,
+      prClosed: false,
+      now,
+      thresholdMs: 14 * DAY,
+    });
+    expect(r.stale).toBe(true);
+    expect(r.reasons).toContain('branch merged to main');
+  });
+  it('returns not-stale for a fresh active worktree', () => {
+    const r = detectStale({
+      lastCommitMs: now - 1 * DAY,
+      notesMtimeMs: now - 1 * DAY,
+      branchMerged: false,
+      prClosed: false,
+      now,
+      thresholdMs: 14 * DAY,
+    });
+    expect(r.stale).toBe(false);
   });
 });

@@ -69,3 +69,25 @@ export function detectActivity({
   if (dirty) reasons.push('uncommitted changes');
   return { active: reasons.length > 0, reasons };
 }
+
+/**
+ * Detect whether a worktree is "stale" based on time and merge signals.
+ * Pure function: caller resolves branch merge state, PR closed state, etc.
+ *
+ * Used by `wt list` and `wt clean` to identify candidates for removal.
+ */
+export function detectStale({
+  lastCommitMs,
+  notesMtimeMs,
+  branchMerged,
+  prClosed,
+  now,
+  thresholdMs,
+}) {
+  const reasons = [];
+  if (now - lastCommitMs > thresholdMs) reasons.push('no commits for 14+ days');
+  if (now - notesMtimeMs > thresholdMs) reasons.push('NOTES.md untouched for 14+ days');
+  if (branchMerged) reasons.push('branch merged to main');
+  if (prClosed) reasons.push('PR closed');
+  return { stale: reasons.length > 0, reasons };
+}
