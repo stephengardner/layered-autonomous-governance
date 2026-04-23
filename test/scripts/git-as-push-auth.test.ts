@@ -43,14 +43,13 @@ describe('isPushCommand', () => {
     expect(isPushCommand(['push', '-u', 'origin', 'feat/x'])).toBe(true);
   });
 
-  it('returns true for `-C <dir> push`', () => {
+  it('returns false for `-C <dir> push` (callers pass the subcommand as the first positional)', () => {
+    // Documented caveat, not aspirational support: `-C` takes a
+    // value, so the implementation sees `/tmp/repo` as the next
+    // positional (not `push`) and short-circuits. git-as.mjs callers
+    // always lead with the subcommand, so this edge is exercised via
+    // the contract rather than via `-C`-pre-subcommand forms.
     expect(isPushCommand(['-C', '/tmp/repo', 'push', 'origin'])).toBe(false);
-    // The current implementation treats '-C' as a flag and then
-    // sees '/tmp/repo' as the next positional (not 'push'). This
-    // matches what git-as.mjs uses in practice - callers always
-    // pass the git subcommand as the first positional arg - so
-    // assert the documented behaviour rather than aspirationally
-    // supporting -C forms we don't exercise.
   });
 
   it('returns false for fetch', () => {
