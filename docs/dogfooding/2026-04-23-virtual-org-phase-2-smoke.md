@@ -18,7 +18,7 @@ trailing newline).
 
 ## Outcome
 
-**PARTIAL — setup + Question atom persisted; deliberation did not complete.**
+**PARTIAL - setup + Question atom persisted; deliberation did not complete.**
 
 The runtime wiring shipped by PRs #108, #110, #111 reached the Question-atom-
 write stage cleanly:
@@ -44,7 +44,7 @@ after the subagent context ended.
 a Claude Code subagent session. `boot.mjs --execute` instantiates
 `ClaudeCliLLM`, which spawns `claude -p "<prompt>"` as a subprocess for each
 participating agent's `judge` call. Nested `claude` invocations running under
-an outer `claude` session appear to silently fail to deliver output back — the
+an outer `claude` session appear to silently fail to deliver output back - the
 outer subagent's stdio capture, hooks, and session-persistence machinery
 probably interfere with or swallow the inner subprocess's response.
 
@@ -58,10 +58,10 @@ verified units and a live end-to-end run under the specific nesting condition.
 
 | step | time (UTC) | duration |
 |---|---|---|
-| boot.mjs start | 2026-04-23T08:08:57Z | — |
+| boot.mjs start | 2026-04-23T08:08:57Z | - |
 | Fence + canon atoms written | 2026-04-23T08:08:57Z | <1s |
 | Question atom written | 2026-04-23T08:08:57Z | <1s |
-| (deliberation silently stops) | — | — |
+| (deliberation silently stops) | - | - |
 | Subagent context exhausted | 2026-04-23T08:15:23Z (approx) | ~386s wall |
 
 ## Atoms produced vs expected
@@ -100,20 +100,20 @@ Per spec:
 ## What worked (substrate validation)
 
 - File-backed Host construction clean, 8-interface contract satisfied.
-- Fence-atom seeding with drift guard (#110) honored — no taint.
+- Fence-atom seeding with drift guard (#110) honored - no taint.
 - Operator-principal resolution via the `LAG_OPERATOR_ID` → seed-role-root
   fallback landed in #111 worked as designed.
 - `--state-dir` threading uniform across AtomStore, PrincipalStore, GhClient,
   and GitIdentity (closed the CR finding on #111).
 - Canon on main (4 pol-code-author atoms + two-principal policy) flows into
-  the virtual-org Host without manual seeding — the `buildVirtualOrgHost`
+  the virtual-org Host without manual seeding - the `buildVirtualOrgHost`
   composer does the right thing.
 - Atom persistence round-trips through the file adapter cleanly.
 
 ## What surprised
 
 - **Silent stop after Question.** No error, no timeout, no stderr. This is
-  worse than a loud failure — it's invisible to a human operator running
+  worse than a loud failure - it's invisible to a human operator running
   under the same nested-CLI condition. A hard timeout at the coordinator
   level (not just the question-level `timeoutAt`) would turn this into an
   Escalation atom with a reason code, which the operator could act on.
@@ -128,7 +128,7 @@ Per spec:
 These are proposed atoms the operator should review in the next canon-debt
 ritual:
 
-1. `obs-cli-in-cli-nesting-fails-silently` — observation. Content: "The CLI-
+1. `obs-cli-in-cli-nesting-fails-silently` - observation. Content: "The CLI-
    backed LLM adapter (`ClaudeCliLLM`) appears to fail silently when its
    `claude -p` subprocess is launched from inside a Claude Code subagent
    session. The nested session's stdio capture / hooks interfere with the
@@ -136,14 +136,14 @@ ritual:
    from a top-level terminal. Implication: Phase 5 live smoke tests for the
    virtual org MUST be run from a standalone operator terminal, not delegated
    to a subagent."
-2. `pref-coordinator-wall-clock-timeout` — preference. Content: "The
+2. `pref-coordinator-wall-clock-timeout` - preference. Content: "The
    deliberation coordinator should enforce a wall-clock timeout at the
    round-invocation level (not only the question-level `timeoutAt`). If a
    single `judge` call exceeds N seconds with no response, convert to an
    Escalation atom with reason `llm-silent-hang` instead of waiting for the
    question-level timeout. Default N = 90 seconds. Rationale: silent LLM
    hangs otherwise produce zero diagnostic signal."
-3. `ref-phase-5-smoke-runs-from-top-level-terminal` — reference. Content:
+3. `ref-phase-5-smoke-runs-from-top-level-terminal` - reference. Content:
    "Virtual-org phase-5 smoke tests (boot.mjs --execute) must be invoked
    from a top-level operator terminal, not from inside a Claude Code subagent
    or nested claude-cli session. See `docs/dogfooding/2026-04-23-virtual-org-
@@ -223,8 +223,8 @@ signal?
 
 ### Strategic-level observation: this is the thesis working
 
-The original plan's falsification tripwire — "the substrate is a real
-governance surface for multi-agent orgs" — was to be falsified by finding
+The original plan's falsification tripwire - "the substrate is a real
+governance surface for multi-agent orgs" - was to be falsified by finding
 that canon / arbitration / CR review couldn't catch real class-of-failure
 bugs under load. Across 6 PRs today, CR caught:
 
