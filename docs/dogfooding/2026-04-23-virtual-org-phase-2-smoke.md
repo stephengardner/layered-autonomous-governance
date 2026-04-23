@@ -1,6 +1,6 @@
 # Virtual-org phase 2 smoke test retrospective
 
-> Runs: 2026-04-23T08:08:57Z UTC (partial), 2026-04-23T08:57:21Z UTC (**E2E SUCCESS, PR #113**).
+> Runs: 2026-04-23T08:08:57Z (partial), 2026-04-23T08:57:21Z (**E2E SUCCESS, PR #113**).
 > Main at `684afaa` (phase 3+4 merge, PR #111) for run 1; `0b1186e` + local `50c0381` (colon fix) for run 2.
 > Plan: `docs/superpowers/plans/2026-04-23-virtual-org-phase-2-host.md`.
 > Companions: `2026-04-22-task-d-132-retro.md`, `2026-04-22-virtual-org-host-gap.md`.
@@ -36,7 +36,7 @@ generation cleared every prior blocker in a single pass:
 
 ### Live-run chain, verbatim
 
-```
+```text
 question         q-1776934624451                          (vo-cto)
   position       pos-q-1776934624451-vo-cto-r0            (vo-cto)
   position       pos-q-1776934624451-vo-code-author-r0    (vo-code-author)
