@@ -438,7 +438,64 @@ async function cmdClean(args) {
   }
 }
 async function cmdStack(args) { throw new Error('not implemented'); }
-async function cmdNote(args) { throw new Error('not implemented'); }
+/** Resolve the main (primary) worktree root regardless of which worktree is cwd. */
+async function resolveMainRoot() {
+  // git worktree list --porcelain always lists the primary first.
+  const out = (await execa('git', ['worktree', 'list', '--porcelain'])).stdout;
+  const records = parseGitWorktreeList(out);
+  return records[0]?.path ?? (await execa('git', ['rev-parse', '--show-toplevel'])).stdout.trim();
+}
+
+async function cmdNote(args) {
+  const positional = args.filter(a => !a.startsWith('-'));
+  let slug = positional[0];
+
+  const repoRoot = await resolveMainRoot();
+
+  if (!slug) {
+    // Infer slug from cwd - walk up until we find a .worktrees/<slug>/ ancestor.
+    const cwd = process.cwd();
+    const wtBase = join(repoRoot, '.worktrees');
+    // Normalize both to use forward slashes for comparison.
+    const cwdNorm = cwd.replace(/\\/g, '/');
+    const wtBaseNorm = wtBase.replace(/\\/g, '/');
+    if (cwdNorm.startsWith(wtBaseNorm + '/')) {
+      const rest = cwdNorm.slice(wtBaseNorm.length + 1);
+      slug = rest.split('/')[0];
+    }
+    if (!slug) {
+      console.error('[wt note] could not infer slug from cwd; pass a slug explicitly');
+      process.exit(2);
+    }
+  } else {
+    const v = validateSlug(slug);
+    if (!v.ok) {
+      console.error(`[wt note] invalid slug: ${v.reason}`);
+      process.exit(2);
+    }
+    slug = v.slug;
+  }
+
+  const wtPath = join(repoRoot, '.worktrees', slug);
+  if (!existsSync(wtPath)) {
+    console.error(`[wt note] .worktrees/${slug}/ not found`);
+    process.exit(2);
+  }
+
+  const notesPath = join(wtPath, 'NOTES.md');
+
+  const editor = process.env.EDITOR;
+  if (editor) {
+    await execa(editor, [notesPath], { stdio: 'inherit' });
+  } else {
+    // Try 'code' as fallback.
+    try {
+      await execa('code', [notesPath], { stdio: 'inherit' });
+    } catch {
+      console.log(notesPath);
+    }
+  }
+}
 
 await main().catch((err) => {
   console.error(`[wt] ${err.message}`);
