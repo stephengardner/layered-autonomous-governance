@@ -309,7 +309,17 @@ function extractTargetPathsFromProse(prose: string): string[] {
   const out: string[] = [];
   let m: RegExpExecArray | null;
   while ((m = pathRe.exec(prose)) !== null) {
-    const p = m[1]!;
+    // Normalize unified-diff path prefixes. When the plan content
+    // itself embeds a diff (e.g., the Decision answer echoes a
+    // `--- a/foo.md` / `+++ b/foo.md` block it inherited from an
+    // agent position), the heuristic would otherwise emit `a/foo.md`
+    // AND `b/foo.md` as distinct targets. The drafter LLM then
+    // produces a diff touching `foo.md`, and the downstream path-
+    // scope check fails because `foo.md` is not in the inflated
+    // target set. Strip the `a/` / `b/` diff prefix so the declared
+    // scope matches the shape the drafter emits. Surfaced by live
+    // E2E #3b where the Decision content WAS a valid diff.
+    const p = stripDiffPathPrefix(m[1]!);
     if (hasTraversalSegment(p)) continue;
     if (!seen.has(p)) {
       seen.add(p);
@@ -317,6 +327,11 @@ function extractTargetPathsFromProse(prose: string): string[] {
     }
   }
   return out;
+}
+
+function stripDiffPathPrefix(p: string): string {
+  if (p.startsWith('a/') || p.startsWith('b/')) return p.slice(2);
+  return p;
 }
 
 function hasTraversalSegment(p: string): boolean {
