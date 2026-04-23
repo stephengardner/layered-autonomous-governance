@@ -178,4 +178,45 @@ describe('buildVirtualOrgHost', () => {
       await second.close();
     }
   });
+
+  it('throws synchronously when llm is missing', async () => {
+    // An untyped caller (JS consumer, dynamic dispatch) could omit
+    // llm; the builder must NOT silently fall through to
+    // createFileHost's default. Fail-fast before any file-system work.
+    await expect(
+      buildVirtualOrgHost({
+        stateDir,
+        // @ts-expect-error: intentionally omitted to cover the runtime guard.
+        llm: undefined,
+        operatorPrincipalId: OPERATOR_ID,
+      }),
+    ).rejects.toThrow(/llm/i);
+  });
+
+  it('throws synchronously when operatorPrincipalId is missing and skipSeed is false', async () => {
+    await expect(
+      buildVirtualOrgHost({
+        stateDir,
+        llm: mockLlm(),
+        // @ts-expect-error: intentionally omitted to cover the runtime guard.
+        operatorPrincipalId: undefined,
+      }),
+    ).rejects.toThrow(/operatorPrincipalId/i);
+  });
+
+  it('accepts a missing operatorPrincipalId when skipSeed: true', async () => {
+    const { host, close } = await buildVirtualOrgHost({
+      stateDir,
+      llm: mockLlm(),
+      skipSeed: true,
+    });
+    try {
+      // No fence atoms should have been seeded; operatorPrincipalId was
+      // unused, so the builder did not need it.
+      const atom = await host.atoms.get(asAtomId('pol-code-author-signed-pr-only'));
+      expect(atom).toBeNull();
+    } finally {
+      await close();
+    }
+  });
 });

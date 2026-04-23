@@ -1,17 +1,22 @@
 /**
  * Blast-radius fence-atom seeder.
  *
- * Ports the four `pol-code-author-*` policy atoms from
- * `scripts/bootstrap-code-author-canon.mjs` verbatim. The shapes match
- * the script so an example runtime that calls `seedFenceAtoms` and a
- * deployment that ran the bootstrap script converge on the same L3
- * canon; drifting here would produce two incompatible sources of truth
- * for a principal that can push commits.
+ * Ports the four policy atoms from the canon bootstrap script
+ * verbatim. The shapes must match the script so an example runtime
+ * that calls `seedFenceAtoms` and a deployment that ran the bootstrap
+ * script converge on the same L3 canon; drifting here would produce
+ * two incompatible sources of truth for a principal that can push
+ * commits.
  *
- * Seeding is idempotent per atom id. An atom already in the store is
- * left in place (no drift check here; the bootstrap script remains the
- * authoritative drift guard at re-seed time). This lets a caller
- * rebuild the Host against the same state-dir without a ConflictError.
+ * Idempotency with drift guard: when an atom with the same id is
+ * already present, every field load-bearing for provenance and policy
+ * integrity (content, type, layer, scope, taint, principal_id,
+ * provenance.kind, provenance.source, provenance.derived_from, and
+ * metadata.policy) is compared against the canonical shape. A mismatch
+ * throws a clear error naming the atom id and the drifted fields.
+ * Identity alone is not a license to skip validation; a tampered or
+ * upgraded atom surviving rebuild silently would defeat the fence's
+ * purpose.
  */
 
 import type { AtomStore } from '../../substrate/interface.js';
@@ -140,19 +145,97 @@ function fenceAtomFromSpec(spec: FenceAtomSpec, operatorId: PrincipalId): Atom {
 
 /**
  * Seed the four blast-radius fence atoms into the provided AtomStore.
- * No-op per atom when that id already exists; safe to call repeatedly.
+ *
+ * Idempotent with a drift guard: when an atom with the same id already
+ * exists, every integrity-load-bearing field is compared against the
+ * canonical shape. A mismatch throws a `FenceDriftError` naming the
+ * atom id and the drifted fields; a match is a silent no-op. A fresh
+ * slot is written via `put`.
  */
 export async function seedFenceAtoms(
   atoms: AtomStore,
   operatorId: PrincipalId,
 ): Promise<void> {
   for (const spec of FENCE_ATOM_SPECS) {
+    const expected = fenceAtomFromSpec(spec, operatorId);
     const existing = await atoms.get(spec.id as AtomId);
     if (existing !== null) {
+      const mismatches = diffFenceAtom(existing, expected);
+      if (mismatches.length > 0) {
+        throw new FenceDriftError(spec.id, mismatches);
+      }
       continue;
     }
-    await atoms.put(fenceAtomFromSpec(spec, operatorId));
+    await atoms.put(expected);
   }
 }
 
 export const FENCE_ATOM_IDS: ReadonlyArray<string> = FENCE_ATOM_SPECS.map((s) => s.id);
+
+/**
+ * Error thrown when an existing atom in the store differs from the
+ * canonical fence-atom shape on any integrity-load-bearing field.
+ * Carries the atom id and the list of drifted fields for operator
+ * triage.
+ */
+export class FenceDriftError extends Error {
+  readonly atomId: string;
+  readonly fields: ReadonlyArray<string>;
+
+  constructor(atomId: string, fields: ReadonlyArray<string>) {
+    super(
+      `fence atom ${atomId} drifted from canonical shape on fields: ${fields.join(', ')}. `
+      + 'Re-run the canon bootstrap script to restore the authoritative shape.',
+    );
+    this.name = 'FenceDriftError';
+    this.atomId = atomId;
+    this.fields = fields;
+  }
+}
+
+/**
+ * Compare two fence atoms field-by-field on the set that must match
+ * for the fence to function. Returns the list of mismatched field
+ * names (empty when everything matches).
+ *
+ * Not checked: created_at / last_reinforced_at (timestamps shift with
+ * bootstrap re-runs), confidence (fence confidence is always 1.0 and
+ * not load-bearing for the authority grant).
+ */
+function diffFenceAtom(existing: Atom, expected: Atom): ReadonlyArray<string> {
+  const drifted: string[] = [];
+  if (existing.content !== expected.content) drifted.push('content');
+  if (existing.type !== expected.type) drifted.push('type');
+  if (existing.layer !== expected.layer) drifted.push('layer');
+  if (existing.scope !== expected.scope) drifted.push('scope');
+  if (existing.taint !== expected.taint) drifted.push('taint');
+  if (existing.principal_id !== expected.principal_id) {
+    drifted.push('principal_id');
+  }
+  if (existing.provenance.kind !== expected.provenance.kind) {
+    drifted.push('provenance.kind');
+  }
+  if (stableJson(existing.provenance.source) !== stableJson(expected.provenance.source)) {
+    drifted.push('provenance.source');
+  }
+  if (stableJson(existing.provenance.derived_from) !== stableJson(expected.provenance.derived_from)) {
+    drifted.push('provenance.derived_from');
+  }
+  const existingPolicy = (existing.metadata as Record<string, unknown>)?.['policy'];
+  const expectedPolicy = (expected.metadata as Record<string, unknown>)?.['policy'];
+  if (stableJson(existingPolicy) !== stableJson(expectedPolicy)) {
+    drifted.push('metadata.policy');
+  }
+  return drifted;
+}
+
+/**
+ * Stable stringify for comparison. Object keys serialize in insertion
+ * order; both sides of the comparison are produced from the same code
+ * path in this file, so a structural-equality string match is
+ * sufficient for the shapes the fence carries (no arbitrary user
+ * objects). Arrays serialize by index, preserving order.
+ */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value);
+}
