@@ -34,6 +34,7 @@ import {
   defaultLlmClient,
   loadCanonFixtures,
   loadSeedPrincipals,
+  parseBootArgs,
   runDeliberation,
 } from '../../../dist/examples/virtual-org-bootstrap/boot-lib.js';
 
@@ -48,7 +49,13 @@ const STATE_DIR = resolve(CWD, '.lag');
 async function main() {
   mkdirSync(STATE_DIR, { recursive: true });
 
-  const args = parseArgs(process.argv.slice(2));
+  let args;
+  try {
+    args = parseBootArgs(process.argv.slice(2));
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(2);
+  }
 
   const principalsDir = join(HERE, 'principals');
   const canonDir = join(HERE, 'canon');
@@ -138,19 +145,6 @@ async function main() {
   } finally {
     killSwitch.dispose();
   }
-}
-
-function parseArgs(argv) {
-  let execute = false;
-  const positional = [];
-  for (const a of argv) {
-    if (a === '--execute') {
-      execute = true;
-    } else {
-      positional.push(a);
-    }
-  }
-  return { execute, prompt: positional[0] };
 }
 
 async function readPrompt(fromArgs) {

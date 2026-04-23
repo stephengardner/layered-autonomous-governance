@@ -635,3 +635,47 @@ async function computePrincipalDepths(
   }
   return depths;
 }
+
+// ---------------------------------------------------------------------------
+// parseBootArgs: fail-fast argv parser for boot.mjs.
+//
+// The virtual-org boot script used to default to the destructive
+// execute path; the safety flip made deliberate-only the default and
+// added `--execute` as an explicit opt-in. That flip broke any caller
+// that still typed the retired `--deliberate-only` flag, and, worse,
+// silently demoted any unknown `--*` token (including typos like
+// `--excute`) into the positional prompt slot - burning an LLM run on
+// nonsense input. This parser rejects unknown flags loudly and gives
+// a migration hint for the retired one.
+// ---------------------------------------------------------------------------
+
+export interface ParseBootArgsResult {
+  readonly execute: boolean;
+  readonly prompt: string | undefined;
+}
+
+export function parseBootArgs(argv: ReadonlyArray<string>): ParseBootArgsResult {
+  let execute = false;
+  const positional: string[] = [];
+  for (const a of argv) {
+    if (a === '--execute') {
+      execute = true;
+    } else if (a === '--deliberate-only') {
+      // Retired flag from the safety flip. Deliberate-only is now the
+      // default; callers opt into execution with `--execute` instead.
+      throw new Error(
+        '[boot] --deliberate-only was removed; omit the flag for deliberate-only or pass --execute to opt into the executor path.',
+      );
+    } else if (a.startsWith('--')) {
+      // Any other `--*` token is an unknown option. Demoting it to a
+      // positional prompt would quietly run a wrong-input LLM call, so
+      // fail fast with the offending token in the error.
+      throw new Error(
+        `[boot] unknown option: ${a}. Known flags: --execute. Omit for deliberate-only (the default).`,
+      );
+    } else {
+      positional.push(a);
+    }
+  }
+  return { execute, prompt: positional[0] };
+}
