@@ -226,9 +226,35 @@ export async function executeDecision(
   // failure-to-atom shape used by the codeAuthorFn path.
   let planAtom: Atom;
   try {
-    planAtom = planAtomFactory !== undefined
+    const baseAtom = planAtomFactory !== undefined
       ? planAtomFactory(decision)
       : defaultPlanAtomFactory(decision, executorPrincipalId, createdAt);
+    // Enrich plan metadata with the originating Question's id + prompt
+    // so the downstream drafter has the literal payload alongside the
+    // Decision's governance-layer prose. The Decision answer may reduce
+    // a concrete instruction to an abstract reference during arbitration;
+    // without the Question's verbatim body the drafter has no literal to
+    // implement. Merge rather than overwrite so a custom planAtomFactory
+    // that already set these keys wins (an explicit caller intent).
+    // Omit empty strings from the merged keys: an empty question prompt
+    // would otherwise change the metadata shape for callers whose
+    // Question carries no body, and the drafter already folds an empty
+    // `question_prompt` out of its DATA block. Parity here keeps the
+    // "omit when empty" contract consistent across the seam.
+    const questionMetadata: Record<string, unknown> = {};
+    if (String(question.id).length > 0) {
+      questionMetadata['question_id'] = question.id;
+    }
+    if (typeof question.prompt === 'string' && question.prompt.length > 0) {
+      questionMetadata['question_prompt'] = question.prompt;
+    }
+    planAtom = {
+      ...baseAtom,
+      metadata: {
+        ...questionMetadata,
+        ...baseAtom.metadata,
+      },
+    };
     await host.atoms.put(planAtom);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
