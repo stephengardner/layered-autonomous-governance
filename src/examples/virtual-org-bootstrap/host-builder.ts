@@ -15,14 +15,33 @@
 
 import { createFileHost, type FileHost } from '../../adapters/file/index.js';
 import type { Host, LLM } from '../../substrate/interface.js';
-import type { PrincipalId } from '../../substrate/types.js';
+import type { Principal, PrincipalId } from '../../substrate/types.js';
 import { seedFenceAtoms } from './fence-seed.js';
+
+/**
+ * Git author identity threaded into the default code-author executor
+ * via `DefaultExecutorConfig.gitIdentity`. Re-exported from the same
+ * subpath other example wiring already imports (host + executor live
+ * together at the example-bootstrap layer).
+ */
+export type { GitIdentity } from '../../runtime/actors/code-author/git-ops.js';
 
 interface BuildVirtualOrgHostBaseOptions {
   /** Root directory under which every file-backed store persists. */
   readonly stateDir: string;
   /** Real or mock LLM. Required; the builder does not pick a default. */
   readonly llm: LLM;
+  /**
+   * Principals registered into the Host before fence seeding. The
+   * operator principal referenced by `operatorPrincipalId` must be
+   * present in this list (or already registered against the same
+   * stateDir from a prior build) so fence atoms stamp with a
+   * resolvable author. Without this hook the caller faces a chicken-
+   * and-egg gap: the operator id is required at seed time but the
+   * only writable surface for principal registration is the Host
+   * that is being built.
+   */
+  readonly seedPrincipals?: ReadonlyArray<Principal>;
 }
 
 /**
@@ -101,10 +120,36 @@ export async function buildVirtualOrgHost(
     llm: opts.llm,
   });
 
+  // Register any caller-supplied principals BEFORE fence seeding so the
+  // fence atoms' principal_id resolves to a live Principal. Existing
+  // records are overwritten idempotently; the file-backed principal
+  // store's put() is last-write-wins.
+  if (opts.seedPrincipals && opts.seedPrincipals.length > 0) {
+    for (const p of opts.seedPrincipals) {
+      await fileHost.principals.put(p);
+    }
+  }
+
   if (!opts.skipSeed) {
     // Non-null assertion safe: the guard above throws when seeding is
     // on and the id is missing.
-    await seedFenceAtoms(fileHost.atoms, opts.operatorPrincipalId!);
+    const operatorId = opts.operatorPrincipalId!;
+    // Validate the operator is registered. An unregistered operator
+    // would stamp fence atoms with a dangling author, which
+    // downstream arbitration (source-rank principal-depth tiebreak,
+    // taint cascade, compromise response) could not resolve. Fail
+    // fast with the offending id in the error so the operator knows
+    // which principal to add to `seedPrincipals` or provision out of
+    // band.
+    const existing = await fileHost.principals.get(operatorId);
+    if (existing === null) {
+      throw new Error(
+        `buildVirtualOrgHost: operatorPrincipalId '${operatorId}' is not registered in the Host's PrincipalStore. `
+          + `Pass it via opts.seedPrincipals so fence atoms have a resolvable author, `
+          + `or set skipSeed: true to skip fence seeding entirely.`,
+      );
+    }
+    await seedFenceAtoms(fileHost.atoms, operatorId);
   }
 
   let closed = false;
