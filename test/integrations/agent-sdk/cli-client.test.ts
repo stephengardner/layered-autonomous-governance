@@ -157,6 +157,50 @@ describe('createCliClient', () => {
     expect(Number.isFinite(Number(call.args[idx + 1]))).toBe(true);
   });
 
+  it('honours args.max_tokens via CLAUDE_CODE_MAX_OUTPUT_TOKENS env var (CR #105)', async () => {
+    // CR finding PRRT_kwDOSGhm98588lGi: args.max_tokens was accepted
+    // from the MessagesClient contract but silently ignored, because
+    // the Claude Code CLI has no --max-tokens flag. That violated the
+    // interface callers rely on - agent-process passes an explicit
+    // maxTokens and expects it to bound the output.
+    //
+    // Rather than remove max_tokens from the contract (which would
+    // force the SDK backend to be a separate interface), honour it by
+    // setting CLAUDE_CODE_MAX_OUTPUT_TOKENS in the spawn env. The CLI
+    // respects that env var as its output-length ceiling.
+    const { exec, calls } = makeExecStub(envelope(AGENT_POSITION));
+    const client = createCliClient({ execImpl: exec });
+
+    await client.messages.create({
+      model: 'claude-opus-4-7',
+      system: 's',
+      max_tokens: 12_345,
+      messages: [{ role: 'user', content: 'x' }],
+    });
+
+    const call = calls[0]!;
+    const env = (call.options as { env?: Record<string, string> }).env ?? {};
+    expect(env['CLAUDE_CODE_MAX_OUTPUT_TOKENS']).toBe('12345');
+  });
+
+  it('does NOT set CLAUDE_CODE_MAX_OUTPUT_TOKENS when max_tokens is unset', async () => {
+    // Defensive: the interface requires max_tokens, but unset/undefined
+    // at runtime should not produce an env var of "undefined". The
+    // adapter must propagate a numeric value or skip the env var.
+    const { exec, calls } = makeExecStub(envelope(AGENT_POSITION));
+    const client = createCliClient({ execImpl: exec });
+    await client.messages.create({
+      model: 'claude-opus-4-7',
+      system: 's',
+      // @ts-expect-error intentional: exercise the runtime guard path
+      max_tokens: undefined,
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    const call = calls[0]!;
+    const env = (call.options as { env?: Record<string, string> }).env ?? {};
+    expect(env['CLAUDE_CODE_MAX_OUTPUT_TOKENS']).toBeUndefined();
+  });
+
   it('surfaces CLI exit code as a typed error with diagnostic context', async () => {
     const { exec } = makeExecStub('some stdout', { exitCode: 1, stderr: 'boom' });
     const client = createCliClient({ execImpl: exec });

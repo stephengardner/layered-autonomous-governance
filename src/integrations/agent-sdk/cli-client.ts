@@ -33,6 +33,13 @@
  * --disable-slash-commands. MCP servers are also disabled via an
  * empty --mcp-config so deliberation turns do not silently start up
  * every configured server.
+ *
+ * max_tokens plumbing: the Claude Code CLI has no --max-tokens flag,
+ * so the adapter honours args.max_tokens by setting
+ * CLAUDE_CODE_MAX_OUTPUT_TOKENS in the spawn env (the documented knob
+ * for output-length ceiling). This closes the MessagesClient contract
+ * gap where callers passed maxTokens and the adapter silently ignored
+ * it.
  */
 
 import { execa, type ExecaError } from 'execa';
@@ -148,6 +155,20 @@ export function createCliClient(opts: CreateCliClientOptions = {}): MessagesClie
           console.error('[cli-client]', claudePath, argv.join(' '));
         }
 
+        // Honour args.max_tokens via env var - the CLI does not expose
+        // a --max-tokens flag, but CLAUDE_CODE_MAX_OUTPUT_TOKENS is the
+        // documented way to cap output length. Skip the env injection
+        // when args.max_tokens is missing or non-finite so we never
+        // emit a string "undefined"/"NaN" that the CLI would reject.
+        const extraEnv: Record<string, string> = {};
+        if (
+          typeof args.max_tokens === 'number'
+          && Number.isFinite(args.max_tokens)
+          && args.max_tokens > 0
+        ) {
+          extraEnv['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = String(Math.floor(args.max_tokens));
+        }
+
         let execResult;
         try {
           execResult = await exec(claudePath, argv, {
@@ -157,6 +178,10 @@ export function createCliClient(opts: CreateCliClientOptions = {}): MessagesClie
             // Prompt goes via stdin to avoid the Windows argv ceiling
             // (see ClaudeCliLLM for the full regression writeup).
             input: prompt,
+            env: {
+              ...process.env,
+              ...extraEnv,
+            },
           });
         } catch (err) {
           if (isExecaError(err) && err.timedOut) {
