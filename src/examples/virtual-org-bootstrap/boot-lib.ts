@@ -62,6 +62,13 @@ import {
   type ReasoningSink,
 } from '../../integrations/agent-sdk/index.js';
 
+/**
+ * Injectable shape matching `deliberate`'s signature. Lets tests
+ * substitute a canned-decision function without spawning participant
+ * agents. Production leaves this unset so the real coordinator runs.
+ */
+export type DeliberateImpl = typeof deliberate;
+
 // ---------------------------------------------------------------------------
 // Seed principal loader
 // ---------------------------------------------------------------------------
@@ -416,6 +423,13 @@ export interface RunDeliberationOptions {
    * GitHub / git call happens under test.
    */
   readonly codeAuthorFn?: CodeAuthorFn;
+  /**
+   * Injectable `deliberate` implementation. Defaults to the real
+   * coordinator `deliberate` from agent-sdk. Tests stub this to
+   * return a canned Decision without spawning participant agents;
+   * the default path keeps the real coordinator wiring unchanged.
+   */
+  readonly deliberate?: DeliberateImpl;
 }
 
 export interface RunDeliberationResult {
@@ -486,7 +500,8 @@ export async function runDeliberation(
     opts.participants.map((s) => String(s.principal.id)),
   ));
 
-  const outcome = await deliberate({
+  const deliberateFn = opts.deliberate ?? deliberate;
+  const outcome = await deliberateFn({
     question: opts.question,
     participants: handles,
     sink,
@@ -678,4 +693,89 @@ export function parseBootArgs(argv: ReadonlyArray<string>): ParseBootArgsResult 
     }
   }
   return { execute, prompt: positional[0] };
+}
+
+// ---------------------------------------------------------------------------
+// parseExecutorArgs: extract the executor-config flags from argv.
+//
+// Run BEFORE `parseBootArgs`. Consumes `--repo-dir | --owner | --repo
+// | --state-dir | --role | --model` as flag+value pairs and returns
+// the remaining argv for `parseBootArgs` to handle (`--execute` + the
+// positional prompt). Known flags with invalid values (unknown role)
+// throw loudly; a flag with no value also throws. Unknown `--*`
+// tokens are passed through so `parseBootArgs` can reject them.
+// ---------------------------------------------------------------------------
+
+export interface ParsedExecutorArgs {
+  readonly repoDir: string;
+  readonly owner: string;
+  readonly repo: string;
+  readonly stateDir: string;
+  readonly role: 'lag-ceo' | 'lag-cto' | 'lag-pr-landing';
+  readonly model: string;
+}
+
+export interface ParseExecutorArgsResult {
+  readonly known: ParsedExecutorArgs;
+  readonly rest: ReadonlyArray<string>;
+}
+
+const EXECUTOR_FLAGS = new Set([
+  '--repo-dir',
+  '--owner',
+  '--repo',
+  '--state-dir',
+  '--role',
+  '--model',
+]);
+
+const VALID_ROLES = new Set<'lag-ceo' | 'lag-cto' | 'lag-pr-landing'>([
+  'lag-ceo',
+  'lag-cto',
+  'lag-pr-landing',
+]);
+
+export function parseExecutorArgs(
+  argv: ReadonlyArray<string>,
+  env: { readonly cwd: string },
+): ParseExecutorArgsResult {
+  const defaults: Record<string, string> = {
+    '--repo-dir': env.cwd,
+    '--owner': 'stephengardner',
+    '--repo': 'layered-autonomous-governance',
+    '--state-dir': '.lag/virtual-org-state',
+    '--role': 'lag-ceo',
+    '--model': 'claude-opus-4-7',
+  };
+  const seen: Record<string, string> = { ...defaults };
+  const rest: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i]!;
+    if (EXECUTOR_FLAGS.has(token)) {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--')) {
+        throw new Error(`[boot] ${token} requires a value (got ${value ?? 'end-of-args'}).`);
+      }
+      if (token === '--role' && !VALID_ROLES.has(value as never)) {
+        throw new Error(
+          `[boot] --role must be one of: ${Array.from(VALID_ROLES).join(', ')} (got ${value}).`,
+        );
+      }
+      seen[token] = value;
+      i += 1; // consume value
+    } else {
+      rest.push(token);
+    }
+  }
+  return {
+    known: {
+      repoDir: seen['--repo-dir']!,
+      owner: seen['--owner']!,
+      repo: seen['--repo']!,
+      stateDir: seen['--state-dir']!,
+      role: seen['--role'] as ParsedExecutorArgs['role'],
+      model: seen['--model']!,
+    },
+    rest,
+  };
 }
