@@ -2,7 +2,7 @@
 
 This is a concrete walk-through of what happens when you hand LAG a question and let the virtual org deliberate. It reflects the state of main at commit 63c6c40 (2026-04-23). The walkthrough is grounded in a real run: the `scripts/git-as.mjs` push-auth fix shipped as PR #124, planned by the CTO at confidence 0.88.
 
-The goal of this doc is not to argue the architecture; `docs/framework.md` and `design/target-architecture.md` cover that. It is to show the seams a new reader needs to locate before running their first autonomous deliberation.
+The goal of this doc is not to argue the architecture; `docs/framework.md` and `design/target-architecture.md` cover that. It is to show the seams a new reader needs to locate before running their first autonomous deliberation. For the operational retro that motivated this walkthrough, see [`docs/dogfooding/2026-04-23-virtual-org-phase-3-git-as-push-auth.md`](dogfooding/2026-04-23-virtual-org-phase-3-git-as-push-auth.md).
 
 ## Actor topology
 
