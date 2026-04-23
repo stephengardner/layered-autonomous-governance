@@ -345,7 +345,98 @@ async function cmdRm(args) {
     }
   }
 }
-async function cmdClean(args) { throw new Error('not implemented'); }
+async function cmdClean(args) {
+  const dryRun = args.includes('--dry-run');
+
+  const repoRoot = (await execa('git', ['rev-parse', '--show-toplevel'])).stdout.trim();
+  const wtList = await execa('git', ['worktree', 'list', '--porcelain']);
+  const records = parseGitWorktreeList(wtList.stdout);
+
+  const staleDays = Number(process.env.WT_STALE_DAYS ?? 14);
+  const thresholdMs = staleDays * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  const candidates = [];
+  for (const rec of records) {
+    if (!rec.path) continue;
+    if (rec.path === repoRoot) continue; // skip primary
+
+    const slug = rec.path.split(/[\\/]/).pop() ?? rec.path;
+    const branch = rec.branch ?? '';
+
+    // Last commit time.
+    let lastCommitMs = now;
+    try {
+      const ts = (await execa('git', ['-C', rec.path, 'log', '-1', '--format=%ct'])).stdout.trim();
+      if (ts) lastCommitMs = Number(ts) * 1000;
+    } catch {}
+
+    // NOTES.md mtime - use merge-base mtime as proxy if NOTES absent.
+    let notesMtimeMs = lastCommitMs;
+    try { notesMtimeMs = (await stat(join(rec.path, 'NOTES.md'))).mtimeMs; } catch {}
+
+    // Branch merged check against local merge-base vs origin/main.
+    let branchMerged = false;
+    if (branch) {
+      try {
+        const m = await execa('git', ['branch', '--merged', 'origin/main', '--list', branch]);
+        branchMerged = m.stdout.trim().length > 0;
+      } catch {}
+    }
+
+    // PR state via gh (graceful fallback).
+    let prClosed = false;
+    if (branch) {
+      try {
+        const res = await execa('gh', ['pr', 'view', branch, '--json', 'state', '--jq', '.state']);
+        const state = res.stdout.trim();
+        prClosed = state === 'CLOSED';
+      } catch { /* gh unavailable or no PR */ }
+    }
+
+    const stale = detectStale({ lastCommitMs, notesMtimeMs, branchMerged, prClosed, now, thresholdMs });
+    if (stale.stale) {
+      candidates.push({ slug, branch, path: rec.path, reasons: stale.reasons });
+    }
+  }
+
+  if (candidates.length === 0) {
+    console.log('[wt clean] no stale worktrees found.');
+    return;
+  }
+
+  if (dryRun) {
+    console.log('[wt clean] dry-run - would remove:');
+    for (const c of candidates) {
+      console.log(`  ${c.slug}  (${c.reasons.join(', ')})`);
+    }
+    return;
+  }
+
+  const isTTY = process.stdin.isTTY;
+  const { createInterface } = await import('readline/promises');
+
+  for (const c of candidates) {
+    console.log(`\n[wt clean] ${c.slug}: ${c.reasons.join(', ')}`);
+    if (!isTTY) {
+      console.log(`  skipped (non-TTY; use --dry-run to inspect or wt rm ${c.slug} --force)`);
+      continue;
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question(`  Remove ${c.slug}? [y/N] `);
+    rl.close();
+    if (answer.trim().toLowerCase() !== 'y') {
+      console.log(`  skipped.`);
+      continue;
+    }
+    try {
+      await execa('git', ['worktree', 'remove', c.path, '--force'], { stdio: 'inherit' });
+      console.log(`  removed .worktrees/${c.slug}/`);
+    } catch (err) {
+      console.warn(`  failed to remove ${c.slug}: ${err.message}`);
+    }
+  }
+}
 async function cmdStack(args) { throw new Error('not implemented'); }
 async function cmdNote(args) { throw new Error('not implemented'); }
 
