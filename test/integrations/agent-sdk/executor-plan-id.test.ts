@@ -177,6 +177,17 @@ describe('executeDecision: plan-atom seam', () => {
     // different id.
     const defaultIdPlan = await host.atoms.get('plan-from-dec-x' as AtomId);
     expect(defaultIdPlan).toBeNull();
+
+    // The custom factory id must flow into the invoker payload. Without
+    // this assertion, a regression where the atom is persisted under
+    // the custom id but the invoker is still handed the default
+    // plan-from-<decision.id> would not be caught by the persistence
+    // check alone. The seam's contract is that `payload.plan_id`
+    // equals whatever id the factory produced.
+    expect(fn).toHaveBeenCalledTimes(1);
+    const callArgs = fn.mock.calls[0]!;
+    const payload = callArgs[1] as { plan_id: string };
+    expect(payload.plan_id).toBe('custom-plan-dec-x');
   });
 
   it('invokes codeAuthorFn with plan_id = materialized plan atom id, NOT decision.id', async () => {
