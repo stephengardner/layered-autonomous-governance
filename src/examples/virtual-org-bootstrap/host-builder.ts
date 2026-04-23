@@ -18,6 +18,14 @@ import type { Host, LLM } from '../../substrate/interface.js';
 import type { PrincipalId } from '../../substrate/types.js';
 import { seedFenceAtoms } from './fence-seed.js';
 
+/**
+ * Git author identity threaded into the default code-author executor
+ * via `DefaultExecutorConfig.gitIdentity`. Re-exported from the same
+ * subpath other example wiring already imports (host + executor live
+ * together at the example-bootstrap layer).
+ */
+export type { GitIdentity } from '../../runtime/actors/code-author/git-ops.js';
+
 interface BuildVirtualOrgHostBaseOptions {
   /** Root directory under which every file-backed store persists. */
   readonly stateDir: string;
