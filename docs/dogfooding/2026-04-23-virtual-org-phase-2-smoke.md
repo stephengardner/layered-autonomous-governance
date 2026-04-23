@@ -35,7 +35,7 @@ write stage cleanly:
 
 Then nothing. No Position atoms, no Counter, no Decision, no PrOpenedAtom, no
 ExecutionFailedAtom, no crash trace. File-mtimes on all atoms cluster inside
-the same second (`04:08:57`). No `claude.exe` processes alive on the host
+the same second (`2026-04-23T08:08:57Z` UTC). No `claude.exe` processes alive on the host
 after the subagent context ended.
 
 ## Most likely root cause
