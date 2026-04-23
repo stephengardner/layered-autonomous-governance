@@ -53,6 +53,7 @@
  */
 
 import type { Host } from '../../substrate/interface.js';
+import type { PrincipalId } from '../../substrate/types.js';
 import type {
   Decision,
   Question,
@@ -78,7 +79,7 @@ export type CodeAuthorFn = (
   payload: CodeAuthorPayload,
   correlationId: string,
   options?: {
-    readonly principalId?: string;
+    readonly principalId?: PrincipalId;
     readonly executor?: CodeAuthorExecutor;
     readonly signal?: AbortSignal;
     readonly now?: () => number;
@@ -198,7 +199,7 @@ export async function executeDecision(
   let invokeResult: InvokeResult;
   try {
     invokeResult = await codeAuthorFn(host, payload, correlationId, {
-      principalId: executorPrincipalId,
+      principalId: executorPrincipalId as PrincipalId,
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);

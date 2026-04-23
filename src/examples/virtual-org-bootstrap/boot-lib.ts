@@ -46,13 +46,18 @@ import { renderForPrincipal } from '../../substrate/canon-md/index.js';
 import {
   createCliClient,
   deliberate,
+  executeDecision,
   startAgent,
   type AgentHandle,
   type CanonRendererForPrincipal,
+  type CodeAuthorFn,
   type CreateCliClientOptions,
   type DeliberationEvent,
   type DeliberationSink,
+  type ExecuteDecisionResult,
+  type ExecutionFailedAtom,
   type MessagesClient,
+  type PrOpenedAtom,
   type ReasoningEvent,
   type ReasoningSink,
 } from '../../integrations/agent-sdk/index.js';
@@ -367,11 +372,44 @@ export interface RunDeliberationOptions {
    * `principalStore`.
    */
   readonly principalDepths?: Readonly<Record<string, number>>;
+  /**
+   * When true (default), a Decision outcome is passed through
+   * `executeDecision` and the resulting PrOpenedAtom (or
+   * ExecutionFailedAtom) is persisted to the AtomStore and
+   * returned on `result.execution`. An Escalation outcome never
+   * triggers execution regardless of this flag.
+   *
+   * Set false to preserve the deliberate-only behaviour (tests
+   * that don't want to mock a code-author call; operator dry-run
+   * inspecting the Decision before committing to a PR).
+   */
+  readonly execute?: boolean;
+  /**
+   * Principal id for the emitted PrOpenedAtom / ExecutionFailedAtom.
+   * Required when `execute` is true. Typically `vo-code-author`.
+   */
+  readonly executorPrincipalId?: string;
+  /**
+   * Injectable code-author fn; defaults to the real `runCodeAuthor`
+   * from the actor-message primitive. Tests inject a mock so no
+   * GitHub / git call happens under test.
+   */
+  readonly codeAuthorFn?: CodeAuthorFn;
+}
+
+export interface RunDeliberationResult {
+  readonly outcome: Decision | Escalation;
+  /**
+   * Populated when the outcome is a Decision and `execute` was not
+   * set to false. Undefined when the outcome is an Escalation or
+   * execute was explicitly disabled.
+   */
+  readonly execution?: ExecuteDecisionResult;
 }
 
 export async function runDeliberation(
   opts: RunDeliberationOptions,
-): Promise<Decision | Escalation> {
+): Promise<RunDeliberationResult> {
   const canonRenderer = createCanonRenderer(opts.canonAtoms);
   const sink = createDeliberationSink(opts.atomStore);
   const reasoningSink = createReasoningSink(opts.atomStore);
@@ -396,13 +434,97 @@ export async function runDeliberation(
     opts.participants.map((s) => String(s.principal.id)),
   ));
 
-  return deliberate({
+  const outcome = await deliberate({
     question: opts.question,
     participants: handles,
     sink,
     decidingPrincipal: opts.decidingPrincipal,
     principalDepths: depths,
   });
+
+  // Escalation outcomes never trigger execution; the soft-tier
+  // human gate is the point. Decision outcomes flow through
+  // executeDecision unless the caller opted out with execute: false.
+  const shouldExecute = outcome.type === 'decision' && opts.execute !== false;
+  if (!shouldExecute) {
+    return { outcome };
+  }
+
+  const executorPrincipalId = opts.executorPrincipalId ?? 'vo-code-author';
+  const executeArgs: Parameters<typeof executeDecision>[0] = {
+    decision: outcome,
+    question: opts.question,
+    executorPrincipalId,
+    host: {
+      // executeDecision only reaches through the Host boundary when
+      // the default codeAuthorFn is used; an injected mock ignores
+      // it. We pass the AtomStore + PrincipalStore through the Host
+      // shape so the adapter does not need a separate boundary.
+      atoms: opts.atomStore,
+      principals: opts.principalStore,
+    } as unknown as Parameters<typeof executeDecision>[0]['host'],
+    ...(opts.codeAuthorFn !== undefined ? { codeAuthorFn: opts.codeAuthorFn } : {}),
+  };
+
+  const execution = await executeDecision(executeArgs);
+
+  // Persist the execution atom via the existing AtomStore path so
+  // downstream audit walkers find it alongside Question / Position
+  // / Counter / Decision atoms. The pattern -> core-atom shape
+  // mirrors `deliberationEventToAtom` so every emitter lands through
+  // the same sink discipline.
+  await opts.atomStore.put(executionAtomToCoreAtom(execution, opts.question.id));
+
+  return { outcome, execution };
+}
+
+function executionAtomToCoreAtom(
+  exec: ExecuteDecisionResult,
+  questionId: string,
+): Atom {
+  const base = {
+    schema_version: 1 as const,
+    id: exec.id as AtomId,
+    content: exec.content,
+    type: 'observation' as const,
+    layer: 'L1' as const,
+    provenance: {
+      kind: 'agent-observed' as const,
+      source: { agent_id: exec.principal_id },
+      derived_from: exec.derivedFrom.map((id) => id as AtomId),
+    },
+    confidence: 1,
+    created_at: exec.created_at,
+    last_reinforced_at: exec.created_at,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project' as const,
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked' as const,
+      last_validated_at: null,
+    },
+    principal_id: exec.principal_id as PrincipalId,
+    taint: 'clean' as const,
+  };
+  if (exec.kind === 'pr-opened') {
+    return {
+      ...base,
+      metadata: {
+        kind: 'pr-opened' as const,
+        questionId,
+      },
+    };
+  }
+  return {
+    ...base,
+    metadata: {
+      kind: 'execution-failed' as const,
+      questionId,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
