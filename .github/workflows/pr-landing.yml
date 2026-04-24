@@ -135,3 +135,29 @@ jobs:
             ${{ steps.mode.outputs.flag }} \
             --max-iterations 3 \
             --origin github-action
+
+  lag-auditor:
+    name: LAG auditor gate
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.labels.*.name, 'autonomous-intent')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install (skip native post-install)
+        run: npm ci --ignore-scripts
+      - name: Build
+        run: npm run build
+      - name: Extract plan-id label
+        id: plan
+        run: |
+          PLAN_ID=$(jq -r '.pull_request.labels[] | select(.name | startswith("plan-id:")) | .name | split(":")[1]' "$GITHUB_EVENT_PATH")
+          echo "plan-id=$PLAN_ID" >> "$GITHUB_OUTPUT"
+      - name: Run auditor
+        if: steps.plan.outputs.plan-id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/run-auditor.mjs --pr ${{ github.event.pull_request.number }} --plan ${{ steps.plan.outputs.plan-id }}
