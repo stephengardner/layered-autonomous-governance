@@ -28,17 +28,23 @@
  *   3. Definedness: every documented value is `!== undefined` so an
  *      export-deletion regression (binding vanished; TypeScript might
  *      still compile if every import site uses `type`-only imports)
- *      cannot pass. An optional `classes` list additionally asserts
- *      `.prototype` is defined, so a class-became-undefined regression
- *      cannot pass either. Not asserting `typeof === 'function'`
- *      because some subpaths legitimately export constants (ordering
- *      policy objects, number defaults, schema literals).
+ *      cannot pass. Not asserting `typeof === 'function'` at this
+ *      step because some subpaths legitimately export constants
+ *      (ordering policy objects, number defaults, schema literals).
+ *   4. Class identity: an optional `classes` list asserts each named
+ *      export is an ES6 class via `prototype.constructor === fn` AND
+ *      `Function.prototype.toString.call(fn).startsWith('class ')`.
+ *      The first alone passes for any non-arrow function; the pair
+ *      together fails a class-refactored-into-a-factory regression.
  *
  * Type exports are intentionally not asserted here: types erase at
  * runtime. They are covered at compile time by `tsc --noEmit`.
  */
 
 import { describe, expect, it } from 'vitest';
+
+// Root package entry (the `.` subpath in package.json#exports)
+import * as rootPackage from '../../src/index.js';
 
 // /actors family (shim + real)
 import * as actorsShim from '../../src/actors/index.js';
@@ -80,6 +86,121 @@ interface SubpathCase {
 }
 
 const cases: readonly SubpathCase[] = [
+  // Root package entry (`.`). Largest surface (~80 values); everyday
+  // governance primitives, error classes, embedders, judge schema
+  // constants. Consumers import these straight from the package name.
+  {
+    subpath: '.',
+    mod: rootPackage,
+    expected: [
+      'CANON_END',
+      'CANON_START',
+      'CLASSIFY_ATOM',
+      'CachingEmbedder',
+      'CanonMdManager',
+      'ClaudeCodeTranscriptSource',
+      'ConflictError',
+      'DEFAULT_HALF_LIVES',
+      'DEFAULT_THRESHOLDS',
+      'DETECT_ANOMALY',
+      'DETECT_CONFLICT',
+      'DETECT_SCHEMA',
+      'DETECT_SYSTEM',
+      'EXTRACT_CLAIMS',
+      'FreshSource',
+      'GitLogSource',
+      'HostError',
+      'InvalidPlanTransitionError',
+      'InvalidQuestionTransitionError',
+      'JUDGE_SCHEMAS',
+      'LAGDaemon',
+      'LLM_TOOL_POLICY_PREFIX',
+      'LlmToolPolicyError',
+      'LoopRunner',
+      'NotFoundError',
+      'ObsidianVaultSource',
+      'OnnxMiniLmEmbedder',
+      'PermissionError',
+      'PromotionEngine',
+      'SUMMARIZE_DIGEST',
+      'TimeoutError',
+      'TransientError',
+      'TrigramEmbedder',
+      'UnsupportedError',
+      'VALIDATE_CLAIM',
+      'ValidationError',
+      'ValidatorRegistry',
+      'applyDecision',
+      'arbitrate',
+      'askQuestion',
+      'assembleContext',
+      'bindAnswer',
+      'cacheDirFor',
+      'canTransition',
+      'canTransitionQuestion',
+      'checkToolPolicy',
+      'createKillSwitch',
+      'decayedConfidence',
+      'evaluatePromotion',
+      'executePlan',
+      'expirePastDueQuestions',
+      'extractClaimsFromAtom',
+      'extractSection',
+      'getSchema',
+      'invokeClaude',
+      'isKillSwitchAbortReason',
+      'listMarkdownRecursive',
+      'listPendingQuestions',
+      'llmToolPolicyAtomId',
+      'loadLlmToolPolicy',
+      'matchSpecificity',
+      'parseClaudeCodeLine',
+      'parseGitLog',
+      'parseObsidianNote',
+      'parsePolicy',
+      'propagateCompromiseTaint',
+      'readFileOrEmpty',
+      'readSection',
+      'renderCanonMarkdown',
+      'replaceSection',
+      'runExtractionPass',
+      'shouldUpdateConfidence',
+      'sourceLayerFor',
+      'sourceRank',
+      'splitForTelegram',
+      'summarizeValidation',
+      'transitionPlanState',
+      'ttlExpirePatch',
+      'validatePlan',
+      'writeSection',
+    ],
+    classes: [
+      'CachingEmbedder',
+      'CanonMdManager',
+      'ClaudeCodeTranscriptSource',
+      'ConflictError',
+      'FreshSource',
+      'GitLogSource',
+      'HostError',
+      'InvalidPlanTransitionError',
+      'InvalidQuestionTransitionError',
+      'LAGDaemon',
+      'LlmToolPolicyError',
+      'LoopRunner',
+      'NotFoundError',
+      'ObsidianVaultSource',
+      'OnnxMiniLmEmbedder',
+      'PermissionError',
+      'PromotionEngine',
+      'TimeoutError',
+      'TransientError',
+      'TrigramEmbedder',
+      'UnsupportedError',
+      'ValidationError',
+      'ValidatorRegistry',
+    ],
+  },
+
   // /actors family
   {
     subpath: '/actors',
@@ -305,16 +426,16 @@ import { fileURLToPath } from 'node:url';
 const pkg = JSON.parse(
   readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8'),
 ) as { exports: Record<string, unknown> };
-// package.json keys are written as `./actors` etc; our rows carry
-// the consumer-facing `/actors` form. Strip the leading `.` so the
-// two compare cleanly.
+// package.json keys are written as `.` for root and `./actors` etc
+// for subpaths; our rows carry the consumer-facing `.` and `/actors`
+// forms. Normalise package.json into the same shape so the two
+// compare cleanly.
 const declaredSubpaths = Object.keys(pkg.exports)
-  .filter((k) => k !== '.')
-  .map((k) => k.replace(/^\./, ''))
+  .map((k) => (k === '.' ? '.' : k.replace(/^\./, '')))
   .sort();
 
 describe('public surface: case coverage', () => {
-  it('covers every non-root subpath from package.json#exports', () => {
+  it('covers every subpath from package.json#exports (including root)', () => {
     expect(cases.map((c) => c.subpath).sort()).toEqual(declaredSubpaths);
   });
 
