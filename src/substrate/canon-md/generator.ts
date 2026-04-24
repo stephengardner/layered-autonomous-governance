@@ -61,6 +61,7 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   // Included here for deterministic ordering if a caller explicitly
   // dumps non-L3 atoms for debugging.
   'plan-approval-vote': 'Plan Approval Votes',
+  'plan-merge-settled': 'Plan Merge Settlements',
 };
 
 export interface RenderOptions {
