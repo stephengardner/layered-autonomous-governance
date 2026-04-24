@@ -70,7 +70,14 @@ export type AtomType =
   // metadata.role is an optional free-string used by role-quorum
   // policies. Votes inherit the atom store's standard guards (taint,
   // superseded_by); a reviewer rescinds by superseding their own vote.
-  | 'plan-approval-vote';
+  | 'plan-approval-vote'
+  // Claim + audit record for the pr-merge-reconcile pass. Written
+  // with a deterministic id (sha256 of plan_id|pr_observation_id)
+  // and derived_from: [plan_id, pr_observation_id], so a second
+  // worker observing the same pr-observation gets a duplicate-id
+  // conflict and skips. Functions as both the mutual-exclusion lock
+  // and the historical record of the reconciliation event.
+  | 'plan-merge-settled';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite

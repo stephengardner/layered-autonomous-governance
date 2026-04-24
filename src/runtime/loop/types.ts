@@ -51,6 +51,10 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   // for the authority grant, so a long half-life keeps the vote's
   // stated confidence stable during the approval window.
   'plan-approval-vote': 180 * 24 * 60 * 60 * 1000,  // ~6 months
+  // Plan-merge-settled markers are per-PR-merge-per-plan historical
+  // records; they tie a plan to its terminal PR outcome. Confidence
+  // decay is irrelevant for a historical record.
+  'plan-merge-settled': 365 * 24 * 60 * 60 * 1000,  // ~1 year
 });
 
 export interface LoopOptions {
