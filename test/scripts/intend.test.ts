@@ -1,0 +1,98 @@
+import { describe, expect, it } from 'vitest';
+import { parseIntendArgs, buildIntentAtom, computeExpiresAt } from '../../scripts/lib/intend.mjs';
+
+describe('parseIntendArgs', () => {
+  it('parses required --request + --scope + --blast-radius', () => {
+    const r = parseIntendArgs([
+      '--request', 'fix the CTO',
+      '--scope', 'tooling',
+      '--blast-radius', 'framework',
+      '--sub-actors', 'code-author',
+    ]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.args.request).toBe('fix the CTO');
+    expect(r.args.scope).toBe('tooling');
+    expect(r.args.blastRadius).toBe('framework');
+    expect(r.args.subActors).toEqual(['code-author']);
+  });
+
+  it('accepts multiple --sub-actors values (comma or repeated)', () => {
+    const r = parseIntendArgs(['--request', 'x', '--scope', 'tooling', '--blast-radius', 'tooling', '--sub-actors', 'code-author,auditor-actor']);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.subActors).toEqual(['code-author', 'auditor-actor']);
+  });
+
+  it('rejects invalid blast-radius', () => {
+    const r = parseIntendArgs(['--request', 'x', '--scope', 'tooling', '--blast-radius', 'everything', '--sub-actors', 'code-author']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/blast-radius/i);
+  });
+
+  it('rejects missing --request', () => {
+    const r = parseIntendArgs(['--scope', 'tooling', '--blast-radius', 'tooling', '--sub-actors', 'code-author']);
+    expect(r.ok).toBe(false);
+  });
+
+  it('accepts optional --expires-in', () => {
+    const r = parseIntendArgs(['--request', 'x', '--scope', 'tooling', '--blast-radius', 'tooling', '--sub-actors', 'code-author', '--expires-in', '6h']);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.expiresIn).toBe('6h');
+  });
+
+  it('accepts --dry-run flag', () => {
+    const r = parseIntendArgs(['--request', 'x', '--scope', 'tooling', '--blast-radius', 'tooling', '--sub-actors', 'code-author', '--dry-run']);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.dryRun).toBe(true);
+  });
+});
+
+describe('computeExpiresAt', () => {
+  const now = new Date('2026-04-24T12:00:00Z');
+  it('defaults to +24h when unset', () => {
+    expect(computeExpiresAt(undefined, now)).toBe('2026-04-25T12:00:00.000Z');
+  });
+  it('accepts 6h', () => {
+    expect(computeExpiresAt('6h', now)).toBe('2026-04-24T18:00:00.000Z');
+  });
+  it('accepts 30m', () => {
+    expect(computeExpiresAt('30m', now)).toBe('2026-04-24T12:30:00.000Z');
+  });
+  it('rejects over 72h (safety cap)', () => {
+    expect(() => computeExpiresAt('73h', now)).toThrow(/72/);
+  });
+  it('rejects invalid format', () => {
+    expect(() => computeExpiresAt('tomorrow', now)).toThrow();
+  });
+});
+
+describe('buildIntentAtom', () => {
+  it('constructs a well-formed atom from validated args', () => {
+    const atom = buildIntentAtom({
+      request: 'fix X',
+      scope: 'tooling',
+      blastRadius: 'framework',
+      subActors: ['code-author'],
+      minConfidence: 0.75,
+      expiresAt: '2026-04-25T12:00:00.000Z',
+      operatorPrincipalId: 'operator-principal',
+      now: new Date('2026-04-24T12:00:00Z'),
+      nonce: 'abc123',
+    });
+    expect(atom.type).toBe('operator-intent');
+    expect(atom.layer).toBe('L1');
+    expect(atom.principal_id).toBe('operator-principal');
+    expect(atom.id.startsWith('intent-')).toBe(true);
+    expect(atom.metadata.kind).toBe('autonomous-solve');
+    expect(atom.metadata.trust_envelope.max_blast_radius).toBe('framework');
+    expect(atom.metadata.trust_envelope.allowed_sub_actors).toEqual(['code-author']);
+    expect(atom.metadata.trust_envelope.min_plan_confidence).toBe(0.75);
+    expect(atom.metadata.trust_envelope.require_ci_green).toBe(true);
+    expect(atom.metadata.trust_envelope.require_cr_approve).toBe(true);
+    expect(atom.metadata.trust_envelope.require_auditor_observation).toBe(true);
+    expect(atom.metadata.expires_at).toBe('2026-04-25T12:00:00.000Z');
+    expect(atom.provenance.kind).toBe('operator-seeded');
+    expect(atom.confidence).toBe(1);
+    expect(atom.taint).toBe('clean');
+  });
+});
