@@ -42,7 +42,8 @@ export default async function register(host, registry) {
 
     if (result.kind === 'dispatched' && capturedPrNumber !== null && capturedPlanId !== null) {
       const plan = await host.atoms.get(capturedPlanId);
-      const intentId = plan?.provenance?.derived_from?.find((id) => id.startsWith('intent-'));
+      const { findIntentInProvenance } = await import('../../dist/runtime/actor-message/intent-approve.js');
+      const intentId = plan ? await findIntentInProvenance(host, plan) : null;
       if (intentId) {
         const repo = process.env.GH_REPO ?? 'stephengardner/layered-autonomous-governance';
         try {

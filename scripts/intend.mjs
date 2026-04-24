@@ -66,7 +66,14 @@ async function main() {
       '--request', args.request,
       '--intent-id', atom.id,
     ], { stdio: 'inherit' });
-    await new Promise((r) => child.on('exit', (code) => r(code ?? 0)));
+    const childCode = await new Promise((resolve2, reject) => {
+      child.on('error', (err) => reject(err));
+      child.on('exit', (code) => resolve2(code ?? 0));
+    });
+    if (childCode !== 0) {
+      console.error(`[intend] run-cto-actor exited with code ${childCode}; intent ${atom.id} was written but CTO did not complete cleanly.`);
+      process.exit(childCode);
+    }
   } else {
     console.log(`[intend] no --trigger; invoke manually:\n  node scripts/run-cto-actor.mjs --request "${args.request}" --intent-id ${atom.id}`);
   }

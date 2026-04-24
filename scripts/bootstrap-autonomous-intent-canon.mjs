@@ -233,6 +233,12 @@ function diffAtom(existing, expected) {
   if (JSON.stringify(existing.provenance?.derived_from ?? []) !== JSON.stringify(expected.provenance.derived_from)) {
     diffs.push('provenance.derived_from differs');
   }
+  if (JSON.stringify(existing.supersedes ?? []) !== JSON.stringify(expected.supersedes ?? [])) {
+    diffs.push('supersedes differs');
+  }
+  if (JSON.stringify(existing.superseded_by ?? []) !== JSON.stringify(expected.superseded_by ?? [])) {
+    diffs.push('superseded_by differs');
+  }
   return diffs;
 }
 

@@ -46,9 +46,17 @@ async function main() {
     console.error(`[auditor] plan atom ${args.plan} not found or wrong type`);
     process.exit(2);
   }
-  const intentId = (plan.provenance?.derived_from ?? []).find((id) => id.startsWith('intent-'));
+  const derivedFrom = plan.provenance?.derived_from ?? [];
+  let intentId = null;
+  for (const refId of derivedFrom) {
+    const candidate = await host.atoms.get(refId);
+    if (candidate && candidate.type === 'operator-intent') {
+      intentId = refId;
+      break;
+    }
+  }
   if (!intentId) {
-    console.error('[auditor] plan has no intent in provenance; auditor gate only applies to intent-driven plans');
+    console.error('[auditor] plan has no operator-intent atom in provenance; auditor gate only applies to intent-driven plans');
     process.exit(2);
   }
   const intent = await host.atoms.get(intentId);
