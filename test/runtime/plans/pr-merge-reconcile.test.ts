@@ -269,6 +269,141 @@ describe('runPlanStateReconcileTick', () => {
     expect(r.transitioned).toBe(0);
   });
 
+  it('recovery: marker already written, plan stranded in executing -> finishes to succeeded (CR #130)', async () => {
+    // Simulates the crash-between-hops case:
+    //   - Worker A wrote the marker for (plan, obs).
+    //   - Worker A transitioned plan 'approved' -> 'executing' (first hop).
+    //   - Worker A crashed before the second hop -> 'succeeded'.
+    //   - Plan is now stranded in 'executing'; marker is in place.
+    // Worker B (or a later tick) observes the same pr-observation,
+    // catches ConflictError on marker put, and MUST finish the
+    // transition instead of counting a conflict and moving on. The
+    // recovery branch reads the plan, sees plan_state !== target,
+    // and completes the transition.
+    const host = createMemoryHost();
+    // Plan in the stranded state.
+    await host.atoms.put(planAtom('p1', { plan_state: 'executing' }));
+    await host.atoms.put(prObservationAtom('obs1'));
+    // Marker already present (simulating the crashed worker's claim).
+    const markerId = expectedMarkerId('p1', 'obs1') as AtomId;
+    await host.atoms.put({
+      schema_version: 1,
+      id: markerId,
+      content: 'prior worker claim',
+      type: 'plan-merge-settled',
+      layer: 'L1',
+      provenance: {
+        kind: 'agent-observed',
+        source: { agent_id: 'lag-pr-landing', tool: 'pr-merge-reconcile' },
+        derived_from: ['p1' as AtomId, 'obs1' as AtomId],
+      },
+      confidence: 1.0,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'lag-pr-landing' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        plan_id: 'p1',
+        pr_observation_id: 'obs1',
+        merge_state_status: 'merged',
+        target_plan_state: 'succeeded',
+        settled_at: NOW,
+        pr: { owner: 'o', repo: 'r', number: 42 },
+      },
+    });
+
+    const r = await runPlanStateReconcileTick(host, { now: () => NOW });
+
+    // The tick claims a conflict (marker already exists) BUT then
+    // recovers the stranded plan.
+    expect(r.claimConflicts).toBe(1);
+    expect(r.transitioned).toBe(1);
+
+    const plan = await host.atoms.get('p1' as AtomId);
+    expect(plan?.plan_state).toBe('succeeded');
+    expect(plan?.metadata['plan_state_reconcile_mode']).toBe('recovery');
+  });
+
+  it('recovery: marker already written AND plan already succeeded -> no-op (idempotent)', async () => {
+    // Clean idempotency case: a fully-settled (plan, pr-observation)
+    // re-scan doesn't double-count transitions.
+    const host = createMemoryHost();
+    await host.atoms.put(planAtom('p1', { plan_state: 'succeeded' }));
+    await host.atoms.put(prObservationAtom('obs1'));
+    const markerId = expectedMarkerId('p1', 'obs1') as AtomId;
+    await host.atoms.put({
+      schema_version: 1,
+      id: markerId,
+      content: 'prior worker claim',
+      type: 'plan-merge-settled',
+      layer: 'L1',
+      provenance: {
+        kind: 'agent-observed',
+        source: { agent_id: 'lag-pr-landing', tool: 'pr-merge-reconcile' },
+        derived_from: ['p1' as AtomId, 'obs1' as AtomId],
+      },
+      confidence: 1.0,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'lag-pr-landing' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        plan_id: 'p1',
+        pr_observation_id: 'obs1',
+        merge_state_status: 'merged',
+        target_plan_state: 'succeeded',
+        settled_at: NOW,
+        pr: { owner: 'o', repo: 'r', number: 42 },
+      },
+    });
+
+    const r = await runPlanStateReconcileTick(host, { now: () => NOW });
+
+    expect(r.claimConflicts).toBe(1);
+    expect(r.transitioned).toBe(0); // plan already at target; no-op
+  });
+
+  it('non-ConflictError on marker put propagates (no silent swallow)', async () => {
+    // Injects a host where atoms.put throws a non-Conflict error for
+    // plan-merge-settled writes. The pass must propagate the error
+    // so callers see real storage failures instead of counting them
+    // as idempotency conflicts.
+    const host = createMemoryHost();
+    await host.atoms.put(planAtom('p1', { plan_state: 'executing' }));
+    await host.atoms.put(prObservationAtom('obs1'));
+    const origPut = host.atoms.put.bind(host.atoms);
+    (host.atoms as unknown as { put: typeof host.atoms.put }).put = async (atom) => {
+      if (atom.type === 'plan-merge-settled') {
+        throw new Error('simulated storage outage');
+      }
+      return origPut(atom);
+    };
+
+    await expect(
+      runPlanStateReconcileTick(host, { now: () => NOW }),
+    ).rejects.toThrow(/simulated storage outage/);
+  });
+
   it('deterministic marker id is stable across invocations and platforms', async () => {
     // Sanity check: the marker id is a pure function of
     // (plan_id, observation_id). This test pins the hex digest so a

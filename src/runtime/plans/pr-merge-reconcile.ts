@@ -43,6 +43,7 @@ import { createHash } from 'node:crypto';
 
 import type { Host } from '../../interface.js';
 import type { Atom, AtomId, PlanState, Time } from '../../types.js';
+import { ConflictError } from '../../substrate/errors.js';
 
 /** Terminal PR states that trigger a Plan transition. */
 const TERMINAL_MERGE_STATES: ReadonlySet<string> = new Set(['merged', 'closed']);
@@ -122,7 +123,16 @@ export async function runPlanStateReconcileTick(
 
       const prInfo = (meta['pr'] ?? {}) as Record<string, unknown>;
 
-      let claimed = false;
+      // Attempt the claim. ConflictError = another worker (or a
+      // prior tick that crashed mid-transition) has already written
+      // the marker; we still need to check whether the plan actually
+      // reached target_plan_state, because the two-hop update below
+      // is NOT crash-atomic across host.atoms.update calls. The
+      // recovery branch reads the marker + plan and finishes the
+      // stranded transition if needed. Other exceptions (storage
+      // failures, permissions, etc.) propagate to the caller; the
+      // pass does not silently swallow real errors.
+      let claimedByThisWorker = false;
       try {
         await host.atoms.put({
           schema_version: 1,
@@ -159,21 +169,30 @@ export async function runPlanStateReconcileTick(
             pr: prInfo,
           },
         });
-        claimed = true;
-      } catch {
-        // Duplicate-id error (another worker claimed) OR a write
-        // failure. Either way, skip. The `claimConflicts` counter
-        // distinguishes only the common case; a real storage error
-        // would also show up as zero transitions, which is the safe
-        // outcome.
+        claimedByThisWorker = true;
+      } catch (err) {
+        if (!(err instanceof ConflictError)) {
+          // Real storage failure, not a duplicate-id conflict. Let it
+          // bubble so the caller (a daemon loop, a script) sees it
+          // and surfaces the incident instead of treating it as a
+          // no-op.
+          throw err;
+        }
         claimConflicts += 1;
-        continue;
+        // Recovery: another worker (or a crashed prior tick) wrote
+        // the marker. The plan may still be stranded in an
+        // intermediate state because the two-hop update below is
+        // not atomic across host.atoms.update calls. Re-read the
+        // marker + plan; if the plan is not yet at the marker's
+        // target_plan_state and is still in a reconcilable state,
+        // finish the transition now rather than losing the merge
+        // event forever.
       }
-      if (!claimed) continue;
 
-      // Load the Plan after claim succeeded. Re-validate in-code so a
-      // concurrent update that moved the plan out of a reconcilable
-      // state between our last read and the claim is respected.
+      // Load the Plan. Re-validate in-code so a concurrent update
+      // that moved the plan out of a reconcilable state between our
+      // last read and the claim (or since the marker write, in the
+      // recovery path) is respected.
       const plan = await host.atoms.get(planId);
       if (plan === null) continue;
       if (plan.type !== 'plan') continue;
@@ -181,14 +200,24 @@ export async function runPlanStateReconcileTick(
       if (plan.superseded_by.length > 0) continue;
       const currentState = plan.plan_state;
       if (currentState === undefined) continue;
+      // In the recovery path, the plan may already be at the
+      // terminal target state (a prior tick finished cleanly after
+      // writing the marker; this tick just redundantly observes).
+      // Short-circuit without incrementing transitioned.
+      if (currentState === targetState) continue;
+      // Otherwise, the plan must be in a reconcilable state before we
+      // transition. If it's in some unexpected state (operator moved
+      // it manually, etc.), skip loudly rather than force-transition.
       if (!RECONCILABLE_PLAN_STATES.has(currentState)) continue;
 
       // State-machine bridging: approved -> succeeded is a two-hop
       // (approved -> executing -> succeeded) per
       // src/runtime/plans/state.ts's ALLOWED map. Both writes happen
-      // inside the claim's critical section so no other worker can
-      // observe an intermediate state for this PR-merge event. A
-      // plan in 'executing' goes straight to the terminal state.
+      // inside the claim's critical section (or the recovery branch,
+      // which re-enters here after a ConflictError on the marker put)
+      // so we can trust the marker to act as a cross-process
+      // resumption point. A plan in 'executing' goes straight to the
+      // terminal state.
       if (targetState === 'succeeded' && currentState === 'approved') {
         await host.atoms.update(planId, { plan_state: 'executing' });
       }
@@ -200,6 +229,11 @@ export async function runPlanStateReconcileTick(
           plan_state_reason: 'pr-merge-reconcile',
           plan_state_changed_at: nowIso,
           plan_merge_settled_id: String(markerId),
+          // Distinguish "this tick did the transition first" from
+          // "this tick recovered a stranded plan". Both are valid
+          // outcomes; the telemetry + audit help operators
+          // distinguish post-hoc.
+          plan_state_reconcile_mode: claimedByThisWorker ? 'first' : 'recovery',
         },
       });
 
@@ -213,6 +247,7 @@ export async function runPlanStateReconcileTick(
           pr_observation_id: String(obs.id),
           from_state: currentState,
           to_state: targetState,
+          mode: claimedByThisWorker ? 'first' : 'recovery',
         },
       });
       transitioned += 1;
