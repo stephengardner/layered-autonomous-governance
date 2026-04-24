@@ -30,22 +30,32 @@
  * surface minimal and matches how run-pr-landing.mjs / run-cto-self-
  * audit-continue.mjs compose.
  *
- * Dispatch requires a SubActorRegistry populated with invokers. For
- * V0 this script registers:
- *   - `auditor-actor` via runAuditor (read-only, always safe to invoke)
- *   - (extension hook: operators register additional invokers by
- *     forking this script for their deployment shape, since invoker
- *     registration is instance-policy, not framework mechanism)
+ * Dispatch requires a SubActorRegistry populated with invokers. This
+ * script always registers `auditor-actor` (read-only, always safe to
+ * invoke). Deployments with additional sub-actors (e.g. `code-author`,
+ * which is on the multi-reviewer allowlist by default) pass
+ * `--invokers <path-to.mjs>` pointing at a module whose default export
+ * is `async (host, registry) => void` and registers the invokers.
+ * Instance-specific registration lives outside the runner; the runner
+ * stays canonical.
+ *
+ * Forgetting the seam is not silent: `runDispatchTick` will see the
+ * unregistered sub-actor, throw from `SubActorRegistry.invoke`, and
+ * transition the plan to `failed` with an operator-escalation atom.
+ * That's a loud failure mode, not a hidden one, so the operator can
+ * see the missing registration in their audit log and add it.
  *
  * Usage:
+ *   node scripts/run-approval-cycle.mjs --root-dir .lag
+ *   node scripts/run-approval-cycle.mjs --root-dir .lag --invokers ./invokers.mjs
  *   node scripts/run-approval-cycle.mjs --root-dir .lag --principal-id operator
- *   node scripts/run-approval-cycle.mjs --root-dir .lag --principal-id operator --once
  *
  * `--root-dir` is required (avoid defaulting to a repo-shaped path
  * that could surprise an operator running from a different cwd).
- * `--principal-id` is required whenever dispatch could happen; it
- * names the operator-or-agent principal used for dispatch audit
- * logs. The script does not assume a default.
+ * `--principal-id` is optional and is printed on the startup log for
+ * deployment-level telemetry only; the ticks themselves attribute
+ * audit events to the plan/observation principal, so a runner-level
+ * principal would not be consumed.
  */
 
 import { resolve } from 'node:path';
@@ -64,16 +74,18 @@ function parseArgs(argv) {
   const args = {
     rootDir: null,
     principalId: null,
+    invokersPath: null,
     once: true,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--root-dir' && i + 1 < argv.length) args.rootDir = argv[++i];
     else if (a === '--principal-id' && i + 1 < argv.length) args.principalId = argv[++i];
+    else if (a === '--invokers' && i + 1 < argv.length) args.invokersPath = argv[++i];
     else if (a === '--once') args.once = true;
     else if (a === '--help' || a === '-h') {
       console.log([
-        'Usage: node scripts/run-approval-cycle.mjs --root-dir <path> [--principal-id <id>] [--once]',
+        'Usage: node scripts/run-approval-cycle.mjs --root-dir <path> [--principal-id <id>] [--invokers <path>] [--once]',
         '',
         'Runs one pass of the approval cycle, in order:',
         '  1. runAutoApprovePass          (single-principal allowlist)',
@@ -83,9 +95,19 @@ function parseArgs(argv) {
         '',
         'Options:',
         '  --root-dir <path>      Required. The LAG state dir (e.g. .lag).',
-        '  --principal-id <id>    Principal id used for dispatch audit logs.',
-        '                         Required when dispatch could fire; treat as',
-        '                         required for safety.',
+        '  --principal-id <id>    Optional. Printed on the startup log for',
+        '                         deployment-level telemetry; not consumed by',
+        '                         the ticks (each tick attributes audit events',
+        '                         to the plan/observation principal).',
+        '  --invokers <path>      Optional. Path to an .mjs module whose default',
+        '                         export is `async (host, registry) => void`.',
+        '                         Called after the built-in auditor registration;',
+        '                         register deployment-specific sub-actor invokers',
+        '                         there (e.g. code-author) so this canonical',
+        '                         runner does not need to be forked. Without the',
+        '                         seam, plans that delegate to an unregistered',
+        '                         sub-actor will be marked failed by',
+        '                         runDispatchTick.',
         '  --once                 Run one pass and exit (default).',
         '',
         'Exit codes:',
@@ -103,13 +125,12 @@ function parseArgs(argv) {
     console.error('ERROR: --root-dir <path> is required.');
     process.exit(2);
   }
-  if (args.principalId === null) {
-    console.error(
-      'ERROR: --principal-id <id> is required. Dispatch needs a principal for audit\n'
-      + 'logs; pass your operator or a dedicated daemon principal id.',
-    );
-    process.exit(2);
-  }
+  // --principal-id is intentionally optional: the ticks read principal
+  // ids off the plan / observation atoms themselves (see
+  // src/runtime/actor-message/plan-approval.ts + plan-dispatch.ts),
+  // so a runner-level principal is telemetry, not authorization.
+  // Requiring it here would be UX friction with no governance payoff
+  // (bootstrap owns operator-provenance verification).
   return args;
 }
 
@@ -124,14 +145,37 @@ async function main() {
   const host = await createFileHost({ rootDir });
 
   // Register invokers. V0 ships with the auditor (read-only, always
-  // safe). Deployments with additional sub-actors fork this script
-  // and append registrations; registration is instance policy, not
-  // framework mechanism.
+  // safe). Deployments with additional sub-actors pass --invokers
+  // pointing at an .mjs module that adds registrations; registration
+  // is instance policy, not framework mechanism. This seam means the
+  // canonical runner does not need to be forked to ship code-author,
+  // custom sub-actors, etc.
   const registry = new SubActorRegistry();
   registry.register('auditor-actor', async (payload, corr) => runAuditor(host, payload, corr));
 
+  if (args.invokersPath !== null) {
+    const modPath = resolve(args.invokersPath);
+    if (!existsSync(modPath)) {
+      console.error(`ERROR: --invokers ${modPath} does not exist.`);
+      process.exit(2);
+    }
+    // Windows-safe: convert absolute fs path to file:// URL before
+    // import() so dynamic import does not misinterpret a `C:` drive
+    // letter as a URL scheme.
+    const mod = await import(new URL(`file:///${modPath.replace(/\\/g, '/')}`).href);
+    if (typeof mod.default !== 'function') {
+      console.error(
+        `ERROR: --invokers module must default-export `
+        + `\`async (host, registry) => void\` (got ${typeof mod.default}).`,
+      );
+      process.exit(2);
+    }
+    await mod.default(host, registry);
+  }
+
   const startedAt = new Date().toISOString();
-  console.log(`[approval-cycle] started at ${startedAt} root=${rootDir} principal=${args.principalId}`);
+  const principalTag = args.principalId === null ? 'unset' : args.principalId;
+  console.log(`[approval-cycle] started at ${startedAt} root=${rootDir} principal=${principalTag}`);
 
   // Track whether any tick threw; non-zero exit on the first throw
   // preserves "exit 0 iff clean". We STILL try each tick so a failure
