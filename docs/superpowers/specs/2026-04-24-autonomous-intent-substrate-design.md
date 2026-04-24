@@ -328,7 +328,7 @@ const RADIUS_RANK = { none: 0, docs: 1, tooling: 2, framework: 3, 'l3-canon-prop
 if (RADIUS_RANK[plan.metadata.delegation.implied_blast_radius] > RADIUS_RANK[env.max_blast_radius]) continue;
 ```
 
-`RADIUS_RANK` lives as a const in `src/runtime/actor-message/intent-approve.ts`. **This is mechanism, not org shape** — the ordinal is a fixed property of the radius labels themselves, not a tenant-specific mapping. If a tenant adds their own radius label, they edit this file, matching the existing pattern (layer ordinals in `src/substrate/layers.ts`).
+`RADIUS_RANK` lives as a const in `src/runtime/actor-message/intent-approve.ts`. **This is mechanism, not org shape** - the ordinal is a fixed property of the radius labels themselves, not a tenant-specific mapping. If a tenant adds their own radius label, they edit this file, matching the existing pattern (layer ordinals in `src/substrate/layers.ts`).
 
 **4c. Kill-switch integration.** `runIntentAutoApprovePass` checks `.lag/STOP` at the top of each invocation via `host.killSwitch.isTripped()`. If tripped, returns `{ scanned: 0, approved: 0, stale: 0, halted: true }` immediately. Kill-switch takes absolute priority over intent-based approval.
 
