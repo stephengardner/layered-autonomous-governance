@@ -44,10 +44,20 @@ describe('public surface: package.json#bin', () => {
     expect(Object.keys(pkg.bin).sort()).toEqual([...EXPECTED_BINS].sort());
   });
 
-  describe.each(Object.entries(pkg.bin))('bin %s', (name, relPath) => {
-    const absPath = resolve(REPO_ROOT, relPath);
+  // Drive the per-bin loop off EXPECTED_BINS so the allowlist is the
+  // single contract; pkg.bin[name] is looked up inside each case and
+  // asserted non-empty. A renamed bin that only shows up in pkg.bin
+  // fails the allowlist test above without generating a parallel set
+  // of passing tests under the unvetted name.
+  describe.each(EXPECTED_BINS)('bin %s', (name) => {
+    const relPath = pkg.bin[name];
+
+    it('is declared in package.json#bin', () => {
+      expect(relPath, `${name} missing from pkg.bin`).toBeTypeOf('string');
+    });
 
     it('target file exists on disk', () => {
+      const absPath = resolve(REPO_ROOT, relPath ?? '');
       expect(existsSync(absPath), `${name} -> ${relPath}`).toBe(true);
     });
 
@@ -56,6 +66,7 @@ describe('public surface: package.json#bin', () => {
       // blob is LF and npm packages LF, but Windows git checkout may
       // restore CR. The invariant is "first line equals the shebang",
       // not "file uses LF".
+      const absPath = resolve(REPO_ROOT, relPath ?? '');
       const firstLine = readFileSync(absPath, 'utf8').split(/\r?\n/, 1)[0];
       expect(firstLine, `${name} shebang`).toBe('#!/usr/bin/env node');
     });
