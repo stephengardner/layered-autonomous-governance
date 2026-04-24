@@ -102,9 +102,11 @@ Commands:
   new <slug> [--from <base>]     Create worktree + branch off main (or parent).
   list                            Show all worktrees with state + stale flags.
   rm <slug>                       Remove worktree (confirms if dirty or unmerged).
-  clean [--dry-run]               Prompt to remove merged/abandoned worktrees.
+  clean [--dry-run] [--yes|-y]    Prompt to remove merged/abandoned worktrees.
                                   Worktrees showing activity (recent HEAD,
                                   dirty tree, index.lock) are skipped.
+                                  --yes removes all non-skipped candidates
+                                  without prompting (bulk cleanup).
   stack <parent> <child>          Create child stacked on parent via git-spice.
   note [<slug>]                   Open NOTES.md in $EDITOR (supports args).
 
@@ -468,6 +470,7 @@ async function cmdRm(args) {
 }
 async function cmdClean(args) {
   const dryRun = args.includes('--dry-run');
+  const yes = args.includes('--yes') || args.includes('-y');
 
   const repoRoot = (await execa('git', ['rev-parse', '--show-toplevel'])).stdout.trim();
   const wtList = await execa('git', ['worktree', 'list', '--porcelain']);
@@ -582,16 +585,18 @@ async function cmdClean(args) {
 
   for (const c of candidates) {
     console.log(`\n[wt clean] ${c.slug}: ${c.reasons.join(', ')}`);
-    if (!isTTY) {
-      console.log(`  skipped (non-TTY; use --dry-run to inspect or wt rm ${c.slug} --force)`);
-      continue;
-    }
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const answer = await rl.question(`  Remove ${c.slug}? [y/N] `);
-    rl.close();
-    if (answer.trim().toLowerCase() !== 'y') {
-      console.log(`  skipped.`);
-      continue;
+    if (!yes) {
+      if (!isTTY) {
+        console.log(`  skipped (non-TTY; use --dry-run to inspect, --yes for bulk, or wt rm ${c.slug} --force)`);
+        continue;
+      }
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await rl.question(`  Remove ${c.slug}? [y/N] `);
+      rl.close();
+      if (answer.trim().toLowerCase() !== 'y') {
+        console.log(`  skipped.`);
+        continue;
+      }
     }
     try {
       await execa('git', ['worktree', 'remove', c.path, '--force'], { stdio: 'inherit' });
