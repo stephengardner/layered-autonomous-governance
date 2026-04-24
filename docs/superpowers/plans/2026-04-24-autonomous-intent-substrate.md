@@ -24,30 +24,30 @@
 
 **Create (14 new files):**
 
-- `src/substrate/types.ts` (modify) — add `OperatorIntent` type to the `Atom` union.
-- `scripts/lib/intend.mjs` — pure helpers for intend CLI (arg parsing, atom construction, envelope defaults).
-- `scripts/intend.mjs` — CLI entry (dispatcher over `scripts/lib/intend.mjs`).
-- `test/scripts/intend.test.ts` — unit tests for intend helpers.
-- `src/runtime/actor-message/intent-approve.ts` — `runIntentAutoApprovePass` + pure helpers (`RADIUS_RANK`, `findIntentInProvenance`).
-- `test/runtime/actor-message/intent-approve.test.ts` — unit tests for the tick.
-- `scripts/invokers/autonomous-dispatch.mjs` — registers code-author invoker for run-approval-cycle.
-- `scripts/lib/auditor.mjs` — pure helpers for auditor (diff-scope classifier, verdict computation).
-- `scripts/run-auditor.mjs` — CLI that runs the auditor (invoked from pr-landing workflow).
-- `test/scripts/auditor.test.ts` — unit tests for auditor helpers.
-- `scripts/migrations/2026-04-24-add-lag-auditor-status-check.mjs` — idempotent branch-protection migration.
-- `scripts/bootstrap-autonomous-intent-canon.mjs` — canon atom bootstrap for the 3 new atoms.
-- `.claude/skills/autonomous-intent/SKILL.md` — skill docs.
-- `test/integration/autonomous-intent-e2e.test.ts` — gated integration test.
+- `src/substrate/types.ts` (modify)  -  add `OperatorIntent` type to the `Atom` union.
+- `scripts/lib/intend.mjs`  -  pure helpers for intend CLI (arg parsing, atom construction, envelope defaults).
+- `scripts/intend.mjs`  -  CLI entry (dispatcher over `scripts/lib/intend.mjs`).
+- `test/scripts/intend.test.ts`  -  unit tests for intend helpers.
+- `src/runtime/actor-message/intent-approve.ts`  -  `runIntentAutoApprovePass` + pure helpers (`RADIUS_RANK`, `findIntentInProvenance`).
+- `test/runtime/actor-message/intent-approve.test.ts`  -  unit tests for the tick.
+- `scripts/invokers/autonomous-dispatch.mjs`  -  registers code-author invoker for run-approval-cycle.
+- `scripts/lib/auditor.mjs`  -  pure helpers for auditor (diff-scope classifier, verdict computation).
+- `scripts/run-auditor.mjs`  -  CLI that runs the auditor (invoked from pr-landing workflow).
+- `test/scripts/auditor.test.ts`  -  unit tests for auditor helpers.
+- `scripts/migrations/2026-04-24-add-lag-auditor-status-check.mjs`  -  idempotent branch-protection migration.
+- `scripts/bootstrap-autonomous-intent-canon.mjs`  -  canon atom bootstrap for the 3 new atoms.
+- `.claude/skills/autonomous-intent/SKILL.md`  -  skill docs.
+- `test/integration/autonomous-intent-e2e.test.ts`  -  gated integration test.
 
 **Modify (6 files):**
 
-- `src/schemas/index.ts` — add `delegation` field to `planDraftOutput`; update PLAN_DRAFT systemPrompt.
-- `src/runtime/actors/planning/planning-actor.ts` — write `delegation` into metadata; append intent id to `provenance.derived_from`.
-- `src/runtime/actor-message/index.ts` — export `runIntentAutoApprovePass`.
-- `scripts/run-approval-cycle.mjs` — wire intent tick as tick 0.
-- `scripts/run-cto-actor.mjs` — accept `--intent-id` flag; thread through to planner.
-- `.github/workflows/pr-landing.yml` — auditor invocation step gated on `plan-id:` label.
-- `package.json` — add `"intend": "node scripts/intend.mjs"` npm script.
+- `src/schemas/index.ts`  -  add `delegation` field to `planDraftOutput`; update PLAN_DRAFT systemPrompt.
+- `src/runtime/actors/planning/planning-actor.ts`  -  write `delegation` into metadata; append intent id to `provenance.derived_from`.
+- `src/runtime/actor-message/index.ts`  -  export `runIntentAutoApprovePass`.
+- `scripts/run-approval-cycle.mjs`  -  wire intent tick as tick 0.
+- `scripts/run-cto-actor.mjs`  -  accept `--intent-id` flag; thread through to planner.
+- `.github/workflows/pr-landing.yml`  -  auditor invocation step gated on `plan-id:` label.
+- `package.json`  -  add `"intend": "node scripts/intend.mjs"` npm script.
 
 **Do NOT modify:**
 - Anything in `memory-governance-apps` or `memory-governance-substrate` sibling worktrees.
@@ -101,7 +101,7 @@ Read `src/substrate/types.ts` to find `Atom` discriminated union and related typ
 
 - [ ] **Step 2: Add `OperatorIntent` to the union**
 
-Find the `Atom` union (or its equivalent — may be `AtomType` + generic). Add the new `operator-intent` type tag.
+Find the `Atom` union (or its equivalent  -  may be `AtomType` + generic). Add the new `operator-intent` type tag.
 
 If types follow a pattern like:
 
@@ -683,7 +683,7 @@ describe('buildPlanAtom (planning-actor)', () => {
 
 - [ ] **Step 3: Run; verify failure**
 
-If `buildPlanAtom` isn't exported, the import fails — go to step 4 first to extract the builder.
+If `buildPlanAtom` isn't exported, the import fails  -  go to step 4 first to extract the builder.
 
 ```bash
 npx vitest run test/runtime/actors/planning/delegation.test.ts 2>&1 | tail -10
@@ -735,7 +735,7 @@ else if (a === '--intent-id' && i + 1 < argv.length) { args.intentId = argv[++i]
 
 Plumb `args.intentId` through to `runPlanningActor(host, { request, intentId, ... })`. Inside the planning-actor, pass it to `buildPlanAtom`. If the planning-actor doesn't currently take this argument, add it to the options object (non-breaking; default null).
 
-- [ ] **Step 3: Smoke test (no LLM cost — use --stub if possible)**
+- [ ] **Step 3: Smoke test (no LLM cost  -  use --stub if possible)**
 
 ```bash
 cd .worktrees/autonomous-intent-substrate && LAG_OPERATOR_ID=operator-principal node scripts/run-cto-actor.mjs --stub --request "fix X" --intent-id intent-smoke-test 2>&1 | tail -20
@@ -945,9 +945,9 @@ Read `scripts/bootstrap-dev-canon-proposals.mjs` for shape (ATOMS array, idempot
 
 Create `scripts/bootstrap-autonomous-intent-canon.mjs` with three atoms:
 
-**Atom 1:** `pol-operator-intent-creation` — see spec §4 for exact `fields` shape.
+**Atom 1:** `pol-operator-intent-creation`  -  see spec §4 for exact `fields` shape.
 
-**Atom 2:** `pol-plan-autonomous-intent-approve` — see spec §4 for exact `fields` shape.
+**Atom 2:** `pol-plan-autonomous-intent-approve`  -  see spec §4 for exact `fields` shape.
 
 **Atom 3:** `dev-autonomous-intent-substrate-shape` directive:
 ```
