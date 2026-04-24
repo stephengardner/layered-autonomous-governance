@@ -31,12 +31,21 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..');
 
+// npm permits several shapes under `exports.*`: a bare string shorthand
+// (`"./foo": "./dist/foo.js"`), a conditions object with `import` /
+// `types` / `require` / `default` / `node` keys, and nested condition
+// objects. The repo currently uses the simple `{ import, types }` shape
+// for every row; the test asserts that shape per row so a manifest
+// evolution to string shorthand or additional conditions fails loudly
+// with a dedicated assertion instead of a TypeError deep in the import
+// / types probes.
+type ExportsValue = string | { import?: string; types?: string };
 interface PackageJson {
   files: readonly string[];
   main: string;
   types: string;
   bin: Record<string, string>;
-  exports: Record<string, { import?: string; types?: string }>;
+  exports: Record<string, ExportsValue>;
 }
 
 const pkg = JSON.parse(
@@ -86,17 +95,26 @@ describe('public surface: manifest targets reside inside files allowlist', () =>
     });
   });
 
-  describe.each(Object.entries(pkg.exports))('exports %s', (_key, value) => {
+  describe.each(Object.entries(pkg.exports))('exports %s', (key, value) => {
+    it('is a conditions object (not string shorthand or unsupported shape)', () => {
+      expect(
+        value !== null && typeof value === 'object' && !Array.isArray(value),
+        `exports["${key}"] must be a conditions object; got ${typeof value}`,
+      ).toBe(true);
+    });
+
     it('import target lives inside files', () => {
-      expect(value.import, 'import missing').toBeDefined();
-      const seg = firstSegment(value.import!);
-      expect(allowedRoots.has(seg), value.import!).toBe(true);
+      expect(typeof value === 'object', `exports["${key}"] object shape`).toBe(true);
+      const obj = value as { import?: string };
+      expect(obj.import, `exports["${key}"].import missing`).toBeDefined();
+      expect(allowedRoots.has(firstSegment(obj.import!)), obj.import!).toBe(true);
     });
 
     it('types target lives inside files', () => {
-      expect(value.types, 'types missing').toBeDefined();
-      const seg = firstSegment(value.types!);
-      expect(allowedRoots.has(seg), value.types!).toBe(true);
+      expect(typeof value === 'object', `exports["${key}"] object shape`).toBe(true);
+      const obj = value as { types?: string };
+      expect(obj.types, `exports["${key}"].types missing`).toBeDefined();
+      expect(allowedRoots.has(firstSegment(obj.types!)), obj.types!).toBe(true);
     });
   });
 });
