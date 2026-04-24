@@ -2,9 +2,12 @@
 /**
  * Approval-cycle daemon: the canonical "move plans forward" runner.
  *
- * One pass, in fixed order, over the four ticks that advance a plan
+ * One pass, in fixed order, over the five ticks that advance a plan
  * from proposed to succeeded:
  *
+ *   0. runIntentAutoApprovePass   proposed -> approved
+ *                                  for intent-backed single-principal path
+ *                                  (most-specific gate, runs first).
  *   1. runAutoApprovePass         proposed -> approved
  *                                  for single-principal low-stakes allowlist
  *                                  (pol-plan-auto-approve-low-stakes).
@@ -66,6 +69,7 @@ import {
   runAuditor,
   runAutoApprovePass,
   runDispatchTick,
+  runIntentAutoApprovePass,
   runPlanApprovalTick,
 } from '../dist/actor-message/index.js';
 import { runPlanStateReconcileTick } from '../dist/runtime/plans/pr-merge-reconcile.js';
@@ -88,6 +92,7 @@ function parseArgs(argv) {
         'Usage: node scripts/run-approval-cycle.mjs --root-dir <path> [--principal-id <id>] [--invokers <path>] [--once]',
         '',
         'Runs one pass of the approval cycle, in order:',
+        '  0. runIntentAutoApprovePass    (intent-backed single-principal)',
         '  1. runAutoApprovePass          (single-principal allowlist)',
         '  2. runPlanApprovalTick         (distinct-principal consensus)',
         '  3. runPlanStateReconcileTick   (pr-merge writeback)',
@@ -183,6 +188,16 @@ async function main() {
   // collected error is re-thrown at the end.
   /** @type {Error|null} */
   let firstError = null;
+
+  // 0. Intent-backed single-principal path (most-specific gate, runs first).
+  try {
+    const intentResult = await runIntentAutoApprovePass(host);
+    console.log(`[approval-cycle] intent-approve     scanned=${intentResult.scanned} approved=${intentResult.approved} rejected=${intentResult.rejected ?? 0}${intentResult.halted ? ' [HALTED by kill-switch]' : ''}`);
+    if (intentResult.halted) return;
+  } catch (err) {
+    console.error(`[approval-cycle] intent-approve FAILED: ${err?.message ?? err}`);
+    firstError = firstError ?? err;
+  }
 
   // 1. Single-principal allowlist path.
   try {
