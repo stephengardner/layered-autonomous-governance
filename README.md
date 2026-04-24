@@ -248,6 +248,10 @@ The full list of subpaths declared in `package.json#exports`, each with one reas
 The value surface of every subpath is pinned by `test/public-surface/subpaths.test.ts` (53 assertions across 17 rows: root `.` plus 16 subpaths). That file is the authoritative answer to "what is actually exported, right now"; adding or removing an export there is the signal that the public contract changed. To list exports from the built package for one subpath at runtime:
 
 ```bash
+# root package entry (the `.` subpath; everyday governance primitives):
+node -e "import('./dist/index.js').then(m => console.log(Object.keys(m).sort()))"
+
+# any other subpath, e.g. `/actors`:
 node -e "import('./dist/actors/index.js').then(m => console.log(Object.keys(m).sort()))"
 ```
 
