@@ -89,6 +89,7 @@ function parseArgs(argv) {
     timeoutMs: undefined,
     minConfidence: undefined,
     delegateTo: undefined,
+    intentId: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -127,6 +128,7 @@ function parseArgs(argv) {
       args.maxIterations = n;
     } else if (a === '--principal' && i + 1 < argv.length) args.principalId = argv[++i];
     else if (a === '--origin' && i + 1 < argv.length) args.origin = argv[++i];
+    else if (a === '--intent-id' && i + 1 < argv.length) args.intentId = argv[++i];
     else if (a === '--delegate-to' && i + 1 < argv.length) {
       const v = argv[++i];
       if (typeof v !== 'string' || v.trim().length === 0) {
@@ -150,6 +152,7 @@ function parseArgs(argv) {
         '  --max-iterations <n>     runActor iteration cap. Default 2.',
         '  --principal <id>         Principal to run as. Default cto-actor.',
         '  --origin <id>            runActor origin tag. Default operator.',
+        '  --intent-id <id>         Intent atom id that triggered this planning run. When set, appended to the produced plan atom\'s provenance.derived_from so the provenance chain traces back to the triggering intent. Omit when no intent atom exists. Example: --intent-id intent-abc123.',
         '  --delegate-to <id>       Declared target sub-actor principal for any plan produced this run. Stamps metadata.delegation.sub_actor_principal_id on the plan atom for the auto-approve dispatcher to read, gated by its own policy.allowed_sub_actors. Omit to leave the plan unrouted. Example: --delegate-to code-author.',
       ].join('\n'));
       process.exit(0);
@@ -334,6 +337,12 @@ async function main() {
       id: questionAtom.id,
       prompt: args.request,
     },
+    // Optional: when --intent-id is provided, append the intent atom
+    // id to the produced plan atom's provenance.derived_from so the
+    // full lineage (intent -> plan) is traceable in the atom store.
+    // Default null means no id is appended and the atom shape is
+    // byte-identical to a run without this flag.
+    intentId: args.intentId ?? null,
     // Optional: when --delegate-to is provided, stamp the target
     // sub-actor principal id onto the plan atom so the auto-approve
     // dispatcher (src/runtime/actor-message/auto-approve.ts) can

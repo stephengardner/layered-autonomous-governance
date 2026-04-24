@@ -55,6 +55,10 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   // records; they tie a plan to its terminal PR outcome. Confidence
   // decay is irrelevant for a historical record.
   'plan-merge-settled': 365 * 24 * 60 * 60 * 1000,  // ~1 year
+  // Operator-intent atoms capture operator directives interactively.
+  // They are canonical governance signals with persistence similar to
+  // directives; do not decay during the session.
+  'operator-intent': 365 * 24 * 60 * 60 * 1000,  // ~1 year
 });
 
 export interface LoopOptions {

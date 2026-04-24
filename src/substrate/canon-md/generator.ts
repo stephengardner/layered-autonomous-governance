@@ -62,6 +62,7 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   // dumps non-L3 atoms for debugging.
   'plan-approval-vote': 'Plan Approval Votes',
   'plan-merge-settled': 'Plan Merge Settlements',
+  'operator-intent': 'Operator Intent',
 };
 
 export interface RenderOptions {

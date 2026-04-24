@@ -118,3 +118,15 @@ export type {
   OperatorEscalationContext,
   EscalationWriteOutcome,
 } from './operator-escalation.js';
+
+export {
+  RADIUS_RANK,
+  isBlastRadiusWithin,
+  findIntentInProvenance,
+  runIntentAutoApprovePass,
+} from './intent-approve.js';
+export type {
+  BlastRadius,
+  IntentAutoApproveResult,
+  IntentAutoApproveOptions,
+} from './intent-approve.js';

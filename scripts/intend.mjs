@@ -1,0 +1,85 @@
+#!/usr/bin/env node
+/**
+ * intend: CLI for the operator to declare autonomous-solve intent.
+ * Writes an operator-intent atom through the file-backed host;
+ * optionally seeds a question + invokes CTO via --trigger.
+ *
+ * Zero imports from src/. Uses dist/adapters/file.
+ */
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { createFileHost } from '../dist/adapters/file/index.js';
+import { parseIntendArgs, computeExpiresAt, buildIntentAtom } from './lib/intend.mjs';
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const STATE_DIR = resolve(REPO_ROOT, '.lag');
+
+async function main() {
+  const parsed = parseIntendArgs(process.argv.slice(2));
+  if (!parsed.ok) {
+    console.error(`[intend] ${parsed.reason}`);
+    console.error('usage: node scripts/intend.mjs --request "<text>" --scope <tooling|docs|framework|canon> --blast-radius <none|docs|tooling|framework|l3-canon-proposal> --sub-actors <code-author[,auditor-actor]> [--min-confidence 0.75] [--expires-in 24h] [--dry-run] [--trigger]');
+    process.exit(2);
+  }
+  const args = parsed.args;
+  if (existsSync(resolve(STATE_DIR, 'STOP'))) {
+    console.error('[intend] .lag/STOP present; kill-switch is armed. Remove it to proceed.');
+    process.exit(3);
+  }
+  const operatorPrincipalId = process.env.LAG_OPERATOR_ID;
+  if (!operatorPrincipalId) {
+    console.error('[intend] LAG_OPERATOR_ID is not set. Export the operator principal id first.');
+    process.exit(2);
+  }
+  const now = new Date();
+  const expiresAt = computeExpiresAt(args.expiresIn, now);
+  const nonce = randomBytes(6).toString('hex');
+  const atom = buildIntentAtom({
+    request: args.request,
+    scope: args.scope,
+    blastRadius: args.blastRadius,
+    subActors: args.subActors,
+    minConfidence: args.minConfidence,
+    expiresAt,
+    operatorPrincipalId,
+    now,
+    nonce,
+  });
+
+  if (args.dryRun) {
+    console.log('[intend] --dry-run; would write:');
+    console.log(JSON.stringify(atom, null, 2));
+    process.exit(0);
+  }
+
+  const host = await createFileHost({ rootDir: STATE_DIR });
+  await host.atoms.put(atom);
+  console.log(`[intend] wrote ${atom.id} (expires ${expiresAt})`);
+
+  if (args.trigger) {
+    console.log(`[intend] triggering CTO with intent id: ${atom.id}`);
+    const child = spawn('node', [
+      resolve(REPO_ROOT, 'scripts/run-cto-actor.mjs'),
+      '--request', args.request,
+      '--intent-id', atom.id,
+    ], { stdio: 'inherit' });
+    const childCode = await new Promise((resolve2, reject) => {
+      child.on('error', (err) => reject(err));
+      child.on('exit', (code) => resolve2(code ?? 0));
+    });
+    if (childCode !== 0) {
+      console.error(`[intend] run-cto-actor exited with code ${childCode}; intent ${atom.id} was written but CTO did not complete cleanly.`);
+      process.exit(childCode);
+    }
+  } else {
+    console.log(`[intend] no --trigger; invoke manually:\n  node scripts/run-cto-actor.mjs --request "${args.request}" --intent-id ${atom.id}`);
+  }
+}
+
+main().catch((err) => {
+  console.error(`[intend] ${err.message}`);
+  process.exit(1);
+});

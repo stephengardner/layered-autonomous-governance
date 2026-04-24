@@ -77,7 +77,15 @@ export type AtomType =
   // worker observing the same pr-observation gets a duplicate-id
   // conflict and skips. Functions as both the mutual-exclusion lock
   // and the historical record of the reconciliation event.
-  | 'plan-merge-settled';
+  | 'plan-merge-settled'
+  // Operator-authored trust envelope authorizing autonomous plan
+  // dispatch. metadata.trust_envelope gates plan auto-approval and
+  // sub-actor selection; metadata.expires_at is the real lifetime
+  // gate (distinct from confidence decay). Lifetime caps and author
+  // allowlists live in policy atoms, not this type. Distinct from
+  // `directive` (L3 canon, persistent governance) and `observation`
+  // (passive record): this is an L1 authorizing act that expires.
+  | 'operator-intent';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite
