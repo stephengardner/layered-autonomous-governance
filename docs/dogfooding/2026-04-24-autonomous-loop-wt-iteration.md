@@ -1,5 +1,7 @@
 # 2026-04-24 - autonomous-loop wt iteration
 
+> Run: 2026-04-24T06:30:00Z - 2026-04-24T08:38:55Z
+
 One Claude Code session, cron-driven via `/loop 5m`, iterated on the `wt` worktree CLI from initial ship to follow-up fix, validated canon discipline under autonomy, and surfaced a reproducible merge-gate gotcha worth atomizing.
 
 ## Timeline
@@ -27,7 +29,7 @@ One Claude Code session, cron-driven via `/loop 5m`, iterated on the `wt` worktr
 | # | Invariant | Mechanism | Captured in |
 |---|---|---|---|
 | 4 | CR withholds `CodeRabbit` commit status when PR branch is BEHIND trunk, even after APPROVED review | `gh pr view` shows `mergeStateStatus=BEHIND`; rebase + force-push triggers CR re-review + status post | memory: `feedback_cr_status_requires_branch_up_to_date.md` |
-| 5 | CR status is *slow but eventual* for clean PRs (zero findings on first pass; no CHANGES_REQUESTED → APPROVED cycle) | PR #137 observed: APPROVED @ 08:30:53Z, status SUCCESS @ 08:37:22Z. ~7 min delay. Earlier #136 case sat 20+ min without status - that one was BEHIND, a different root cause. | the clean-PR case self-heals on an eventual-consistency timeline; the BEHIND case does not |
+| 5 | CR status is *slow but eventual* for clean PRs (zero findings on first pass; no CHANGES_REQUESTED → APPROVED cycle) | PR #137 observed: APPROVED @ 2026-04-24T08:30:53Z, status SUCCESS @ 2026-04-24T08:37:22Z. ~7 min delay. Earlier #136 case sat 20+ min without status - that one was BEHIND, a different root cause. | the clean-PR case self-heals on an eventual-consistency timeline; the BEHIND case does not |
 | 6 | `gh-as lag-ceo pr merge --admin` does NOT bypass required checks for the bot | GraphQL rejects with "Required status check X is expected"; admin on human != admin via App | empirical |
 
 ## Canon discipline held under autonomy
