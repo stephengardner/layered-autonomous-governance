@@ -83,11 +83,14 @@ export interface PrLandingObservation {
    * surface (line comments, body-nits, submitted reviews, check-runs,
    * legacy statuses, mergeable state) failed to fetch and the
    * observation is incomplete. Callers (classify / propose) can treat
-   * this as a hard "do not decide" signal; pr-landing currently logs
-   * it and falls back to best-effort convergence on the line
-   * comments + body-nits we did get, since those are what drive the
-   * actor's own reply/resolve actions. Absent on legacy callers that
-   * constructed an observation without going through the composite.
+   * this as a hard "do not decide" signal; pr-landing currently falls
+   * back to best-effort convergence on the line comments + body-nits
+   * we did get, since those are what drive the actor's own
+   * reply/resolve actions. The flag is silent: the actor does not log
+   * it today, so downstream tooling that wants observability on
+   * `partial: true` must read it off the observation itself. Absent
+   * on legacy callers that constructed an observation without going
+   * through the composite.
    */
   readonly partial?: boolean;
   /**
