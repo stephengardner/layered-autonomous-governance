@@ -77,7 +77,12 @@ export type AtomType =
   // worker observing the same pr-observation gets a duplicate-id
   // conflict and skips. Functions as both the mutual-exclusion lock
   // and the historical record of the reconciliation event.
-  | 'plan-merge-settled';
+  | 'plan-merge-settled'
+  // Operator-initiated directive captured interactively. Model for
+  // human intent that drives plan creation, priority shifts, and
+  // governance nudges; captures deliberate operator action distinct
+  // from agent-inferred or agent-observed signals.
+  | 'operator-intent';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite
