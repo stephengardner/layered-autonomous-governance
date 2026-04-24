@@ -28,11 +28,14 @@
  *   3. Definedness: every documented value is `!== undefined` so an
  *      export-deletion regression (binding vanished; TypeScript might
  *      still compile if every import site uses `type`-only imports)
- *      cannot pass. An optional `classes` list additionally asserts
- *      `.prototype` is defined, so a class-became-undefined regression
- *      cannot pass either. Not asserting `typeof === 'function'`
- *      because some subpaths legitimately export constants (ordering
- *      policy objects, number defaults, schema literals).
+ *      cannot pass. Not asserting `typeof === 'function'` at this
+ *      step because some subpaths legitimately export constants
+ *      (ordering policy objects, number defaults, schema literals).
+ *   4. Class identity: an optional `classes` list asserts each named
+ *      export is an ES6 class via `prototype.constructor === fn` AND
+ *      `Function.prototype.toString.call(fn).startsWith('class ')`.
+ *      The first alone passes for any non-arrow function; the pair
+ *      together fails a class-refactored-into-a-factory regression.
  *
  * Type exports are intentionally not asserted here: types erase at
  * runtime. They are covered at compile time by `tsc --noEmit`.
