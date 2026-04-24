@@ -44,8 +44,8 @@ jobs:
 
       - name: Default test suite (non-gated)
         # Gated suites need ~90MB onnx model, Python bridge, or real
-        # Claude CLI; not a fit for CI. Default suite is 358 tests in
-        # under 15s across adapters and scenarios.
+        # Claude CLI; not a fit for CI. Default suite covers adapters,
+        # scenarios, and the public-surface contract end-to-end.
         run: npm test
 
       - name: Quickstart smoke
