@@ -17,11 +17,10 @@
  *      proposed plan.
  *   5. Glue step: wrap the plan with a delegation envelope pointing
  *      at auditor-actor so the dispatch loop has something to invoke.
- *      (The PlanningActor seam landed in #148 carries
+ *      (The PlanningActor seam landed in #148 routes
  *      `sub_actor_principal_id` via options.delegateTo; the wrap
  *      step below still attaches the richer payload the seam does
- *      not handle: reply_to, filter, correlation id. Migrating the
- *      sub_actor_principal_id piece to the seam is a cleanup PR.)
+ *      not handle: reply_to, filter, correlation id.)
  *   6. runAutoApprovePass transitions the plan to approved.
  *   7. runDispatchTick invokes runAuditor via the registry.
  *   8. Auditor writes a finding observation + reply actor-message.
