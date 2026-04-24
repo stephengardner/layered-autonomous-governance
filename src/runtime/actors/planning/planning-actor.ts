@@ -24,8 +24,13 @@
  * classification"). The actor itself does not decide policy; it just
  * proposes and lets the substrate enforce.
  *
- * Sub-actor delegation (e.g., "approved plan invokes PrLandingActor")
- * is Phase 55c. This actor stops at "plan is proposed + escalated".
+ * Sub-actor delegation: a caller (operator or orchestrator) that
+ * knows the plan's target executor can pass `delegateTo` in options.
+ * The plan atom then carries `metadata.delegation.sub_actor_principal_id`
+ * which the auto-approve dispatcher reads alongside its own
+ * `policy.allowed_sub_actors` gate. This actor does not decide what
+ * to delegate to; it stamps declared intent onto the plan atom so
+ * the governance layer can enforce.
  */
 
 import type { Actor, ActorContext } from '../actor.js';
@@ -88,6 +93,26 @@ export interface PlanningActorOptions {
     readonly id: AtomId;
     readonly prompt: string;
   };
+  /**
+   * Declared target sub-actor principal for this plan. When set and
+   * non-empty, the produced Plan atom gets
+   * `metadata.delegation.sub_actor_principal_id = delegateTo`; the
+   * auto-approve dispatcher (src/runtime/actor-message/auto-approve.ts)
+   * reads that field and fires the registered invoker for the
+   * target, gated by its own `policy.allowed_sub_actors` list.
+   *
+   * Omit-when-empty parity: `undefined` or `''` produces a Plan
+   * atom byte-identical to a pre-seam plan; the `delegation` key is
+   * simply absent. Downstream readers that check
+   * `'delegation' in metadata` stay honest, and hash-keyed fixtures
+   * (MemoryLLM test fixtures) do not break.
+   *
+   * This option carries declared intent only. Governance (which
+   * principals may delegate to which sub-actors) lives in the
+   * auto-approve policy atom. PlanningActor stamping `delegateTo`
+   * does not bypass that gate.
+   */
+  readonly delegateTo?: PrincipalId;
 }
 
 export interface PlanningObservation {
@@ -125,6 +150,25 @@ function buildQuestionMetadata(
     out.question_prompt = origin.prompt;
   }
   return out;
+}
+
+/**
+ * Map the optional `delegateTo` option into the Plan atom's
+ * `metadata.delegation.sub_actor_principal_id`. Mirrors the
+ * omit-when-empty contract used for originatingQuestion: an
+ * undefined or empty `delegateTo` produces no `delegation` key,
+ * keeping plan-atom shape identical to the pre-seam baseline and
+ * hash-keyed fixtures stable.
+ */
+function buildDelegationMetadata(
+  delegateTo: PlanningActorOptions['delegateTo'],
+): Record<string, unknown> {
+  if (typeof delegateTo !== 'string' || delegateTo.length === 0) return {};
+  return {
+    delegation: {
+      sub_actor_principal_id: delegateTo,
+    },
+  };
 }
 
 export class PlanningActor implements Actor<
@@ -273,6 +317,7 @@ export class PlanningActor implements Actor<
         // baseline -- MemoryLLM fixture keys + downstream
         // `'question_id' in metadata` checks stay honest.
         ...buildQuestionMetadata(this.options.originatingQuestion),
+        ...buildDelegationMetadata(this.options.delegateTo),
       },
     };
 

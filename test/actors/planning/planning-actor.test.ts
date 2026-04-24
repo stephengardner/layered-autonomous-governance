@@ -259,6 +259,82 @@ describe('PlanningActor', () => {
     expect(plan.metadata.planning_actor_version).toBeDefined();
   });
 
+  it('delegateTo: when omitted, plan metadata has no delegation key (baseline parity)', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'bare request, no delegation target',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [planOne({ title: 'Plan No-Delegate' })],
+      ),
+      // delegateTo intentionally not set
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const all = await host.atoms.query({ type: ['plan'] }, 10);
+    const plan = all.atoms[0]!;
+    // Absent-when-omitted is load-bearing: a pre-seam plan atom's
+    // metadata byte-shape must not change, and the auto-approve
+    // dispatcher's `plan.metadata.delegation` access stays truthy
+    // only when the caller declared a target.
+    expect('delegation' in plan.metadata).toBe(false);
+  });
+
+  it('delegateTo: principal id propagates into plan metadata.delegation.sub_actor_principal_id', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'plan that should route to code-author on approval',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [planOne({ title: 'Plan With-Delegate' })],
+      ),
+      delegateTo: 'code-author' as PrincipalId,
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const all = await host.atoms.query({ type: ['plan'] }, 10);
+    const plan = all.atoms[0]!;
+    const delegation = plan.metadata.delegation as {
+      sub_actor_principal_id: string;
+    };
+    expect(delegation).toEqual({ sub_actor_principal_id: 'code-author' });
+    // Pre-existing baseline metadata keys stay present (no overwrite).
+    expect(plan.metadata.title).toBe('Plan With-Delegate');
+    expect(plan.metadata.planning_actor_version).toBeDefined();
+  });
+
+  it('delegateTo: empty string is omitted (pre-seam shape parity)', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'edge: caller passed empty delegateTo',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [planOne({ title: 'Plan Empty-Delegate' })],
+      ),
+      delegateTo: '' as PrincipalId,
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const all = await host.atoms.query({ type: ['plan'] }, 10);
+    const plan = all.atoms[0]!;
+    expect('delegation' in plan.metadata).toBe(false);
+  });
+
   it('originatingQuestion: empty id or empty prompt is omitted (parity with agent-sdk seam)', async () => {
     const host = await seedHost();
     const actor = new PlanningActor({
