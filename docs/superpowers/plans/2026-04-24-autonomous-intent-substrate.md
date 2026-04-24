@@ -1031,9 +1031,9 @@ Read `dist/actor-message/code-author-invoker.js` (built from `src/actor-message/
 
 **Critical API facts (verified against real code):**
 
-- `runCodeAuthor` signature is `(host: Host, payload: CodeAuthorPayload, correlationId: string, options)` — positional, NOT an object. Source: `src/runtime/actor-message/code-author-invoker.ts:176`.
-- `SubActorInvoker` signature is `(payload: unknown, correlationId: string) => Promise<InvokeResult>` — two positional params. Source: `src/runtime/actor-message/sub-actor-registry.ts:63`.
-- `InvokeResult.dispatched` = `{ kind: 'dispatched', summary: string }` — NO `prNumber` field at the InvokeResult level. The PR number lives on the EXECUTOR's `CodeAuthorExecutorSuccess` result (`{ kind: 'dispatched', prNumber: number, prHtmlUrl, commitSha, branchName, ... }`). Source: `src/runtime/actor-message/code-author-invoker.ts:102-110`.
+- `runCodeAuthor` signature is `(host: Host, payload: CodeAuthorPayload, correlationId: string, options)`  -  positional, NOT an object. Source: `src/runtime/actor-message/code-author-invoker.ts:176`.
+- `SubActorInvoker` signature is `(payload: unknown, correlationId: string) => Promise<InvokeResult>`  -  two positional params. Source: `src/runtime/actor-message/sub-actor-registry.ts:63`.
+- `InvokeResult.dispatched` = `{ kind: 'dispatched', summary: string }`  -  NO `prNumber` field at the InvokeResult level. The PR number lives on the EXECUTOR's `CodeAuthorExecutorSuccess` result (`{ kind: 'dispatched', prNumber: number, prHtmlUrl, commitSha, branchName, ... }`). Source: `src/runtime/actor-message/code-author-invoker.ts:102-110`.
 
 **Wrapper strategy:** inject a custom executor wrapper that captures `prNumber` into a closure BEFORE the invoker's result returns. The wrapper delegates to `buildDefaultCodeAuthorExecutor(...)` for the real work, then records prNumber on success. Labels apply only if (a) `result.kind === 'dispatched'`, (b) prNumber was captured, (c) the plan's `provenance.derived_from` includes an intent id.
 
