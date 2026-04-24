@@ -313,6 +313,61 @@ describe('PlanningActor', () => {
     expect(plan.metadata.planning_actor_version).toBeDefined();
   });
 
+  it('delegateTo + originatingQuestion: both seams land without key collision', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'plan with both a question root and a delegation target',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [planOne({ title: 'Plan Both-Seams' })],
+      ),
+      originatingQuestion: {
+        id: 'q-combined-2026-04-23T12-00-00-000Z' as AtomId,
+        prompt: 'Replace the specified line.',
+      },
+      delegateTo: 'code-author' as PrincipalId,
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const all = await host.atoms.query({ type: ['plan'] }, 10);
+    const plan = all.atoms[0]!;
+    // Pin that the two ...build*Metadata() spreads do not overwrite
+    // each other and that pre-existing metadata keys survive a
+    // future helper returning an overlapping key.
+    expect(plan.metadata.question_id).toBe('q-combined-2026-04-23T12-00-00-000Z');
+    expect(plan.metadata.question_prompt).toBe('Replace the specified line.');
+    expect(plan.metadata.delegation).toEqual({ sub_actor_principal_id: 'code-author' });
+    expect(plan.metadata.title).toBe('Plan Both-Seams');
+    expect(plan.metadata.planning_actor_version).toBeDefined();
+  });
+
+  it('delegateTo: whitespace-only string is omitted (empty-guard parity)', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'edge: caller passed whitespace-only delegateTo',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [planOne({ title: 'Plan Whitespace-Delegate' })],
+      ),
+      delegateTo: '   ' as PrincipalId,
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const all = await host.atoms.query({ type: ['plan'] }, 10);
+    const plan = all.atoms[0]!;
+    expect('delegation' in plan.metadata).toBe(false);
+  });
+
   it('delegateTo: empty string is omitted (pre-seam shape parity)', async () => {
     const host = await seedHost();
     const actor = new PlanningActor({

@@ -143,10 +143,14 @@ function buildQuestionMetadata(
 ): Record<string, unknown> {
   if (origin === undefined) return {};
   const out: Record<string, unknown> = {};
-  if (typeof origin.id === 'string' && origin.id.length > 0) {
+  // Trim before length check so whitespace-only ids or prompts are
+  // treated as empty; stamping '   ' as question_id would let a
+  // mis-constructed caller poison the plan atom's provenance chain
+  // with a non-resolvable id.
+  if (typeof origin.id === 'string' && origin.id.trim().length > 0) {
     out.question_id = origin.id;
   }
-  if (typeof origin.prompt === 'string' && origin.prompt.length > 0) {
+  if (typeof origin.prompt === 'string' && origin.prompt.trim().length > 0) {
     out.question_prompt = origin.prompt;
   }
   return out;
@@ -163,7 +167,14 @@ function buildQuestionMetadata(
 function buildDelegationMetadata(
   delegateTo: PlanningActorOptions['delegateTo'],
 ): Record<string, unknown> {
-  if (typeof delegateTo !== 'string' || delegateTo.length === 0) return {};
+  // Trim before length check so whitespace-only principal ids are
+  // treated as empty — same discipline as buildQuestionMetadata
+  // above. A '   ' principal would never resolve in the auto-approve
+  // dispatcher's registry lookup anyway; treating it as empty fails
+  // at the seam, not silently deeper.
+  if (typeof delegateTo !== 'string' || delegateTo.trim().length === 0) {
+    return {};
+  }
   return {
     delegation: {
       sub_actor_principal_id: delegateTo,
