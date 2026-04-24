@@ -208,6 +208,10 @@ describe('markdownToTelegramHtml', () => {
     });
 
     it('preserves surrounding prose around a table', () => {
+      // Pin the exact output shape: blank-line separators around the <pre>
+      // block, prose on the outside, and the padded table on the inside.
+      // A regression that collapses blank lines, glues <pre> to surrounding
+      // text, or shifts prose inside the block must not pass silently.
       const input = [
         'before the table',
         '',
@@ -218,10 +222,9 @@ describe('markdownToTelegramHtml', () => {
         'after the table',
       ].join('\n');
       const out = markdownToTelegramHtml(input);
-      expect(out).toContain('before the table');
-      expect(out).toContain('after the table');
-      expect(out).toContain('<pre>');
-      expect(out).toContain('x | y');
+      expect(out).toBe(
+        'before the table\n\n<pre>x | y\n- | -\n1 | 2</pre>\n\nafter the table',
+      );
     });
   });
 });
