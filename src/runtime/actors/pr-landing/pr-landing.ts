@@ -171,20 +171,10 @@ export class PrLandingActor implements Actor<
   constructor(private readonly options: PrLandingOptions) {}
 
   async observe(ctx: ActorContext<PrLandingAdapters>): Promise<PrLandingObservation> {
-    // Per canon `dev-multi-surface-review-observation`: any actor
-    // observing PR state MUST use the single composite read rather
-    // than polling individual endpoints. Previously this method called
-    // `listUnresolvedComments` + `listReviewBodyNits` concurrently;
-    // that worked but missed two signals the composite surfaces for
-    // free: `partial` (at least one surface failed and the snapshot is
-    // incomplete) and `submittedReviews` (the "a human approver has
-    // signed off" signal). Migrating to the composite also cuts the
-    // per-observe API call count from 2 to 1.
-    //
-    // Per-surface fetch failures degrade the snapshot to `partial:
-    // true` rather than throwing, so we can still act on the
-    // line-comment + body-nit data we did get while recording which
-    // surfaces were missed for operator-escalation.
+    // Use the composite read so per-surface fetch failures degrade the
+    // snapshot to `partial: true` (with `partialSurfaces` listing the
+    // missed surfaces) rather than throwing, and so line-comments +
+    // body-nits + submitted reviews all arrive in one call.
     const status = await ctx.adapters.review.getPrReviewStatus(this.options.pr);
     const base: PrLandingObservation = {
       pr: this.options.pr,
