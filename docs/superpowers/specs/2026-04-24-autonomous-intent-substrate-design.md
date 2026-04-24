@@ -256,6 +256,13 @@ async function runIntentAutoApprovePass(host: Host, options?: TickOptions): Prom
   for (const plan of plans) {
     scanned++;
     // Extract intent via provenance walk (canonical link, not metadata).
+    // v1: DIRECT-ONLY walk. The plan MUST cite the intent id directly in
+    // provenance.derived_from (not via an intermediary question atom). The
+    // CTO planner always adds the intent id directly when invoked with
+    // --intent-id (see 3c). This keeps authorization lookup O(1) and
+    // avoids false-negatives from chain-depth misconfiguration. Plans that
+    // only cite an intermediary (e.g., a question) without the intent
+    // itself fall through to the normal manual-approval path.
     const intentId = await findIntentInProvenance(host, plan);
     if (!intentId) continue;
     const intent = await host.atoms.get(intentId);
@@ -435,11 +442,19 @@ No peer-review bots in v1. Future: add `runPeerReviewTick` that invokes designat
 
 ### 10. Migration + shipping
 
-Shipped as one cohesive PR. No migration of existing stuck plans (out of scope). Follow-up PRs:
+Shipped as one cohesive PR with an explicit migration checklist:
+
+1. **Branch protection edit.** `main` branch protection is updated to require a new status context `LAG-auditor`. Editing branch protection is a repo-admin action; this PR includes a migration step: `scripts/migrations/2026-04-24-add-lag-auditor-status-check.mjs`. The script is idempotent, reads the current branch-protection config via `gh api`, appends `LAG-auditor` to `required_status_checks.contexts` if absent, and writes the updated config back. Operator runs the migration post-merge (NOT as part of the PR CI, since the PR needs to land without its own required-check existing yet).
+2. **pr-landing workflow extension.** `.github/workflows/pr-landing.yml` gains an auditor-invocation step that runs when a PR has a `plan-id:` label (applied by code-author-invoker when the PR derives from a plan with `require_auditor_observation: true`). The step invokes `scripts/run-auditor.mjs --pr <number> --plan <plan-id>` which writes the auditor atom + the `LAG-auditor` GitHub status.
+3. **`LAG_OPERATOR_ID` in CI.** The `run-approval-cycle.mjs` daemon (if deployed) reads `LAG_OPERATOR_ID` from env; operator deploys this as a repo secret if they want the cycle to run in CI. Local-only for v1.
+
+**No migration of existing stuck plans** (out of scope). Follow-up PRs:
+
 1. Apply the CTO's prior Plan 3 (sweep stale proposed plans via auto-expiry).
 2. Add deeper auditor checks (security, cost).
 3. Add peer-review tick (multi-reviewer deliberation bots).
 4. Ship `pol-autonomy-dial-<scope>` canon (option C).
+5. Principal-chain walk for transitive intent authorization (extend beyond flat `allowed_principal_ids`).
 
 ### 11. Portability + indie-floor
 
@@ -469,15 +484,18 @@ Shipped as one cohesive PR. No migration of existing stuck plans (out of scope).
 ## Acceptance criteria
 
 The PR is mergeable when:
+
 1. Operator can run `node scripts/intend.mjs --request "fix X" --scope tooling --blast-radius framework --sub-actors code-author` and the atom is written.
-2. Operator can run `node scripts/run-cto-actor.mjs --request "fix X" --intent-id <id>` and a plan atom with `delegation` + `derived_from_intent` is written.
-3. Running `node scripts/run-approval-cycle.mjs --once --root-dir . --invokers scripts/invokers/autonomous-dispatch.mjs` transitions the plan proposed → approved → executing.
+2. Operator can run `node scripts/run-cto-actor.mjs --request "fix X" --intent-id <id>` and a plan atom with `delegation` in `metadata` AND the intent id in `provenance.derived_from` is written.
+3. Running `node scripts/run-approval-cycle.mjs --once --root-dir . --invokers scripts/invokers/autonomous-dispatch.mjs` transitions the plan proposed -> approved -> executing.
 4. Frontend `/plans` shows the plan progressing through states.
 5. Frontend `/timeline` shows the intent + plan atoms (not drowned by observations).
 6. All new unit + integration tests pass.
 7. CI (ubuntu + windows) green.
 8. CR approves.
 9. No L3 canon changes merged via autonomous path (dogfood constraint: this PR's own canon changes go through human gate).
+10. `scripts/migrations/2026-04-24-add-lag-auditor-status-check.mjs` exists, is idempotent, and is documented in the PR body.
+11. `.github/workflows/pr-landing.yml` gains the auditor step gated on `plan-id:` label; the PR body documents the label convention.
 
 ## Ship order + acceptance flow for THIS PR
 
