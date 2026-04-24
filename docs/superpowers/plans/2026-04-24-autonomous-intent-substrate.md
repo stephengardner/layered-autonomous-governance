@@ -1029,44 +1029,78 @@ Read `dist/actor-message/code-author-invoker.js` (built from `src/actor-message/
 
 - [ ] **Step 2: Write the module**
 
+**Critical API facts (verified against real code):**
+
+- `runCodeAuthor` signature is `(host: Host, payload: CodeAuthorPayload, correlationId: string, options)` — positional, NOT an object. Source: `src/runtime/actor-message/code-author-invoker.ts:176`.
+- `SubActorInvoker` signature is `(payload: unknown, correlationId: string) => Promise<InvokeResult>` — two positional params. Source: `src/runtime/actor-message/sub-actor-registry.ts:63`.
+- `InvokeResult.dispatched` = `{ kind: 'dispatched', summary: string }` — NO `prNumber` field at the InvokeResult level. The PR number lives on the EXECUTOR's `CodeAuthorExecutorSuccess` result (`{ kind: 'dispatched', prNumber: number, prHtmlUrl, commitSha, branchName, ... }`). Source: `src/runtime/actor-message/code-author-invoker.ts:102-110`.
+
+**Wrapper strategy:** inject a custom executor wrapper that captures `prNumber` into a closure BEFORE the invoker's result returns. The wrapper delegates to `buildDefaultCodeAuthorExecutor(...)` for the real work, then records prNumber on success. Labels apply only if (a) `result.kind === 'dispatched'`, (b) prNumber was captured, (c) the plan's `provenance.derived_from` includes an intent id.
+
 ```javascript
 // scripts/invokers/autonomous-dispatch.mjs
 /**
  * Dispatch-invoker registrar for run-approval-cycle --invokers <this-path>.
  * Registers code-author so plans with delegation.sub_actor_principal_id='code-author'
- * dispatch into the existing code-author flow (Question-to-PR).
+ * dispatch into the existing code-author flow.
  *
  * auditor-actor is registered by run-approval-cycle itself (read-only, always safe);
  * this module only adds code-author.
  *
- * CRITICAL: the wrapper also applies `autonomous-intent` and `plan-id:<id>`
- * labels to the PR after code-author opens it. These labels key the pr-landing
- * workflow's LAG-auditor gate (see .github/workflows/pr-landing.yml). Without
- * the labels, the auditor never runs, LAG-auditor status never posts, and
- * once branch protection requires that status (post-migration), every
- * intent-driven PR hangs indefinitely.
+ * CRITICAL: the wrapper applies `autonomous-intent` and `plan-id:<id>` labels
+ * to the PR after code-author's executor opens it. These labels key the
+ * pr-landing workflow's LAG-auditor gate. Without them, once the branch-
+ * protection migration runs, every intent-driven PR will hang on the
+ * never-posted LAG-auditor required status.
  */
 import { execa } from 'execa';
 
 export default async function register(host, registry) {
-  const { runCodeAuthor } = await import('../../dist/actor-message/code-author-invoker.js');
-  registry.register('code-author', async (plan, ctx) => {
-    const result = await runCodeAuthor({ host, plan, ...ctx });
-    const intentId = (plan.provenance?.derived_from ?? []).find((id) => id.startsWith('intent-'));
-    if (result?.pr_number && intentId) {
-      try {
+  const { runCodeAuthor } = await import('../../dist/runtime/actor-message/code-author-invoker.js');
+  const { buildDefaultCodeAuthorExecutor } = await import('../../dist/runtime/actor-message/code-author-executor-default.js');
+
+  const defaultExecutor = buildDefaultCodeAuthorExecutor({
+    remote: process.env.GH_REMOTE ?? 'origin',
+    baseBranch: process.env.GH_BASE_BRANCH ?? 'main',
+  });
+
+  registry.register('code-author', async (payload, correlationId) => {
+    // Capture prNumber + planId in a closure via an executor shim. The
+    // invoker's InvokeResult.dispatched does NOT include prNumber; only the
+    // executor's own return does. This is the canonical capture point.
+    let capturedPrNumber = null;
+    let capturedPlanId = null;
+    const wrappedExecutor = {
+      async execute(inputs) {
+        capturedPlanId = String(inputs.plan.id);
+        const execResult = await defaultExecutor.execute(inputs);
+        if (execResult.kind === 'dispatched') {
+          capturedPrNumber = execResult.prNumber;
+        }
+        return execResult;
+      },
+    };
+
+    const result = await runCodeAuthor(host, payload, correlationId, { executor: wrappedExecutor });
+
+    if (result.kind === 'dispatched' && capturedPrNumber !== null && capturedPlanId !== null) {
+      // Need the intent id from the plan's provenance to know if label-apply applies.
+      const plan = await host.atoms.get(capturedPlanId);
+      const intentId = plan?.provenance?.derived_from?.find((id) => id.startsWith('intent-'));
+      if (intentId) {
         const repo = process.env.GH_REPO ?? 'stephengardner/layered-autonomous-governance';
-        await execa('node', [
-          'scripts/gh-as.mjs', 'lag-ceo',
-          'api', `repos/${repo}/issues/${result.pr_number}/labels`,
-          '-X', 'POST',
-          '-f', 'labels[]=autonomous-intent',
-          '-f', `labels[]=plan-id:${plan.id}`,
-        ], { stdio: 'inherit' });
-      } catch (err) {
-        // Fail LOUD, not silent. PR stays open; labels missing; auditor gate
-        // will hang. Operator sees the warning + investigates.
-        console.error(`[autonomous-dispatch] WARNING: failed to label PR #${result.pr_number}: ${err.message}. LAG-auditor gate will not fire.`);
+        try {
+          await execa('node', [
+            'scripts/gh-as.mjs', 'lag-ceo',
+            'api', `repos/${repo}/issues/${capturedPrNumber}/labels`,
+            '-X', 'POST',
+            '-f', 'labels[]=autonomous-intent',
+            '-f', `labels[]=plan-id:${capturedPlanId}`,
+          ], { stdio: 'inherit' });
+        } catch (err) {
+          // Fail LOUD. PR stays open but labels missing = auditor gate will hang.
+          console.error(`[autonomous-dispatch] WARNING: failed to label PR #${capturedPrNumber}: ${err.message}. LAG-auditor gate will not fire until labels are added manually.`);
+        }
       }
     }
     return result;
@@ -1074,7 +1108,7 @@ export default async function register(host, registry) {
 }
 ```
 
-**IMPORTANT:** verify `runCodeAuthor`'s return shape by reading `src/actor-message/code-author-invoker.ts`; if the PR-number field is not `pr_number` (e.g., `prNumber`, `number`), adjust the guard + access above.
+**Verification step before pasting:** read `dist/runtime/actor-message/code-author-invoker.js` AND `dist/runtime/actor-message/code-author-executor-default.js` after `npm run build` to confirm both export names are correct (`runCodeAuthor`, `buildDefaultCodeAuthorExecutor`). If either path drifts with a future refactor, the invoker module import will fail loudly at registration time (before any plan dispatch).
 
 - [ ] **Step 3: Verify smoke**
 
