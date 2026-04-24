@@ -33,16 +33,23 @@ const DIST_ENTRY = resolve(REPO_ROOT, 'dist', 'index.js');
 const QUICKSTART = resolve(REPO_ROOT, 'examples', 'quickstart.mjs');
 
 describe('public surface: examples/quickstart.mjs', () => {
-  it('exits 0 and prints the success sentinel', { timeout: 30_000 }, () => {
+  it('exits 0 and prints the success sentinel', { timeout: 30_000 }, (ctx) => {
     if (!existsSync(DIST_ENTRY)) {
-      console.warn(`dist/ missing at ${DIST_ENTRY}; skipping quickstart smoke`);
+      ctx.skip();
       return;
     }
-    const result = spawnSync('node', [QUICKSTART], {
+    // process.execPath pins to the same interpreter running vitest;
+    // a bare 'node' would delegate to $PATH and could hit a different
+    // binary under nvm / corepack / Volta / Windows PATHEXT.
+    const result = spawnSync(process.execPath, [QUICKSTART], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       timeout: 25_000,
     });
+    // Surface spawn failures (timeout / ENOENT) loudly. Without this
+    // a timeout shows up as 'expected null to be 0' which obscures
+    // the real cause.
+    expect(result.error, `spawn error: ${result.error?.message}`).toBeUndefined();
     expect(result.status, `stderr: ${result.stderr}`).toBe(0);
     expect(result.stdout).toContain('Quickstart OK.');
   });
