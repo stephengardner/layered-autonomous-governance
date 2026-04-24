@@ -5,6 +5,8 @@ description: Use when the operator wants a problem solved autonomously through t
 
 # autonomous-intent substrate
 
+> Shipped across tasks T2-T14 of plan 2026-04-24-autonomous-intent-substrate; some surfaces below (scripts/intend.mjs, invokers/autonomous-dispatch.mjs, runIntentAutoApprovePass) may not yet exist on disk during plan execution.
+
 The substrate exists so the operator can declare "solve X autonomously within
 these bounds" as a first-class atom. The pipeline (CTO -> approval tick ->
 code-author -> auditor -> pr-landing -> reconcile) closes the loop without
@@ -33,7 +35,7 @@ Written to `metadata.trust_envelope` on the resulting intent atom:
 | Field                          | Value / Default                  |
 | ------------------------------ | -------------------------------- |
 | `max_blast_radius`             | from `--blast-radius`            |
-| `max_plans`                    | `5` (runaway cap)                |
+| `max_plans`                    | `5` (runaway cap; not CLI-configurable in v1; default-only) |
 | `min_plan_confidence`          | `0.75` (or `--min-confidence`)   |
 | `allowed_sub_actors`           | from `--sub-actors`              |
 | `require_ci_green`             | `true`                           |
@@ -45,8 +47,7 @@ Written to `metadata.trust_envelope` on the resulting intent atom:
 
 ```text
 Operator calls intend                  -- writes autonomous-intent atom
-  |
-  +-- (optional --trigger)             -- spawns run-cto-actor.mjs --intent-id <id>
+  |                                       (optionally invoked as --trigger: spawns run-cto-actor.mjs inline)
   |
   CTO drafts Plan atom                 -- metadata.delegation.sub_actor_principal_id set
   |                                       provenance.derived_from -> intent atom id
