@@ -28,9 +28,11 @@ import {
   prStateToStaleSignals,
   findWorktreeBySlug,
   parseCleanFlags,
+  classifyBranchRefs,
+  localTrunkBranchName,
 } from './lib/wt.mjs';
 
-const COMMANDS = ['new', 'list', 'rm', 'clean', 'stack', 'note'];
+const COMMANDS = ['new', 'list', 'rm', 'clean', 'prune-refs', 'stack', 'note'];
 
 function parsePositiveNumber(raw, fallback) {
   const n = Number(raw);
@@ -108,6 +110,12 @@ Commands:
                                   dirty tree, index.lock) are skipped.
                                   --yes removes all non-skipped candidates
                                   without prompting (bulk cleanup).
+  prune-refs [--dry-run] [--yes|-y]
+                                  Delete local branch refs whose PR has
+                                  merged or closed AND no worktree
+                                  references them. Closes the 'orphan
+                                  branch refs' gap from bulk 'wt clean'
+                                  sessions (43 orphans 2026-04-24).
   stack <parent> <child>          Create child stacked on parent via git-spice.
   note [<slug>]                   Open NOTES.md in $EDITOR (supports args).
 
@@ -133,6 +141,7 @@ async function main() {
     case 'list': return cmdList(args);
     case 'rm': return cmdRm(args);
     case 'clean': return cmdClean(args);
+    case 'prune-refs': return cmdPruneRefs(args);
     case 'stack': return cmdStack(args);
     case 'note': return cmdNote(args);
   }
@@ -607,6 +616,144 @@ async function cmdClean(args) {
     }
   }
 }
+
+/**
+ * Delete local branch refs whose PR is merged/closed AND no worktree
+ * references them. Closes the 'orphan branch refs' gap from bulk
+ * `wt clean` sessions (43 orphans observed on 2026-04-24 required a
+ * shell loop; this subcommand replaces it).
+ *
+ * Algorithm:
+ *   1. classifyBranchRefs partitions all local branches into
+ *      protected / inWorktree / candidates (pure, tested).
+ *   2. For each candidate, query `gh pr view <branch>` for state.
+ *      MERGED or CLOSED -> eligible. Any other state (OPEN, draft,
+ *      no PR at all, gh unavailable) -> skip and report.
+ *   3. Prompt per-branch (or skip prompt under --yes) then
+ *      `git branch -D <branch>`. -D (not -d) because squash/rebase
+ *      merges leave the branch without ancestry relative to trunk
+ *      and git's safety check would otherwise refuse.
+ */
+async function cmdPruneRefs(args) {
+  const { dryRun, yes } = parseCleanFlags(args);
+
+  const trunkBranch = localTrunkBranchName(trunkRef());
+
+  let currentBranch = null;
+  try {
+    const r = await execa('git', ['rev-parse', '--abbrev-ref', 'HEAD']);
+    currentBranch = r.stdout.trim();
+    if (currentBranch === 'HEAD') currentBranch = null;
+  } catch { /* detached or other; treat as null */ }
+
+  let allBranches = [];
+  try {
+    const r = await execa('git', ['for-each-ref', 'refs/heads', '--format=%(refname:short)']);
+    allBranches = r.stdout.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+  } catch (err) {
+    console.error(`[wt prune-refs] failed to list branches: ${err.message}`);
+    process.exit(1);
+  }
+
+  const wtList = await execa('git', ['worktree', 'list', '--porcelain']);
+  const records = parseGitWorktreeList(wtList.stdout);
+
+  const partition = classifyBranchRefs(allBranches, records, currentBranch, trunkBranch);
+
+  if (partition.candidates.length === 0) {
+    console.log(`[wt prune-refs] no prune candidates (protected: ${partition.protected.length}, in-worktree: ${partition.inWorktree.length}).`);
+    return;
+  }
+
+  console.log(`[wt prune-refs] checking ${partition.candidates.length} candidate${partition.candidates.length === 1 ? '' : 's'} (branches with no worktree)...`);
+
+  // Bounded-concurrency probe (CR #155 Major). Serial across 43+
+  // candidates was a multi-second stall; a worker-pool of ~8 keeps
+  // wall time close to the slowest single call while still being
+  // polite to GitHub's API. The delete phase below stays serial
+  // because mutations must be observable in order.
+  const PROBE_CONCURRENCY = 8;
+  const probeOne = async (branch) => {
+    try {
+      const res = await execa('gh', ['pr', 'view', branch, '--json', 'state', '--jq', '.state']);
+      return { branch, state: res.stdout.trim(), ok: true };
+    } catch {
+      return { branch, state: null, ok: false };
+    }
+  };
+  const probeResults = new Array(partition.candidates.length);
+  let nextIdx = 0;
+  const worker = async () => {
+    while (true) {
+      const i = nextIdx++;
+      if (i >= partition.candidates.length) return;
+      probeResults[i] = await probeOne(partition.candidates[i]);
+    }
+  };
+  const workers = Array.from(
+    { length: Math.min(PROBE_CONCURRENCY, partition.candidates.length) },
+    () => worker(),
+  );
+  await Promise.all(workers);
+
+  const eligible = [];
+  const skipped = [];
+  for (const r of probeResults) {
+    if (!r.ok) {
+      skipped.push({ branch: r.branch, reason: 'no PR found or gh unavailable' });
+      continue;
+    }
+    const signals = prStateToStaleSignals(r.state);
+    if (signals.branchMerged || signals.prClosed) {
+      eligible.push({ branch: r.branch, state: r.state });
+    } else {
+      skipped.push({ branch: r.branch, reason: `PR state=${r.state}` });
+    }
+  }
+
+  if (skipped.length > 0) {
+    console.log(`[wt prune-refs] skipping ${skipped.length} branch${skipped.length === 1 ? '' : 'es'} (not merged/closed):`);
+    for (const s of skipped) console.log(`  ${s.branch}  (${s.reason})`);
+  }
+
+  if (eligible.length === 0) {
+    console.log('[wt prune-refs] no branches eligible for deletion.');
+    return;
+  }
+
+  if (dryRun) {
+    console.log(`[wt prune-refs] dry-run - would delete ${eligible.length} branch${eligible.length === 1 ? '' : 'es'}:`);
+    for (const e of eligible) console.log(`  ${e.branch}  (PR ${e.state})`);
+    return;
+  }
+
+  const isTTY = process.stdin.isTTY;
+  const { createInterface } = await import('readline/promises');
+
+  for (const e of eligible) {
+    console.log(`\n[wt prune-refs] ${e.branch} (PR ${e.state})`);
+    if (!yes) {
+      if (!isTTY) {
+        console.log(`  skipped (non-TTY; use --dry-run to inspect or --yes for bulk)`);
+        continue;
+      }
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await rl.question(`  Delete local branch? [y/N] `);
+      rl.close();
+      if (answer.trim().toLowerCase() !== 'y') {
+        console.log(`  skipped.`);
+        continue;
+      }
+    }
+    try {
+      await execa('git', ['branch', '-D', e.branch]);
+      console.log(`  deleted ${e.branch}`);
+    } catch (err) {
+      console.warn(`  failed to delete ${e.branch}: ${err.message}`);
+    }
+  }
+}
+
 async function cmdStack(args) {
   const positional = args.filter(a => !a.startsWith('-'));
   const parentRaw = positional[0];

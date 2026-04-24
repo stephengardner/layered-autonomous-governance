@@ -9,6 +9,8 @@ import {
   prStateToStaleSignals,
   findWorktreeBySlug,
   parseCleanFlags,
+  classifyBranchRefs,
+  localTrunkBranchName,
 } from '../../scripts/lib/wt.mjs';
 
 describe('validateSlug', () => {
@@ -389,5 +391,80 @@ describe('parseCleanFlags', () => {
   });
   it('ignores unrelated flags', () => {
     expect(parseCleanFlags(['--force', 'foo', '--other'])).toEqual({ dryRun: false, yes: false });
+  });
+});
+
+describe('classifyBranchRefs', () => {
+  it('partitions into protected / inWorktree / candidates (exact shape)', () => {
+    // Tighter assertion per CR #155 nit: lock the full partition shape
+    // including the currentBranch === trunkBranch dedup behavior.
+    const branches = ['main', 'feat/a', 'feat/b', 'fix/c'];
+    const wtRecords = [
+      { path: '/r', branch: 'main' },
+      { path: '/r/.worktrees/a', branch: 'feat/a' },
+    ];
+    expect(classifyBranchRefs(branches, wtRecords, 'main', 'main')).toEqual({
+      protected: ['main'],
+      inWorktree: ['feat/a'],
+      candidates: ['feat/b', 'fix/c'],
+    });
+  });
+  it('protects current HEAD branch even when no worktree record matches it', () => {
+    const r = classifyBranchRefs(['feat/x', 'feat/y'], [], 'feat/x', 'main');
+    expect(r.protected).toContain('feat/x');
+    expect(r.candidates).toEqual(['feat/y']);
+  });
+  it('treats a missing currentBranch (null/detached) as not protecting any branch', () => {
+    const r = classifyBranchRefs(['feat/x'], [], null, 'main');
+    expect(r.candidates).toEqual(['feat/x']);
+  });
+  it('ignores null branch entries in worktree records (detached worktrees)', () => {
+    const wt = [{ path: '/r/.worktrees/det', branch: null }];
+    const r = classifyBranchRefs(['feat/a'], wt, null, 'main');
+    expect(r.candidates).toEqual(['feat/a']);
+    expect(r.inWorktree).toEqual([]);
+  });
+  it('honors a non-main trunk (e.g. master)', () => {
+    const r = classifyBranchRefs(['master', 'feat/x'], [], null, 'master');
+    expect(r.protected).toContain('master');
+    expect(r.candidates).toEqual(['feat/x']);
+  });
+  it('skips empty / non-string entries defensively', () => {
+    const r = classifyBranchRefs(['', 'feat/a', null as unknown as string], [], null, 'main');
+    expect(r.candidates).toEqual(['feat/a']);
+  });
+  it('handles empty inputs', () => {
+    const r = classifyBranchRefs([], [], null, 'main');
+    expect(r).toEqual({ protected: [], inWorktree: [], candidates: [] });
+  });
+});
+
+describe('localTrunkBranchName', () => {
+  // CR #155 Major: the original slash-split logic produced 'heads/main'
+  // for 'refs/heads/main', leaving main unprotected. These tests pin
+  // the ref-prefix handling for all common WT_TRUNK_REF shapes.
+  it('returns a bare branch name unchanged', () => {
+    expect(localTrunkBranchName('main')).toBe('main');
+    expect(localTrunkBranchName('master')).toBe('master');
+  });
+  it('strips a remote prefix (origin/main -> main)', () => {
+    expect(localTrunkBranchName('origin/main')).toBe('main');
+    expect(localTrunkBranchName('upstream/main')).toBe('main');
+  });
+  it('strips refs/heads/ fully-qualified form', () => {
+    expect(localTrunkBranchName('refs/heads/main')).toBe('main');
+    expect(localTrunkBranchName('refs/heads/master')).toBe('master');
+  });
+  it('strips refs/remotes/<remote>/ fully-qualified form', () => {
+    expect(localTrunkBranchName('refs/remotes/origin/main')).toBe('main');
+    expect(localTrunkBranchName('refs/remotes/upstream/develop')).toBe('develop');
+  });
+  it('trims whitespace', () => {
+    expect(localTrunkBranchName('  origin/main  ')).toBe('main');
+  });
+  it('returns empty string on non-string or empty input', () => {
+    expect(localTrunkBranchName('')).toBe('');
+    expect(localTrunkBranchName(null as unknown as string)).toBe('');
+    expect(localTrunkBranchName(undefined as unknown as string)).toBe('');
   });
 });

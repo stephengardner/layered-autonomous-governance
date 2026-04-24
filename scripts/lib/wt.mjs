@@ -274,6 +274,83 @@ export function parseCleanFlags(args) {
 }
 
 /**
+ * Extract the local branch name from a trunk ref of any common form.
+ * Callers may configure WT_TRUNK_REF to 'main', 'origin/main',
+ * 'upstream/main', or fully-qualified 'refs/heads/main' /
+ * 'refs/remotes/origin/main'. `cmdPruneRefs` needs the final leaf
+ * ('main') to protect it from deletion; the original slash-split-on-
+ * first-slash logic mis-handled 'refs/heads/main' -> 'heads/main'
+ * (CR #155 Major). Pure helper so the ref-prefix contract is testable.
+ *
+ * @param {string | null | undefined} ref - trunk ref in any form.
+ * @returns {string} - local branch name ('' if ref is empty).
+ */
+export function localTrunkBranchName(ref) {
+  if (typeof ref !== 'string') return '';
+  let name = ref.trim();
+  if (name.length === 0) return '';
+  if (name.startsWith('refs/heads/')) name = name.slice('refs/heads/'.length);
+  else if (name.startsWith('refs/remotes/')) name = name.slice('refs/remotes/'.length);
+  // name is now either 'main' or '<remote>/main'; strip a leading
+  // remote segment if present.
+  const slash = name.indexOf('/');
+  return slash >= 0 ? name.slice(slash + 1) : name;
+}
+
+/**
+ * Classify local branch refs for `wt prune-refs`. Pure helper that
+ * partitions branches into three buckets from static snapshots
+ * (branch list, worktree records, current branch, trunk branch):
+ *
+ *   - `protected`: branches that must never be pruned (current HEAD,
+ *     trunk like `main`/`master`).
+ *   - `inWorktree`: branches claimed by some worktree. Pruning would
+ *     break that worktree's HEAD pointer.
+ *   - `candidates`: branches with no worktree and not protected. The
+ *     caller then does the IO check (PR state via gh) per candidate
+ *     to decide whether to actually delete.
+ *
+ * Why split here: partition logic is a pure data-shape transformation
+ * and deserves a unit test. PR-state checks are IO and live in
+ * cmdPruneRefs where they can be exercised end-to-end.
+ *
+ * @param {readonly string[]} allBranches - local branch names.
+ * @param {readonly {branch?: string | null}[]} worktreeRecords
+ * @param {string | null} currentBranch - HEAD branch of primary
+ *   checkout; never a candidate.
+ * @param {string} trunkBranch - local trunk name (e.g. 'main'),
+ *   stripped of any remote prefix.
+ * @returns {{
+ *   protected: string[],
+ *   inWorktree: string[],
+ *   candidates: string[]
+ * }}
+ */
+export function classifyBranchRefs(allBranches, worktreeRecords, currentBranch, trunkBranch) {
+  const worktreeBranches = new Set(
+    (worktreeRecords ?? [])
+      .map(r => r && typeof r.branch === 'string' ? r.branch : null)
+      .filter(b => b !== null && b.length > 0)
+  );
+  const protectedSet = new Set();
+  if (typeof currentBranch === 'string' && currentBranch.length > 0) {
+    protectedSet.add(currentBranch);
+  }
+  if (typeof trunkBranch === 'string' && trunkBranch.length > 0) {
+    protectedSet.add(trunkBranch);
+  }
+
+  const out = { protected: [], inWorktree: [], candidates: [] };
+  for (const b of allBranches ?? []) {
+    if (typeof b !== 'string' || b.length === 0) continue;
+    if (protectedSet.has(b)) { out.protected.push(b); continue; }
+    if (worktreeBranches.has(b)) { out.inWorktree.push(b); continue; }
+    out.candidates.push(b);
+  }
+  return out;
+}
+
+/**
  * Render the NOTES.md skeleton for a new worktree.
  * Returns a markdown template with placeholders filled in.
  */
