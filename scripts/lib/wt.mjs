@@ -189,6 +189,38 @@ export function detectPackageManager(rootFiles, packageJsonContent) {
 }
 
 /**
+ * Translate a PR state string (from `gh pr view --json state --jq .state`)
+ * into stale-detection signals for `detectStale`.
+ *
+ * Why this exists: `git branch --merged <trunk>` relies on ancestry,
+ * which squash-merge and rebase-merge both invalidate. The trunk-side
+ * commit produced by those merge strategies does not have the source
+ * branch's tip as an ancestor, so `--merged` returns false for every
+ * squash-merged branch. Using PR state as an authoritative merge signal
+ * closes that gap.
+ *
+ * Mapping:
+ *   - MERGED -> branchMerged: true. The PR shipped; the branch is
+ *     effectively on trunk regardless of local ancestry.
+ *   - CLOSED -> prClosed: true. The PR was rejected or abandoned
+ *     without merge. The worktree is a candidate for cleanup.
+ *   - OPEN / DRAFT / unrecognized / empty -> no signal.
+ *
+ * Case-insensitive and trim-tolerant; gh has shipped both uppercase
+ * and title-case in different versions and a defensive normalization
+ * costs nothing.
+ *
+ * @param {string|null|undefined} state - raw PR state string.
+ * @returns {{ branchMerged: boolean, prClosed: boolean }}
+ */
+export function prStateToStaleSignals(state) {
+  const normalized = (state ?? '').toString().trim().toUpperCase();
+  if (normalized === 'MERGED') return { branchMerged: true, prClosed: false };
+  if (normalized === 'CLOSED') return { branchMerged: false, prClosed: true };
+  return { branchMerged: false, prClosed: false };
+}
+
+/**
  * Render the NOTES.md skeleton for a new worktree.
  * Returns a markdown template with placeholders filled in.
  */

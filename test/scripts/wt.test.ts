@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { validateSlug, parseGitWorktreeList, detectActivity, detectStale, detectPackageManager, renderNotesSkeleton } from '../../scripts/lib/wt.mjs';
+import {
+  validateSlug,
+  parseGitWorktreeList,
+  detectActivity,
+  detectStale,
+  detectPackageManager,
+  renderNotesSkeleton,
+  prStateToStaleSignals,
+} from '../../scripts/lib/wt.mjs';
 
 describe('validateSlug', () => {
   it('accepts kebab-case slugs', () => {
@@ -247,5 +255,45 @@ describe('renderNotesSkeleton', () => {
     expect(out).toContain('## Open threads');
     expect(out).toContain('## Decisions this worktree');
     expect(out).toContain('## Next pick-up');
+  });
+});
+
+describe('prStateToStaleSignals', () => {
+  // The CLI calls `gh pr view --json state --jq .state`; this helper
+  // translates the raw state string into the stale-detection signals
+  // (branchMerged, prClosed) that `cmdClean` feeds to `detectStale`.
+  //
+  // Regression context (post-#128 live dogfood): the original
+  // implementation only flagged PR state === 'CLOSED', and set
+  // `branchMerged` solely via `git branch --merged`. Squash-merge and
+  // rebase-merge produce main-side commits whose ancestry does NOT
+  // include the source branch tip, so `--merged` returns false for
+  // every squash-merged branch. 20+ worktrees with `AHEAD>0 + PR=MERGED`
+  // slipped through `wt clean` as a result. This helper makes PR state
+  // an authoritative merge signal.
+  it('treats MERGED as branchMerged (catches squash-merge blindspot)', () => {
+    expect(prStateToStaleSignals('MERGED')).toEqual({ branchMerged: true, prClosed: false });
+  });
+  it('treats CLOSED as prClosed', () => {
+    expect(prStateToStaleSignals('CLOSED')).toEqual({ branchMerged: false, prClosed: true });
+  });
+  it('treats OPEN as no signal', () => {
+    expect(prStateToStaleSignals('OPEN')).toEqual({ branchMerged: false, prClosed: false });
+  });
+  it('is case-insensitive (defensive against gh output drift)', () => {
+    expect(prStateToStaleSignals('merged')).toEqual({ branchMerged: true, prClosed: false });
+    expect(prStateToStaleSignals('closed')).toEqual({ branchMerged: false, prClosed: true });
+  });
+  it('trims whitespace', () => {
+    expect(prStateToStaleSignals('  MERGED  \n')).toEqual({ branchMerged: true, prClosed: false });
+  });
+  it('returns no signal for empty / null / undefined', () => {
+    expect(prStateToStaleSignals('')).toEqual({ branchMerged: false, prClosed: false });
+    expect(prStateToStaleSignals(null as unknown as string)).toEqual({ branchMerged: false, prClosed: false });
+    expect(prStateToStaleSignals(undefined as unknown as string)).toEqual({ branchMerged: false, prClosed: false });
+  });
+  it('returns no signal for unrecognized states', () => {
+    expect(prStateToStaleSignals('DRAFT')).toEqual({ branchMerged: false, prClosed: false });
+    expect(prStateToStaleSignals('PENDING')).toEqual({ branchMerged: false, prClosed: false });
   });
 });
