@@ -346,6 +346,86 @@ describe('PlanningActor', () => {
     expect(plan.metadata.planning_actor_version).toBeDefined();
   });
 
+  it('plan.delegation (LLM-emitted): full descriptor lands in plan.metadata.delegation with reason + implied_blast_radius', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'plan that the LLM judgment marks as code-author work with rationale',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [
+          planOne({
+            title: 'Plan With-LLM-Delegation',
+            delegation: {
+              sub_actor_principal_id: 'code-author',
+              reason: 'CI YAML edit; per pol-code-author-signed-pr-only the change must ship as a signed PR.',
+              implied_blast_radius: 'tooling',
+            },
+          }),
+        ],
+      ),
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const all = await host.atoms.query({ type: ['plan'] }, 10);
+    const plan = all.atoms[0]!;
+    // Regression for the wiring gap that prevented the autonomous-
+    // intent approval tick from reading delegation off the plan: the
+    // PLAN_DRAFT schema requires reason + implied_blast_radius on the
+    // delegation object so policy enforcement has the rationale it
+    // needs, but earlier glue code dropped both fields between
+    // ProposedPlan and metadata.delegation.
+    expect(plan.metadata.delegation).toEqual({
+      sub_actor_principal_id: 'code-author',
+      reason: 'CI YAML edit; per pol-code-author-signed-pr-only the change must ship as a signed PR.',
+      implied_blast_radius: 'tooling',
+    });
+  });
+
+  it('plan.delegation (LLM-emitted) takes precedence over actor-option delegateTo', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'orchestrator declares one delegate but LLM names another with rationale',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [
+          planOne({
+            title: 'Plan LLM-Wins-Precedence',
+            delegation: {
+              sub_actor_principal_id: 'code-author',
+              reason: 'LLM analysis says code-author is the correct sub-actor.',
+              implied_blast_radius: 'framework',
+            },
+          }),
+        ],
+      ),
+      delegateTo: 'auditor-actor' as PrincipalId,
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const all = await host.atoms.query({ type: ['plan'] }, 10);
+    const plan = all.atoms[0]!;
+    // The LLM-emitted descriptor wins because it carries reason +
+    // implied_blast_radius that the orchestrator's plain principal-id
+    // hint cannot supply; falling back to the orchestrator hint here
+    // would silently strip the rationale fields the approval tick
+    // gates against.
+    expect(plan.metadata.delegation).toEqual({
+      sub_actor_principal_id: 'code-author',
+      reason: 'LLM analysis says code-author is the correct sub-actor.',
+      implied_blast_radius: 'framework',
+    });
+  });
+
   it('delegateTo: whitespace-only string is omitted (empty-guard parity)', async () => {
     const host = await seedHost();
     const actor = new PlanningActor({

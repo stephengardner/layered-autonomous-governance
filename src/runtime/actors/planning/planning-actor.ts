@@ -469,12 +469,23 @@ export class PlanningActor implements Actor<
         alternatives_rejected: [...plan.alternativesRejected],
         what_breaks_if_revisit: plan.whatBreaksIfRevisit,
         ...(plan.confidence !== undefined ? { confidence: plan.confidence } : {}),
-        // DelegationDescriptor is not on ProposedPlan; it comes from
-        // actor options only. The pure function path picks it up via
-        // the descriptor field; absence means no delegation key.
-        ...(this.options.delegateTo
-          ? { delegation: { sub_actor_principal_id: this.options.delegateTo } satisfies DelegationDescriptor }
-          : {}),
+        // Delegation precedence:
+        //   1. plan.delegation (LLM-emitted via PLAN_DRAFT) - richest;
+        //      carries reason + implied_blast_radius for the approval tick.
+        //   2. this.options.delegateTo (actor-option) - lighter; carries
+        //      sub_actor_principal_id only. Fallback when LLM doesn't emit.
+        //   3. Neither - no delegation key on the atom.
+        ...(plan.delegation
+          ? {
+              delegation: {
+                sub_actor_principal_id: plan.delegation.sub_actor_principal_id as PrincipalId,
+                reason: plan.delegation.reason,
+                implied_blast_radius: plan.delegation.implied_blast_radius,
+              } satisfies DelegationDescriptor,
+            }
+          : this.options.delegateTo
+            ? { delegation: { sub_actor_principal_id: this.options.delegateTo } satisfies DelegationDescriptor }
+            : {}),
       },
       principalId,
       intentId: this.options.intentId ?? null,

@@ -239,6 +239,17 @@ describe('HostLlmPlanningJudgment', () => {
       expect(plans[0]!.title).toMatch(/auditor/);
       expect(plans[0]!.derivedFrom).toEqual(['dev-extreme-rigor', 'D13']);
       expect(plans[0]!.confidence).toBe(0.8);
+      // Regression for the wiring gap that dropped delegation between
+      // PLAN_DRAFT JSON and ProposedPlan: every field the schema
+      // requires must round-trip into the cleaned plan, otherwise the
+      // downstream apply() can never write metadata.delegation onto
+      // the plan atom and the autonomous-intent approval tick has
+      // nothing to gate against.
+      expect(plans[0]!.delegation).toEqual({
+        sub_actor_principal_id: 'code-author',
+        reason: 'Requires implementing new PlanningActor role.',
+        implied_blast_radius: 'framework',
+      });
     });
 
     it('drops plans that only cite invented atom ids', async () => {
