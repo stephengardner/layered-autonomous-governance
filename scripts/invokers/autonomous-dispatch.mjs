@@ -53,9 +53,23 @@ export default async function register(host, registry) {
   const { buildDefaultCodeAuthorExecutor } = await import('../../dist/runtime/actor-message/code-author-executor-default.js');
   const { createVirtualOrgGhClient } = await import('../../dist/examples/virtual-org-bootstrap/gh-client-factory.js');
   const { findIntentInProvenance } = await import('../../dist/runtime/actor-message/intent-approve.js');
-  const { fetchInstallationToken } = await import('../../dist/external/github-app/app-auth.js');
+  const { InstallationTokenCache } = await import('../../dist/external/github-app/app-auth.js');
 
-  const role = process.env.LAG_DISPATCH_BOT_ROLE ?? 'lag-ceo';
+  // LAG_DISPATCH_BOT_ROLE is required: defaulting to a specific
+  // principal id (e.g. 'lag-ceo') in the canonical invoker would
+  // bake this org's principal taxonomy into framework-adjacent
+  // code; downstream consumers would inherit the default unless
+  // they remembered to set the env var on every run. Mirrors the
+  // bootstrap-script discipline for LAG_OPERATOR_ID. Operators
+  // wire their own role at deployment time.
+  const role = process.env.LAG_DISPATCH_BOT_ROLE;
+  if (typeof role !== 'string' || role.trim().length === 0) {
+    throw new Error(
+      '[autonomous-dispatch] LAG_DISPATCH_BOT_ROLE is required. '
+      + 'Set it to the bot role whose App credentials live at '
+      + '<stateDir>/apps/<role>.json (provisioned via bin/lag-actors.js).',
+    );
+  }
   const repoDir = resolve(process.env.LAG_REPO_DIR ?? process.cwd());
   const stateDir = resolve(process.env.LAG_STATE_DIR ?? join(repoDir, '.lag'));
   const model = process.env.LAG_DRAFTER_MODEL ?? 'claude-sonnet-4-6';
@@ -68,15 +82,36 @@ export default async function register(host, registry) {
   const privateKey = readFileSync(join(stateDir, 'apps', 'keys', `${role}.pem`), 'utf8');
 
   const ghClient = createVirtualOrgGhClient({ role, stateDir });
+
+  // GitHub mints the bot's noreply address as
+  // `<bot-user-id>+<slug>[bot]@users.noreply.github.com`, where
+  // <bot-user-id> is the User ID GitHub assigns the App's bot
+  // principal (NOT the App ID, which is a different number used to
+  // sign JWTs). Fetch the bot user id from the public /users/<slug>[bot]
+  // endpoint when the on-disk record does not carry it; persist on
+  // the closure so subsequent calls reuse it. boot.mjs has the same
+  // pattern; a follow-up will add `botUserId` to the record schema
+  // so the GET round-trip is one-time.
+  const botUserId = appRecord.botUserId ?? await fetchBotUserId(appRecord.slug);
   const gitIdentity = {
     name: `${appRecord.slug}[bot]`,
-    email: `${appRecord.appId}+${appRecord.slug}[bot]@users.noreply.github.com`,
+    email: `${botUserId}+${appRecord.slug}[bot]@users.noreply.github.com`,
   };
 
-  const execImpl = buildBotAuthedExecImpl({
-    fetchInstallationToken,
-    appRecord,
+  // InstallationTokenCache (shared with src/external/github-app/) lazily
+  // refreshes the App-installation token within a configurable safety
+  // margin before expiry, so multiple git invocations per dispatch (fetch
+  // + apply + commit + push) reuse one token. Replaces an earlier
+  // closure that minted on every git call -- redundant JWT signs and
+  // installation-token API hits push toward GitHub's rate limit.
+  const tokenCache = new InstallationTokenCache({
+    appId: appRecord.appId,
+    installationId: appRecord.installationId,
     privateKey,
+  });
+
+  const execImpl = buildBotAuthedExecImpl({
+    tokenCache,
     repoOwner: owner,
     repoName: repo,
   });
@@ -173,30 +208,57 @@ function loadAppRecord(role, stateDir) {
 }
 
 /**
- * Build an `execImpl` for buildDefaultCodeAuthorExecutor that mints
- * a fresh installation token per call and attaches GitHub-App auth
- * to outgoing git commands. Non-git commands pass through unchanged.
- *
- * Token caching: a single mint per dispatch is sufficient (executor
- * runs in the order fetch -> commit -> push, all within seconds, and
- * an installation token is good for ~1h). We re-mint on each git call
- * for simplicity; if the executor ever batches a multi-PR run the
- * caller can replace this with a token cache without changing the
- * exec contract.
+ * Resolve the bot user id GitHub minted for an App installation by
+ * calling the public /users/<slug>[bot] endpoint. Read-only; no
+ * authentication needed. The id is what the noreply email format
+ * (`<botUserId>+<slug>[bot]@users.noreply.github.com`) requires --
+ * appId is a different number used to sign JWTs and produces a
+ * syntactically valid email that GitHub will not link back to the
+ * bot's user page.
  */
-function buildBotAuthedExecImpl({ fetchInstallationToken, appRecord, privateKey, repoOwner, repoName }) {
+async function fetchBotUserId(slug) {
+  const url = `https://api.github.com/users/${slug}[bot]`;
+  const res = await fetch(url, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'lag-autonomous-dispatch',
+    },
+  });
+  if (!res.ok) {
+    throw new Error(
+      `[autonomous-dispatch] could not fetch bot user id for slug='${slug}'. `
+      + `${url} -> ${res.status} ${res.statusText}. `
+      + `Persist 'botUserId' on the App record under <stateDir>/apps/<role>.json `
+      + 'to skip this round-trip on future runs.',
+    );
+  }
+  const json = await res.json();
+  if (typeof json.id !== 'number') {
+    throw new Error(
+      `[autonomous-dispatch] /users/${slug}[bot] returned an unexpected shape (no numeric id): ${JSON.stringify(json).slice(0, 200)}`,
+    );
+  }
+  return json.id;
+}
+
+/**
+ * Build an `execImpl` for buildDefaultCodeAuthorExecutor that
+ * attaches GitHub-App installation auth to outgoing git commands.
+ * Non-git commands pass through unchanged. Token reuse is delegated
+ * to the InstallationTokenCache instance the caller passes in;
+ * cache.get() returns the current token (refreshed lazily within
+ * the cache's safety margin before expiry).
+ */
+function buildBotAuthedExecImpl({ tokenCache, repoOwner, repoName }) {
   return async (file, args, options = {}) => {
     if (file !== 'git') {
       return execa(file, args, options);
     }
-    const tokenInfo = await fetchInstallationToken({
-      appId: appRecord.appId,
-      installationId: appRecord.installationId,
-      privateKey,
-    });
+    const token = await tokenCache.get();
     const invocation = buildAuthedGitInvocation({
       args,
-      token: tokenInfo.token,
+      token,
       repoOwner,
       repoName,
       inheritedEnv: process.env,
