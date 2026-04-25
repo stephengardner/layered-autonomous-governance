@@ -26,25 +26,34 @@ Non-goals:
 ```
 AgenticCodeAuthorExecutor
   └─ ClaudeCodeAgentLoopAdapter.run({task, workspace, budget, redactor, blobStore, ...})
-       ├─ spawn `claude -p <prompt>` --cwd workspace.path
-       │    --output-format stream-json
-       │    --max-budget-usd <budget.max_usd>
-       │    --disallowedTools <toolPolicy.disallowedTools>
-       │    [--mcp-config '{}']  // disable MCP servers per existing pattern
+       ├─ execa('claude', args, {cwd: workspace.path, signal: combined})
+       │    args = ['-p', '<prompt>',
+       │            '--output-format', 'stream-json',
+       │            '--verbose',                // REQUIRED for stream-json to emit per-turn lines
+       │            '--max-budget-usd', '<budget.max_usd>',
+       │            '--disallowedTools', '<toolPolicy.disallowedTools joined by space>',
+       │            '--disable-slash-commands',
+       │            '--mcp-config', '{"mcpServers":{}}']
        ├─ readline stdout: parse one JSON message per line (NDJSON)
-       │    ├─ on assistant.text       → start a new turn; redact + write agent-turn atom
-       │    ├─ on assistant.tool_use   → append to current turn's tool_calls (outcome:'pending')
-       │    ├─ on user.tool_result     → match by tool_use_id; set outcome + result_redacted
-       │    └─ on result envelope      → capture total_cost_usd, usage; update session atom
+       │    ├─ on system event           -> open turn N: write placeholder agent-turn atom
+       │    │                              (preserves substrate "atom-before-LLM-call" contract)
+       │    ├─ on assistant.text         -> redact text; update turn N atom with llm_output
+       │    ├─ on assistant.tool_use     -> append to turn N tool_calls (outcome 'success'
+       │    │                              optimistic; corrected on tool_result)
+       │    ├─ on user.tool_result       -> match by tool_use_id; set outcome (see 4.x);
+       │    │                              attach redacted result
+       │    └─ on result envelope        -> capture cost_usd, usage; update session atom
        ├─ adapter-side guards:
-       │    ├─ wall_clock_ms timer     → SIGTERM (then SIGKILL after 5s)
-       │    ├─ assistant turn counter  → kill at max_turns
-       │    └─ AbortSignal             → SIGTERM
-       └─ post-CLI artifact capture:
+       │    ├─ wall_clock_ms timer       -> SIGTERM (then SIGKILL after 5s)
+       │    ├─ assistant turn counter    -> kill at max_turns
+       │    └─ AbortSignal                -> SIGTERM
+       └─ post-CLI artifact capture (uses workspace.baseRef from substrate Workspace shape):
             ├─ git rev-parse HEAD
             ├─ git branch --show-current
-            └─ git diff --name-only <baseRef>..HEAD
+            └─ git diff --name-only <workspace.baseRef>..HEAD
 ```
+
+The working directory is set via execa's `cwd:` option, NOT a CLI flag (the Claude CLI does not recognize `--cwd`; the project's existing CLI integrations all set it through execa). Pairing `--output-format stream-json` with `--verbose` is mandatory: without `--verbose` the CLI does not emit per-turn NDJSON lines (validated against `src/daemon/cli-renderer/claude-streaming.ts:120-135`, the canonical reference for stream-json invocation).
 
 **One CLI invocation per `run()` call.** Claude Code's `claude -p` already iterates internally: the agent reasons, calls tools, gets results, reasons again, until a stop condition (success, tool budget, model budget). The adapter does NOT loop. Adapter responsibility is plumbing: spawn, stream-parse, atom-write, artifact-capture, signal-forward.
 
@@ -96,72 +105,117 @@ Assembles the user prompt:
 3. If `task.successCriteria`: a `<success_criteria>...</success_criteria>` block.
 4. If `task.targetPaths`: a `<target_paths>foo.ts, bar.ts</target_paths>` advisory block.
 
-### 3.4 `captureArtifacts(workspace, baseRef, execImpl)` (pure-ish, runs git)
+### 3.4 `captureArtifacts(workspace, execImpl)` (pure-ish, runs git)
 
-Runs three git commands inside `workspace.path`:
-- `git rev-parse HEAD` → `currentSha`
-- `git rev-parse <baseRef>` → `baseSha`
+Reads `workspace.baseRef` from the substrate `Workspace` shape (`src/substrate/workspace-provider.ts`) -- the WorkspaceProvider already records the base ref it created the worktree from. Runs three git commands inside `workspace.path`:
+- `git rev-parse HEAD` -> `currentSha`
+- `git rev-parse <workspace.baseRef>` -> `baseSha`
 - If `currentSha === baseSha`: returns `undefined` (no commit was made; executor maps to `agentic/no-artifacts`).
-- Otherwise: `git branch --show-current` → `branchName`; `git diff --name-only <baseRef>..HEAD` → `touchedPaths`.
+- Otherwise: `git branch --show-current` -> `branchName`; `git diff --name-only <workspace.baseRef>..HEAD` -> `touchedPaths`.
 
 Returns `{commitSha, branchName, touchedPaths}` or `undefined`.
 
 ### 3.5 `classifyClaudeCliFailure(err, exitCode, stderr)` (adapter-specific classifier)
 
-Beats `defaultClassifyFailure` by inspecting CLI-specific stderr shapes:
+Beats `defaultClassifyFailure` by inspecting CLI-specific stderr shapes. Match precedence is top-down: the FIRST matching row wins, so a 401 page that also mentions "rate limit" is classified as `catastrophic` (auth) rather than `transient` (rate). Cases:
 
-| Signal | Mapping |
-|---|---|
-| stderr contains `rate limit` / `429` | `transient` |
-| stderr contains `budget` + non-zero exit | (returned at higher level as `kind: 'budget-exhausted'`) |
-| stderr contains `auth` / `401` / `403` | `catastrophic` |
-| stderr contains `ENOENT` / `claude: command not found` | `catastrophic` |
-| AbortError / SIGTERM | `catastrophic` |
-| Any other non-zero exit | `structural` |
+| # | Signal | Mapping |
+|---|---|---|
+| 1 | `AbortError` / SIGTERM forwarded from `AbortSignal` | `catastrophic` |
+| 2 | `ENOENT` / `claude: command not found` (CLI not installed) | `catastrophic` |
+| 3 | stderr matches `/auth\|401\|403/i` | `catastrophic` |
+| 4 | stderr matches `/budget/i` AND non-zero exit | (returned at adapter level as `kind: 'budget-exhausted'`, not as `kind: 'error'`) |
+| 5 | stderr matches `/rate limit\|429/i` | `transient` |
+| 6 | Any other non-zero exit | `structural` |
 
-Falls back to `defaultClassifyFailure` for non-CLI errors.
+Falls back to `defaultClassifyFailure` for non-CLI errors (e.g. internal adapter exceptions raised before the subprocess started).
 
 ### 3.6 `spawnClaudeCli({...})` (execa wrapper, injectable)
 
-Constructs argv:
+Constructs argv (mirrors `src/daemon/cli-renderer/claude-streaming.ts:120-135`):
 ```
-['claude', '-p', '<prompt>',
- '--cwd', workspace.path,
+['-p', '<prompt>',
  '--output-format', 'stream-json',
- '--mcp-config', '{}',
- ...(toolPolicy.disallowedTools.length ? ['--disallowedTools', toolPolicy.disallowedTools.join(' ')] : []),
- ...(budget.max_usd ? ['--max-budget-usd', String(budget.max_usd)] : []),
+ '--verbose',                        // REQUIRED for stream-json to emit per-turn lines
+ '--disable-slash-commands',
+ '--mcp-config', '{"mcpServers":{}}',
+ ...(toolPolicy.disallowedTools.length
+    ? ['--disallowedTools', toolPolicy.disallowedTools.join(' ')]
+    : []),
+ ...(budget.max_usd
+    ? ['--max-budget-usd', String(budget.max_usd)]
+    : []),
  ...(opts.extraArgs ?? [])]
 ```
 
-Passes `cwd: workspace.path`, `env: process.env`, `stripFinalNewline: false`, and a `signal` derived from `input.signal` plus the wall-clock timer.
+The binary is `opts.claudePath ?? 'claude'`. Execa options:
+- `cwd: workspace.path` (working directory; NOT a CLI flag, the CLI does not recognize `--cwd`)
+- `env: process.env`
+- `stripFinalNewline: false`
+- `signal`: an `AbortSignal` derived from `input.signal` AND the adapter-side wall-clock timer (whichever fires first)
+- `stdout` is consumed as a stream (NDJSON parser); the adapter does NOT use execa's text-buffering mode
 
 ---
 
 ## 4. Data flow per turn
 
-For each NDJSON message from the CLI:
+The atom shape MUST match the substrate `AgentTurnMeta` contract (`src/substrate/types.ts:570-597`). Specifically:
 
-| `message.type` + content | Adapter action |
+```ts
+{
+  session_atom_id: AtomId,
+  turn_index: number,
+  llm_input:  { inline: string } | { ref: BlobRef },
+  llm_output: { inline: string } | { ref: BlobRef },
+  tool_calls: ReadonlyArray<{
+    tool: string,
+    args:   { inline: string } | { ref: BlobRef },
+    result: { inline: string } | { ref: BlobRef },
+    latency_ms: number,
+    outcome: 'success' | 'tool-error' | 'policy-refused',
+  }>,
+  latency_ms: number,
+  failure?: FailureRecord,
+  extra?: Readonly<Record<string, unknown>>,
+}
+```
+
+The substrate vocabulary uses `tool` (not `tool_name`), `args` (not `args_redacted`), `result` (not `result_redacted`), and the discriminated union `{inline} | {ref}` for both args and result. The CLI-side `tool_use_id` (used by the adapter to correlate tool_use with tool_result on the stream) is NOT a substrate field; the adapter keeps it in an in-memory correlation map and discards it after the corresponding `tool_result` lands. There is no `'pending'` outcome in the substrate; see §4.1 for how the adapter handles in-flight tool calls before a result arrives.
+
+### 4.0 Substrate-contract discipline: write-atom-before-LLM-call via placeholder
+
+The substrate (`src/substrate/agent-loop.ts:46-47`) MANDATES: "Write an `agent-turn` atom for each LLM call BEFORE issuing the call (so the audit trail captures even mid-turn crashes)." This is a non-negotiable invariant; bypassing it would lose audit trail on subprocess crashes.
+
+The adapter satisfies this by writing a **placeholder** turn atom on the boundary that signals an LLM call is about to start, then `update()`ing it as content streams in:
+
+| Stream-json signal | Adapter atom action |
 |---|---|
-| `system` | Record `model_id`, `session_id` if present (purely informational) |
-| `assistant` (text-only block(s)) | Begin a new turn N: redact text via `input.redactor`, write `agent-turn` atom with `metadata.agent_turn = {session_atom_id, turn_index: N, llm_input: {inline: prompt-or-redacted-prior-context}, llm_output: {inline: redacted-text-or-blob-ref}, tool_calls: [], latency_ms}`. The atom is written BEFORE the next assistant message (per substrate contract: "write `agent-turn` atom for each LLM call BEFORE issuing the call"). |
-| `assistant` (tool_use block) | Append `{call_id: tool_use.id, tool_name: tool_use.name, args_redacted: redactor.redact(JSON.stringify(tool_use.input)), outcome: 'pending'}` to the **current turn's** `tool_calls`. If args size exceeds `blobThreshold`, route via `blobStore.put` and store as `{blob: BlobRef}`. |
-| `user` (tool_result block) | Look up `tool_use_id` in any open turn's `tool_calls`; set `outcome` to `'success'` (default) or `'error'` if `is_error: true`; attach `result_redacted` (or blob ref). |
-| `result` (final envelope) | Extract `total_cost_usd`, `usage`, `is_error`. Update the session atom: `terminal_state` per `is_error`, `budget_consumed.usd = total_cost_usd`, `budget_consumed.turns = <turn count>`, `budget_consumed.wall_clock_ms = <Date.now() - startedAt>`, `completed_at = <now>`. |
+| `system` event (CLI emits it once at session start, with model + session_id) | Open turn 0 (placeholder): write `agent-turn` atom with `{turn_index: 0, llm_input: {inline: <buildPromptText output>}, llm_output: {inline: ''}, tool_calls: []}`. This captures the prompt the CLI received BEFORE the LLM produces output. |
+| `user` event with `tool_result` blocks (CLI feeds tool results back to the LLM, which triggers the next LLM call) | Open turn N+1 (placeholder): write `agent-turn` atom with `{turn_index: N+1, llm_input: {inline: '<tool-results-summary>'}, llm_output: {inline: ''}, tool_calls: []}`. Mid-turn crash here would leave a complete audit trail through turn N + a placeholder for the in-flight turn N+1. |
+| `assistant` event (text content; the LLM's response landed) | `host.atoms.update()` the current turn atom: redact text via `input.redactor`, set `llm_output` to `{inline: redacted}` or `{ref: BlobRef}` when over `blobThreshold`. |
+| `assistant` event (tool_use block; LLM is calling a tool) | `host.atoms.update()` the current turn: append a `tool_calls` entry with `{tool: tool_use.name, args: redacted, result: {inline: ''}, latency_ms: 0, outcome: 'success'}` AND record the `tool_use_id` in an in-memory map so the corresponding `tool_result` can attach later. The optimistic `'success'` is updated to `'tool-error'` or `'policy-refused'` when the result lands. |
+| `user` event with `tool_result` block (CLI is feeding a tool result back to the LLM) | `host.atoms.update()` the matching turn: set the `tool_calls[].result` to `{inline: redacted}` or `{ref}`; set `outcome` per §4.2; update `tool_calls[].latency_ms` to elapsed-ms since the tool_use record. THEN open the next placeholder turn (above row). |
+| `result` envelope (final, contains `cost_usd`, `usage`, `is_error`) | Update the SESSION atom: `terminal_state` per `is_error` + adapter's classification, `budget_consumed.usd = cost_usd`, `budget_consumed.turns = <count of opened turns>`, `budget_consumed.wall_clock_ms = <Date.now() - startedAt>`, `completed_at = <now>`. |
 
-### 4.1 Turn write timing  --  race with crashes
+The **stream-json envelope's cost field is `cost_usd`, not `total_cost_usd`** (validated against `src/daemon/cli-renderer/claude-stream-parser.ts:159`). The JSON-format envelope (used by the existing single-shot `ClaudeCliLLM`) reports `total_cost_usd`; the streaming envelope renames it. The adapter reads `cost_usd` and maps it onto `AgentSessionMeta.budget_consumed.usd`.
 
-The substrate contract: "Adapters MUST write an `agent-turn` atom for each LLM call BEFORE issuing the call." The Claude Code CLI is one process; we cannot strictly write atoms before each LLM call inside the subprocess. Practical interpretation:
+### 4.1 Turn-write atomicity guarantee
 
-- We write the `agent-turn` atom upon receiving the assistant's text content (which marks the *end* of the LLM call, not its start). This is a deliberate adapter-level deviation from the strictest reading of the contract: we sacrifice atomicity around the in-flight LLM call to keep the adapter as a pure stream consumer. The trade is documented in JSDoc.
-- The atom carries `llm_input.inline = '<embedded by CLI>'` (a placeholder string) because the adapter does not see the per-turn input the CLI assembled  --  only the assistant output. A future enhancement could parse the `system` + `user` messages from stream-json to reconstruct the per-turn input, but that adds parsing complexity for marginal value (full session can be replayed from the workspace state + atoms anyway).
+After the placeholder pattern above, every LLM call has a turn atom in the store BEFORE the call's output lands. Subprocess crash mid-turn -> the audit trail shows turn 0..N completed and turn N+1 as a placeholder with empty `llm_output`. Replay tooling can recognize the empty-output shape as "interrupted in-flight" and surface that to the operator. The strict substrate contract is satisfied; no operator-approval-for-deviation is required.
 
-### 4.2 Blob threshold routing
+### 4.2 Distinguishing `tool-error` from `policy-refused`
 
-`input.blobThreshold` (already clamped via `clampBlobThreshold`) is the inline-vs-blob cutoff in bytes. Each redacted payload (turn output, tool args, tool result) over threshold goes through `blobStore.put()`; the atom carries the resulting `BlobRef` instead of inline content.
+Both surfaces look like `{is_error: true}` in stream-json's `tool_result`. The substrate distinguishes them: `'policy-refused'` means the tool was blocked by `toolPolicy.disallowedTools`; `'tool-error'` means the tool ran but returned an error.
 
-### 4.3 Replay tier semantics
+The CLI emits a recognizable refusal message when `--disallowedTools` blocks a call: the `tool_result.content` text starts with the literal phrase "Permission denied" or "tool not allowed" (per CLI behavior; the adapter recognizes via case-insensitive substring match on the literal phrases). When that match holds AND `is_error: true`, the adapter sets `outcome: 'policy-refused'`. Otherwise `is_error: true` -> `'tool-error'`. `is_error: false` -> `'success'`.
+
+If the CLI changes its refusal-message wording, the adapter falls back to `'tool-error'` for any unrecognized error string. This is a graceful degradation: the CR-substrate spec's only hard requirement is "tool denials surface as a refusal the agent can reason about" (which the CLI already does inside its own loop); the adapter's substrate-side classification of `policy-refused` vs `tool-error` is best-effort observability, not a security boundary.
+
+### 4.3 Blob threshold routing
+
+`input.blobThreshold` (already clamped via `clampBlobThreshold`) is the inline-vs-blob cutoff in bytes for any UTF-8-encoded payload (turn output, tool args, tool result). Each redacted payload over threshold goes through `blobStore.put()`; the atom carries the resulting `BlobRef` instead of inline content (`{ref: BlobRef}` form of the discriminated union).
+
+### 4.4 Replay tier semantics
 
 `input.replayTier` is captured on the session atom's `replay_tier`. The adapter implements:
 - `best-effort`: same as content-addressed today; no canon snapshot.
@@ -176,8 +230,8 @@ Future-strict will compute a canon-snapshot hash at session start and pin it via
 
 ```ts
 {
-  tracks_cost: true,                   // CLI emits total_cost_usd
-  supports_signal: true,               // we forward SIGTERM
+  tracks_cost: true,                   // stream-json `result` envelope emits `cost_usd`
+  supports_signal: true,               // we forward SIGTERM (then SIGKILL after killGracePeriodMs)
   classify_failure: classifyClaudeCliFailure,
 }
 ```
@@ -211,7 +265,7 @@ Future-strict will compute a canon-snapshot hash at session start and pin it via
 - **Redaction is mandatory at write time.** Every payload (turn output, tool args, tool result) goes through `input.redactor.redact()` BEFORE atom write or BlobStore put. A redactor crash is a substrate violation: rethrow as `kind: 'error'` with `failure: catastrophic`. Never write unredacted content.
 - **Commit SHA is unverified.** The executor (PR2) already documents that the adapter-supplied `commitSha` is unverified by the executor; that downstream check is its responsibility, not the adapter's.
 - **Stream-JSON parser is defensive.** Malformed lines are logged + skipped, never thrown. The CLI may emit non-JSON output during initialization (warnings, stderr-redirected messages); the parser tolerates it.
-- **No prompt-injection countermeasures.** A malicious `task.questionPrompt` could attempt to instruct the agent to exfil. Substrate-level threat: not the adapter's job. The redactor catches secret-shaped exfil at write time; the workspace boundary catches FS exfil; tool-policy catches tool exfil. Defense is layered.
+- **No prompt-injection countermeasures.** A malicious `task.questionPrompt` could attempt to instruct the agent to exfil. Substrate-level threat: not the adapter's job. The redactor catches secret-shaped exfil at write time; the workspace boundary catches FS exfil (the adapter sets `cwd: workspace.path` on the subprocess so the CLI's relative path operations resolve inside the worktree; absolute paths supplied by the agent are still reachable but the existing diff-based-executor `readTargetContents` boundary check applies downstream); tool-policy catches tool exfil. Defense is layered.
 - **Argv injection.** All argv values are passed via execa as separate array elements, never shell-interpolated. Tool names and `disallowedTools` are joined with `' '` (the CLI's documented separator) but never shell-escaped because execa doesn't run a shell.
 
 ### 7.2 Pre-push checklist parity
@@ -251,7 +305,7 @@ Behind `process.env.CLAUDE_CODE_INTEGRATION_TEST` (skipped by default), runs `cl
 
 ### 8.4 End-to-end on `MemoryHost`
 
-Extend `test/e2e/agentic-actor-loop-chain.test.ts` with one test that uses the real adapter (with `execImpl` stub) instead of the inline `stubAdapter()`. Validates the full chain: plan → AgenticCodeAuthorExecutor → real adapter (stubbed CLI) → atoms in MemoryHost → session-tree projection → dispatched PR result.
+Extend `test/e2e/agentic-actor-loop-chain.test.ts` with one test that uses the real adapter (with `execImpl` stub) instead of the inline `stubAdapter()`. Validates the full chain: plan -> AgenticCodeAuthorExecutor -> real adapter (stubbed CLI) -> atoms in MemoryHost -> session-tree projection -> dispatched PR result. The test asserts that emitted `agent-turn` atoms match the canonical `AgentTurnMeta` shape exactly (`tool` not `tool_name`, `args` / `result` as `{inline} | {ref}`, `outcome` in `'success' | 'tool-error' | 'policy-refused'`) so a future refactor cannot silently drift back to a non-canonical shape.
 
 ---
 
