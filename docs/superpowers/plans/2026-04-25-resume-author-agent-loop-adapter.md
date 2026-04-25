@@ -853,7 +853,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(resume-author): BlobShippe
 - Fallback runtime check: defensive `if (!opts.fallback) throw` at construction.
 - Fallback's synchronous throw is NOT caught (per spec §6.4); propagates as wrapper's throw.
 - Capabilities mirror the fallback's (delegated). Wrapper does NOT advertise different `tracks_cost` / `supports_signal` / `classify_failure`.
-- Both attempts (resume + fallback) get separate agent-session atoms; resumed atom has `extra.fallback_invoked: true` if fallback was triggered for audit clarity.
+- Both attempts (resume + fallback) get separate agent-session atoms; the underlying adapter writes one per call. On success, the wrapper patches `extra.resumed_from_atom_id` + `extra.resume_strategy_used` for audit correlation.
 
 - [ ] **Step 1: Write failing tests on MemoryHost**
 
@@ -867,7 +867,7 @@ describe('ResumeAuthorAgentLoopAdapter', () => {
   it('strategy resolves but resume throws → delegates to fallback; both atoms recorded', async () => {});
   it('preparation closure runs before resume spawn', async () => {});
   it('extra.resumed_from_atom_id and extra.resume_strategy_used populated on success', async () => {});
-  it('extra.fallback_invoked: true on resumed atom when fallback was triggered', async () => {});
+  it('extra.resumed_from_atom_id + resume_strategy_used set on success path', async () => {});
   it('throws at construction when fallback is undefined', () => {});
 });
 ```
