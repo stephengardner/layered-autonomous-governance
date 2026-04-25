@@ -78,6 +78,17 @@ export interface DefaultExecutorConfig {
    * undefined so real file content flows through.
    */
   readonly readFileFn?: (absolutePath: string) => Promise<string>;
+  /**
+   * How many drafter attempts the executor will make before giving
+   * up. The retry loop self-corrects on diff-apply failures by
+   * passing the prior diff + git's rejection reason back into the
+   * drafter's questionPrompt; the LLM then produces a corrected
+   * diff. Defaults to 3 attempts -- enough to absorb the empirical
+   * 10-30% LLM diff-drift rate without spending tokens unboundedly.
+   * Tests can shrink to 1 to assert no-retry behaviour or grow to
+   * exercise multi-retry recovery.
+   */
+  readonly maxDraftAttempts?: number;
 }
 
 export function buildDefaultCodeAuthorExecutor(
@@ -88,6 +99,18 @@ export function buildDefaultCodeAuthorExecutor(
   const remote = config.remote ?? 'origin';
   const draft = config.draft ?? true;
   const nonce = config.nonce ?? (() => randomBytes(3).toString('hex'));
+  // Fail-fast on a malformed maxDraftAttempts so a non-positive or
+  // non-integer value cannot silently land in the unreachable-branch
+  // generic error at the bottom of the loop. The retry budget is a
+  // contract value; if a caller supplies 0, NaN, or a float, that
+  // is a config bug, not a framework one.
+  const maxDraftAttemptsRaw = config.maxDraftAttempts ?? 3;
+  if (!Number.isInteger(maxDraftAttemptsRaw) || maxDraftAttemptsRaw < 1) {
+    throw new Error(
+      `DefaultExecutorConfig.maxDraftAttempts must be a positive integer; got ${String(config.maxDraftAttempts)}`,
+    );
+  }
+  const maxDraftAttempts: number = maxDraftAttemptsRaw;
 
   return {
     async execute(inputs): Promise<CodeAuthorExecutorResult> {
@@ -101,7 +124,13 @@ export function buildDefaultCodeAuthorExecutor(
       // and collapse repeats so a weird id does not fail at the
       // `git checkout -b` step downstream.
       const safeIdForRef = sanitizeGitRefComponent(planId);
-      const branchName = `${branchPrefix}${safeIdForRef}-${nonce()}`;
+      // Fresh branch name per attempt: each retry creates a new
+      // branch (by re-rolling the nonce inside the loop) so a
+      // previous attempt's `git checkout -b <name>` lingering in
+      // local refs cannot cause "branch already exists" on retry.
+      // Local branches that never push are harmless garbage; the
+      // alternative (delete + recreate) adds a git op and a new
+      // failure mode for marginal benefit.
       const meta = plan.metadata as Record<string, unknown>;
       // Resolution order for target paths:
       //   1. plan.metadata.target_paths (structured path, authoritative)
@@ -138,62 +167,136 @@ export function buildDefaultCodeAuthorExecutor(
       const readFn = config.readFileFn ?? ((p: string) => readFile(p, 'utf8'));
       const fileContents = await readTargetContents(targetPaths, config.repoDir, readFn);
 
+      // Drafter + apply-branch retry loop. The drafter (LLM) emits
+      // unified diffs, which is intrinsically lossy: line-count
+      // arithmetic in `@@ -X,Y +A,B @@` headers must match the file
+      // byte-for-byte and any drift produces "corrupt patch at line
+      // N" or "patch does not apply". Real LLM output drifts on
+      // ~10-30% of attempts even with a tight prompt (validated
+      // empirically against this codebase's YAML / Markdown /
+      // typescript edits). The framework treats that as routine and
+      // retries with a self-correction prompt, mirroring how a human
+      // engineer would react to `git apply` rejection: read the
+      // error, look at the diff, fix it.
+      //
+      // Failure mode the loop retries today:
+      //   - apply-branch/diff-apply-failed (LLM diff quality;
+      //     ~10-30% empirical drift rate even with a tight prompt)
+      // Non-retryable: every drafter error (including transient
+      // llm-call-failed; the catch on DrafterError returns
+      // immediately), dirty-worktree, fetch-failed, push-failed,
+      // pr-creation/* -- those are environment / auth issues that
+      // persist across retries. If transient LLM failures should
+      // self-heal in a future iteration, the catch on DrafterError
+      // needs to fall through (with attempt-bound + backoff); the
+      // current single-shot behaviour for llm-call-failed is the
+      // committed contract.
+      const MAX_DRAFT_ATTEMPTS = maxDraftAttempts;
       let draftResult;
-      try {
-        draftResult = await draftCodeChange(config.host, {
-          plan,
-          fence,
-          targetPaths,
-          model: config.model,
-          ...(successCriteria !== undefined ? { successCriteria } : {}),
-          ...(config.disallowedTools !== undefined ? { disallowedTools: config.disallowedTools } : {}),
-          ...(signal !== undefined ? { signal } : {}),
-          ...(fileContents.length > 0 ? { fileContents } : {}),
-          ...(questionPrompt !== undefined && questionPrompt.length > 0
-            ? { questionPrompt }
-            : {}),
+      let gitResult;
+      let branchName: string | undefined;
+      let lastApplyError: string | null = null;
+      let lastDraftDiff: string | null = null;
+      let attempt = 0;
+      while (attempt < MAX_DRAFT_ATTEMPTS) {
+        attempt += 1;
+        // Fresh nonce -> fresh branch name per attempt; see comment
+        // above.
+        branchName = `${branchPrefix}${safeIdForRef}-${nonce()}`;
+        const augmentedQuestionPrompt = buildSelfCorrectingPrompt({
+          base: questionPrompt,
+          previousDiff: lastDraftDiff,
+          previousError: lastApplyError,
         });
-      } catch (err) {
-        if (err instanceof DrafterError) {
+        try {
+          draftResult = await draftCodeChange(config.host, {
+            plan,
+            fence,
+            targetPaths,
+            model: config.model,
+            ...(successCriteria !== undefined ? { successCriteria } : {}),
+            ...(config.disallowedTools !== undefined ? { disallowedTools: config.disallowedTools } : {}),
+            ...(signal !== undefined ? { signal } : {}),
+            ...(fileContents.length > 0 ? { fileContents } : {}),
+            ...(augmentedQuestionPrompt !== undefined && augmentedQuestionPrompt.length > 0
+              ? { questionPrompt: augmentedQuestionPrompt }
+              : {}),
+          });
+        } catch (err) {
+          // Drafter errors are not retried (the catch returns
+          // immediately); appending the attempt counter would be
+          // semantically inconsistent for callers reading
+          // result.reason. The attempt loop only retries on
+          // diff-apply failures (the GitOpsError branch below).
+          if (err instanceof DrafterError) {
+            return {
+              kind: 'error',
+              stage: `drafter/${err.reason}`,
+              reason: err.message,
+            };
+          }
           return {
             kind: 'error',
-            stage: `drafter/${err.reason}`,
-            reason: err.message,
+            stage: 'drafter/unexpected',
+            reason: err instanceof Error ? err.message : String(err),
           };
         }
-        return {
-          kind: 'error',
-          stage: 'drafter/unexpected',
-          reason: err instanceof Error ? err.message : String(err),
-        };
+
+        try {
+          gitResult = await applyDraftBranch({
+            diff: draftResult.diff,
+            repoDir: config.repoDir,
+            branchName,
+            baseBranch,
+            commitMessage: buildCommitMessage(plan, draftResult.notes),
+            authorIdentity: config.gitIdentity,
+            stagePaths: draftResult.touchedPaths,
+            remote,
+            ...(signal !== undefined ? { signal } : {}),
+            ...(config.execImpl !== undefined ? { execImpl: config.execImpl } : {}),
+          });
+          // Apply succeeded; break out of the retry loop and
+          // continue to PR creation.
+          break;
+        } catch (err) {
+          if (err instanceof GitOpsError) {
+            // Only re-attempt the drafter when the failure is a
+            // diff-quality issue. Environment-level failures
+            // (dirty worktree, fetch denied, push rejected) won't
+            // change between attempts and re-running the LLM
+            // wastes tokens.
+            const isDiffQualityError = err.reason === 'diff-apply-failed';
+            if (!isDiffQualityError || attempt >= MAX_DRAFT_ATTEMPTS) {
+              return {
+                kind: 'error',
+                stage: `apply-branch/${err.reason}`,
+                reason: `${err.message} (stage=${err.stage}, attempt ${attempt}/${MAX_DRAFT_ATTEMPTS})`,
+              };
+            }
+            // Capture the failure shape so the next drafter call
+            // can self-correct with the diff git rejected + the
+            // exact rejection reason.
+            lastApplyError = `${err.message} (stage=${err.stage})`;
+            lastDraftDiff = draftResult.diff;
+            continue;
+          }
+          return {
+            kind: 'error',
+            stage: 'apply-branch/unexpected',
+            reason: err instanceof Error ? err.message : String(err),
+          };
+        }
       }
 
-      let gitResult;
-      try {
-        gitResult = await applyDraftBranch({
-          diff: draftResult.diff,
-          repoDir: config.repoDir,
-          branchName,
-          baseBranch,
-          commitMessage: buildCommitMessage(plan, draftResult.notes),
-          authorIdentity: config.gitIdentity,
-          stagePaths: draftResult.touchedPaths,
-          remote,
-          ...(signal !== undefined ? { signal } : {}),
-          ...(config.execImpl !== undefined ? { execImpl: config.execImpl } : {}),
-        });
-      } catch (err) {
-        if (err instanceof GitOpsError) {
-          return {
-            kind: 'error',
-            stage: `apply-branch/${err.reason}`,
-            reason: `${err.message} (stage=${err.stage})`,
-          };
-        }
+      if (gitResult === undefined || draftResult === undefined) {
+        // Unreachable under normal flow: the loop either breaks on
+        // success or returns an error. This guard exists so the
+        // type checker proves both are defined for the createDraftPr
+        // call below; if it ever fires, it is a true bug.
         return {
           kind: 'error',
           stage: 'apply-branch/unexpected',
-          reason: err instanceof Error ? err.message : String(err),
+          reason: 'drafter retry loop exited without a result and without a typed error',
         };
       }
 
@@ -254,6 +357,55 @@ export function buildDefaultCodeAuthorExecutor(
       };
     },
   };
+}
+
+/**
+ * Compose the drafter's `questionPrompt` for one attempt. On the
+ * first attempt (no previous diff/error) returns the operator's
+ * original prompt unchanged; on retries appends a structured
+ * SELF-CORRECTION block telling the LLM what its prior diff was
+ * and exactly what `git apply` rejected. This is the one place
+ * the framework leans on the LLM to fix its own output -- the
+ * prompt is precise enough that a competent LLM converges within
+ * the default 3 attempts on real diff-drift cases.
+ *
+ * Exported for unit tests; the wider executor uses it inline.
+ */
+export function buildSelfCorrectingPrompt({
+  base,
+  previousDiff,
+  previousError,
+}: {
+  readonly base: string | undefined;
+  readonly previousDiff: string | null;
+  readonly previousError: string | null;
+}): string | undefined {
+  if (previousDiff === null && previousError === null) {
+    return base;
+  }
+  const sections: string[] = [];
+  if (typeof base === 'string' && base.length > 0) {
+    sections.push('ORIGINAL_REQUEST:');
+    sections.push(base);
+    sections.push('');
+  }
+  sections.push('PREVIOUS_ATTEMPT_REJECTED_BY_GIT_APPLY:');
+  sections.push(previousError ?? '(no error captured)');
+  sections.push('');
+  sections.push('PREVIOUS_DIFF (verbatim, do not repeat):');
+  sections.push('```diff');
+  sections.push(previousDiff ?? '(no diff captured)');
+  sections.push('```');
+  sections.push('');
+  sections.push(
+    'Produce a CORRECTED unified diff. Pay close attention to: '
+    + '(1) the `@@ -X,Y +A,B @@` hunk header line counts must EXACTLY match the file content shown in file_contents; '
+    + '(2) every context line must match the source byte-for-byte (whitespace, indentation, trailing characters); '
+    + '(3) no BOM, no stray invisible characters; '
+    + '(4) line endings consistent with the source file. '
+    + 'If you are uncertain about line counts, prefer a smaller, tighter hunk over a larger speculative one.',
+  );
+  return sections.join('\n');
 }
 
 function extractStringArray(

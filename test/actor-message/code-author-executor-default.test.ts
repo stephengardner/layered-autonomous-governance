@@ -20,7 +20,10 @@ import type { execa } from 'execa';
 import { createMemoryHost, type MemoryHost } from '../../src/adapters/memory/index.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
 import type { GhClient } from '../../src/external/github/index.js';
-import { buildDefaultCodeAuthorExecutor } from '../../src/actor-message/executor-default.js';
+import {
+  buildDefaultCodeAuthorExecutor,
+  buildSelfCorrectingPrompt,
+} from '../../src/runtime/actor-message/code-author-executor-default.js';
 import {
   DRAFT_SCHEMA,
   DRAFT_SYSTEM_PROMPT,
@@ -884,5 +887,224 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     });
     const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-1' as AtomId });
     expect(result.kind).toBe('dispatched');
+  });
+
+  it('drafter retry: diff-apply-failed on first attempt, succeeds on second (self-correction)', async () => {
+    // The LLM produces unified diffs; line-count arithmetic in
+    // `@@ -X,Y +A,B @@` headers must match the file byte-for-byte.
+    // Empirically ~10-30% of attempts produce a malformed diff
+    // (drift, stray BOM, etc.). The executor must self-correct
+    // by re-prompting the drafter with the prior diff + git's
+    // rejection reason, NOT bail at the first failure.
+    const plan = mkPlan('plan-retry-success', '# plan\n\ncontent', {
+      target_paths: ['README.md'],
+      title: 'Retry happy path',
+    });
+    // Register two distinct drafter responses: the first is a
+    // malformed diff (will reject), the second a valid one (will
+    // succeed). Different DATA fingerprints because the second call
+    // includes the retry/self-correction questionPrompt.
+    const baseData = {
+      plan_id: String(plan.id),
+      plan_title: 'Retry happy path',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: { max_usd_per_pr: 10, required_checks: ['Node 22 on ubuntu-latest'] },
+    };
+    const malformedDiff = '--- a/README.md\n+++ b/README.md\nGARBAGE\n';
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, baseData, {
+      diff: malformedDiff,
+      notes: 'first try',
+      confidence: 0.7,
+    });
+
+    // git replies: first apply-check fails (exit 1), then second
+    // attempt's full happy-path replies. The git-ops sequence per
+    // attempt is: status, fetch, checkout-base, checkout-b,
+    // apply-check (fails on attempt 1), reset (post-fail cleanup,
+    // not always needed), apply, add, commit, push.
+    // Look at git-ops.ts for the exact sequence; the retry loop
+    // re-enters at the top so each attempt repeats fetch+checkout.
+    // Build replies for: attempt 1 (status + fetch + checkout-base +
+    // checkout-b + apply-check FAIL) then attempt 2 (full happy).
+    const replies = [
+      // attempt 1
+      { exitCode: 0 }, // status
+      { exitCode: 0 }, // fetch
+      { exitCode: 0 }, // checkout base
+      { exitCode: 0 }, // checkout -b
+      { exitCode: 1, stderr: 'error: corrupt patch at line 3' }, // apply --check fails
+      // attempt 2
+      ...GIT_HAPPY_REPLIES,
+    ];
+    const { impl: execImpl } = stubGitExeca(replies);
+
+    // Compute the EXACT self-correction prompt the executor will
+    // emit on retry by calling its own helper. Plan metadata
+    // carries no original question_prompt (base=undefined); the
+    // git-ops stub returns exit 1 at the `git apply` step (not the
+    // pre-check), so the error string mirrors the apply stage.
+    const exactRetryPrompt = buildSelfCorrectingPrompt({
+      base: undefined,
+      previousDiff: malformedDiff,
+      previousError: 'git apply failed after successful --check: error: corrupt patch at line 3 (stage=apply)',
+    });
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, { ...baseData, question_prompt: exactRetryPrompt }, {
+      diff: VALID_DIFF,
+      notes: 'second try (corrected)',
+      confidence: 0.92,
+    });
+
+    const executor = buildDefaultCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 42, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'abc',
+      execImpl,
+    });
+
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-1' as AtomId });
+    expect(result.kind).toBe('dispatched');
+    if (result.kind !== 'dispatched') throw new Error('unreachable');
+    // Confidence comes from the SECOND drafter response -- the
+    // self-corrected one. Verifies the executor used the retry
+    // result, not the first-attempt result that got rejected.
+    expect(result.confidence).toBeCloseTo(0.92);
+  });
+
+  it('drafter retry: gives up after maxDraftAttempts and surfaces typed error', async () => {
+    // If the LLM keeps producing malformed diffs, the executor
+    // must give up cleanly with a typed apply-branch error rather
+    // than spinning indefinitely.
+    const plan = mkPlan('plan-retry-exhaust', '# plan', {
+      target_paths: ['README.md'],
+      title: 'Retry exhaustion',
+    });
+    const baseData = {
+      plan_id: String(plan.id),
+      plan_title: 'Retry exhaustion',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: { max_usd_per_pr: 10, required_checks: ['Node 22 on ubuntu-latest'] },
+    };
+    const malformedDiff = '--- a/README.md\n+++ b/README.md\nBROKEN\n';
+    // Single attempt, drafter returns malformed.
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, baseData, {
+      diff: malformedDiff,
+      notes: 'attempt 1',
+      confidence: 0.5,
+    });
+
+    // git: status, fetch, checkout, checkout-b, apply-check fails.
+    const replies = [
+      { exitCode: 0 },
+      { exitCode: 0 },
+      { exitCode: 0 },
+      { exitCode: 0 },
+      { exitCode: 1, stderr: 'error: corrupt patch at line 3' },
+    ];
+    const { impl: execImpl } = stubGitExeca(replies);
+
+    const executor = buildDefaultCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 1, html_url: '', url: '', node_id: '', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'abc',
+      execImpl,
+      maxDraftAttempts: 1, // force giving up after 1 attempt
+    });
+
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-1' as AtomId });
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') throw new Error('unreachable');
+    expect(result.stage).toBe('apply-branch/diff-apply-failed');
+    expect(result.reason).toContain('attempt 1/1');
+  });
+
+  it('drafter retry: dirty-worktree on first attempt does NOT retry (env error, not LLM)', async () => {
+    // Only diff-quality errors (diff-apply-failed) trigger retry.
+    // dirty-worktree, fetch-failed, push-failed, etc. won't change
+    // between LLM calls and re-running wastes tokens.
+    const plan = mkPlan('plan-no-retry-dirty', '# plan', {
+      target_paths: ['README.md'],
+      title: 'No retry on dirty',
+    });
+    registerDrafterResponse(host, plan, ['README.md'], {
+      diff: VALID_DIFF, // would succeed if applied
+      notes: 'ok',
+      confidence: 0.9,
+    });
+
+    // git status returns dirty -> dirty-worktree throws on first
+    // attempt; should NOT retry.
+    const { impl: execImpl, calls } = stubGitExeca([
+      { exitCode: 0, stdout: ' M src/foo.ts\n' },
+    ]);
+    const executor = buildDefaultCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 1, html_url: '', url: '', node_id: '', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'abc',
+      execImpl,
+      maxDraftAttempts: 3, // generous budget; should still fail-fast
+    });
+
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-1' as AtomId });
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') throw new Error('unreachable');
+    expect(result.stage).toBe('apply-branch/dirty-worktree');
+    // Only 1 git call before the throw -- proves no retry.
+    expect(calls.length).toBe(1);
+  });
+});
+
+describe('buildSelfCorrectingPrompt', () => {
+  it('returns base unchanged on first attempt (no previous diff/error)', async () => {
+    expect(
+      buildSelfCorrectingPrompt({ base: 'do the thing', previousDiff: null, previousError: null }),
+    ).toBe('do the thing');
+    expect(
+      buildSelfCorrectingPrompt({ base: undefined, previousDiff: null, previousError: null }),
+    ).toBe(undefined);
+  });
+
+  it('appends a SELF-CORRECTION block on retry', async () => {
+    const out = buildSelfCorrectingPrompt({
+      base: 'fix the README',
+      previousDiff: '--- a/README.md\n+++ b/README.md\nBROKEN',
+      previousError: 'error: corrupt patch at line 3 (stage=apply-check)',
+    });
+    expect(out).toContain('ORIGINAL_REQUEST:');
+    expect(out).toContain('fix the README');
+    expect(out).toContain('PREVIOUS_ATTEMPT_REJECTED_BY_GIT_APPLY:');
+    expect(out).toContain('error: corrupt patch at line 3');
+    expect(out).toContain('PREVIOUS_DIFF');
+    expect(out).toContain('BROKEN');
+    expect(out).toContain('Produce a CORRECTED unified diff');
+    expect(out).toContain('@@ -X,Y +A,B @@');
+  });
+
+  it('omits ORIGINAL_REQUEST section when base prompt is undefined', async () => {
+    const out = buildSelfCorrectingPrompt({
+      base: undefined,
+      previousDiff: 'd',
+      previousError: 'e',
+    });
+    expect(out).not.toContain('ORIGINAL_REQUEST:');
+    expect(out).toContain('PREVIOUS_ATTEMPT_REJECTED_BY_GIT_APPLY:');
   });
 });
