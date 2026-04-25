@@ -306,3 +306,16 @@ describe('ClaudeCodeAgentLoopAdapter -- budget guards', () => {
     expect(result.kind).toBe('budget-exhausted');
   });
 });
+
+describe('ClaudeCodeAgentLoopAdapter -- signal handling', () => {
+  it('returns kind=aborted, failure=catastrophic when signal is already aborted at entry', async () => {
+    const host = createMemoryHost();
+    const ac = new AbortController();
+    ac.abort();
+    const stdoutLines = [JSON.stringify({ type: 'result', cost_usd: 0, is_error: false })];
+    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
+    const result = await adapter.run(mkInput(host, ac.signal));
+    expect(result.kind).toBe('aborted');
+    expect(result.failure?.kind).toBe('catastrophic');
+  });
+});

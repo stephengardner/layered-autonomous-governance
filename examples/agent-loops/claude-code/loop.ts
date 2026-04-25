@@ -55,6 +55,42 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
   constructor(private readonly opts: ClaudeCodeAgentLoopOptions = {}) {}
 
   async run(input: AgentLoopInput): Promise<AgentLoopResult> {
+    // Fast-path: signal already aborted before we spawn anything.
+    // We still write a minimal session atom (audit trail) but skip
+    // the subprocess entirely.
+    if (input.signal?.aborted === true) {
+      const startedAt = new Date().toISOString();
+      const sessionId = `agent-session-${randomBytes(6).toString('hex')}` as AtomId;
+      const sessionAtom: Atom = mkAtom(sessionId, 'agent-session', input.principal, [], {
+        agent_session: {
+          model_id: 'claude-opus-4-7',
+          adapter_id: 'claude-code-agent-loop',
+          workspace_id: input.workspace.id,
+          started_at: startedAt,
+          completed_at: startedAt,
+          terminal_state: 'aborted',
+          replay_tier: input.replayTier,
+          budget_consumed: { turns: 0, wall_clock_ms: 0 },
+          failure: {
+            kind: 'catastrophic',
+            reason: 'signal already aborted at entry',
+            stage: 'signal',
+          },
+        } satisfies AgentSessionMeta,
+      });
+      await input.host.atoms.put(sessionAtom);
+      return {
+        kind: 'aborted',
+        sessionAtomId: sessionId,
+        turnAtomIds: [],
+        failure: {
+          kind: 'catastrophic',
+          reason: 'signal already aborted at entry',
+          stage: 'signal',
+        },
+      };
+    }
+
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
     const sessionId = `agent-session-${randomBytes(6).toString('hex')}` as AtomId;
@@ -106,6 +142,23 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       }, input.budget.max_wall_clock_ms);
       wallClockTimer.unref();
 
+      // Mid-run AbortSignal forwarding. Mirror the wall-clock pattern:
+      // SIGTERM first, then SIGKILL after killGracePeriodMs as a hard
+      // fallback. Set a flag so the post-loop classifier can map this
+      // to kind: 'aborted' instead of relying on the exitCode.
+      let signalAborted = false;
+      let killTimerHard: NodeJS.Timeout | null = null;
+      const onAbort = () => {
+        signalAborted = true;
+        try { proc.kill('SIGTERM'); } catch { /* already dead */ }
+        const grace = this.opts.killGracePeriodMs ?? 5000;
+        killTimerHard = setTimeout(() => {
+          try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+        }, grace);
+        killTimerHard.unref();
+      };
+      input.signal?.addEventListener('abort', onAbort, { once: true });
+
       // The adapter does not override stdio, so execa always exposes
       // `proc.stdout` as a Readable; the non-null assertion is justified.
       const rl = createInterface({ input: proc.stdout!, crlfDelay: Infinity });
@@ -156,14 +209,14 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
         // The subprocess has already been signalled (SIGTERM); we just
         // need to exit cooperatively so the post-loop classifier can
         // map the trip to the right `kind` + `failure`.
-        if (turnsExhausted || wallClockExpired) break;
+        if (turnsExhausted || wallClockExpired || signalAborted) break;
         // Parser returns ReadonlyArray<StreamJsonEvent>: zero-or-many
         // events per line so multi-block assistant messages (text +
         // tool_use, parallel tool_use) and parallel tool_result blocks
         // are not lost. Iterate per-line.
         const events = parseStreamJsonLine(rawLine);
         for (const ev of events) {
-          if (turnsExhausted || wallClockExpired) break;
+          if (turnsExhausted || wallClockExpired || signalAborted) break;
           if (ev.kind === 'system') {
             if (!pendingFirstTurnOpened) {
               currentTurnAtomId = await openPlaceholderTurn(currentTurnIndex, prompt);
@@ -301,7 +354,26 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       // holds `proc` in memory until the timer fires.
       clearTimeout(wallClockTimer);
 
-      if (wallClockExpired) {
+      // Remove the abort listener and clear the SIGKILL fallback timer.
+      // Mirrors the wall-clock cleanup discipline: even with .unref(),
+      // the listener + timer closures hold `proc` in memory and would
+      // leak on a long-lived host across many invocations.
+      if (input.signal !== undefined) {
+        input.signal.removeEventListener('abort', onAbort);
+      }
+      if (killTimerHard !== null) clearTimeout(killTimerHard);
+
+      if (signalAborted) {
+        // Highest precedence: operator-explicit "stop NOW". Beats
+        // wall-clock + max-turns because the caller's intent is
+        // explicit cancellation, not an internal budget trip.
+        kind = 'aborted';
+        failure = {
+          kind: 'catastrophic',
+          reason: 'caller cancelled',
+          stage: 'signal',
+        };
+      } else if (wallClockExpired) {
         // Catastrophic: the subprocess hung past max_wall_clock_ms.
         // Distinguished from max_turns (structural) so postmortems can
         // separate "agent ran too long" from "agent hit turn budget".
