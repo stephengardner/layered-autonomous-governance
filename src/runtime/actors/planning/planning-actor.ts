@@ -41,6 +41,7 @@ import type {
   Reflection,
 } from '../types.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../../types.js';
+import type { BlastRadius } from '../../actor-message/intent-approve.js';
 import { aggregateRelevantContext } from './aggregate-context.js';
 import type { AggregateContextOptions } from './aggregate-context.js';
 import type {
@@ -183,7 +184,7 @@ function buildQuestionMetadata(
 export interface DelegationDescriptor {
   readonly sub_actor_principal_id: PrincipalId;
   readonly reason?: string;
-  readonly implied_blast_radius?: string;
+  readonly implied_blast_radius?: BlastRadius;
 }
 
 /**
@@ -201,25 +202,28 @@ function buildDelegationMetadata(
   delegateTo: PlanningActorOptions['delegateTo'],
   descriptor?: DelegationDescriptor,
 ): Record<string, unknown> {
-  // Full descriptor takes precedence when supplied.
-  if (descriptor !== undefined) {
-    if (
-      typeof descriptor.sub_actor_principal_id !== 'string' ||
-      descriptor.sub_actor_principal_id.trim().length === 0
-    ) {
-      return {};
-    }
+  // Full descriptor takes precedence when supplied AND its
+  // sub_actor_principal_id is a non-empty string. A descriptor
+  // present with an unusable principal id (whitespace, missing,
+  // wrong type) is treated like "no descriptor"; control flows
+  // through to the delegateTo fallback below so the orchestrator's
+  // hint still wins over an empty LLM emission.
+  const descriptorUsable =
+    descriptor !== undefined
+    && typeof descriptor.sub_actor_principal_id === 'string'
+    && descriptor.sub_actor_principal_id.trim().length > 0;
+  if (descriptorUsable) {
     const out: Record<string, unknown> = {
-      sub_actor_principal_id: descriptor.sub_actor_principal_id,
+      sub_actor_principal_id: descriptor!.sub_actor_principal_id,
     };
-    if (typeof descriptor.reason === 'string' && descriptor.reason.trim().length > 0) {
-      out.reason = descriptor.reason;
+    if (typeof descriptor!.reason === 'string' && descriptor!.reason.trim().length > 0) {
+      out.reason = descriptor!.reason;
     }
     if (
-      typeof descriptor.implied_blast_radius === 'string' &&
-      descriptor.implied_blast_radius.trim().length > 0
+      typeof descriptor!.implied_blast_radius === 'string'
+      && descriptor!.implied_blast_radius.trim().length > 0
     ) {
-      out.implied_blast_radius = descriptor.implied_blast_radius;
+      out.implied_blast_radius = descriptor!.implied_blast_radius;
     }
     return { delegation: out };
   }

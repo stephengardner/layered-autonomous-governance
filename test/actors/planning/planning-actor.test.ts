@@ -426,6 +426,44 @@ describe('PlanningActor', () => {
     });
   });
 
+  it('plan.delegation with whitespace sub_actor_principal_id falls back to options.delegateTo', async () => {
+    // Regression for the buildDelegationMetadata fall-through: when
+    // PLAN_DRAFT emits a descriptor whose sub_actor_principal_id is
+    // whitespace (degenerate LLM output), the orchestrator's
+    // delegateTo hint must still win. Pre-fix the helper returned {}
+    // immediately on a whitespace descriptor and never tried the
+    // fallback, leaving the plan with no delegation key and no path
+    // to dispatch.
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'LLM emitted a whitespace descriptor; orchestrator hint should win',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [
+          planOne({
+            title: 'Plan Whitespace-Descriptor',
+            delegation: {
+              sub_actor_principal_id: '   ',
+              reason: 'whitespace fixture',
+              implied_blast_radius: 'tooling',
+            },
+          }),
+        ],
+      ),
+      delegateTo: 'code-author' as PrincipalId,
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const all = await host.atoms.query({ type: ['plan'] }, 10);
+    const plan = all.atoms[0]!;
+    expect(plan.metadata.delegation).toEqual({ sub_actor_principal_id: 'code-author' });
+  });
+
   it('delegateTo: whitespace-only string is omitted (empty-guard parity)', async () => {
     const host = await seedHost();
     const actor = new PlanningActor({
