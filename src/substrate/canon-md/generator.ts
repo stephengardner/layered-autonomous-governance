@@ -63,6 +63,12 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   'plan-approval-vote': 'Plan Approval Votes',
   'plan-merge-settled': 'Plan Merge Settlements',
   'operator-intent': 'Operator Intent',
+  // Agent-session and agent-turn are L1 audit/replay records, not
+  // canonical knowledge; the canon applier filters to L3 and never
+  // renders these. Included for deterministic ordering if a caller
+  // explicitly dumps non-L3 atoms (e.g. a session-replay debugger).
+  'agent-session': 'Agent Sessions',
+  'agent-turn': 'Agent Turns',
 };
 
 export interface RenderOptions {

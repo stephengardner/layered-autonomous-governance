@@ -24,6 +24,15 @@ export type AuditId = string & { readonly __brand: 'AuditId' };
 export type NotificationHandle = string & { readonly __brand: 'NotificationHandle' };
 export type RegistrationId = string & { readonly __brand: 'RegistrationId' };
 
+/**
+ * Content-addressed reference for the agentic-actor-loop `BlobStore`.
+ * Format: `sha256:<64-hex>`. Constructed via `blobRefFromHash` (added in
+ * a later task of PR1). Branded so callers cannot accidentally pass
+ * arbitrary strings where a `BlobRef` is required; the brand exists at
+ * type-check time only and has no runtime representation.
+ */
+export type BlobRef = string & { readonly __brand: 'BlobRef' };
+
 /** Dense vector of floats. Length is adapter-determined. */
 export type Vector = ReadonlyArray<number>;
 
@@ -85,7 +94,22 @@ export type AtomType =
   // allowlists live in policy atoms, not this type. Distinct from
   // `directive` (L3 canon, persistent governance) and `observation`
   // (passive record): this is an L1 authorizing act that expires.
-  | 'operator-intent';
+  | 'operator-intent'
+  // Agentic actor loop substrate (PR1 of agentic-actor-loop spec).
+  // `agent-session`: one per agent run; principal-bound; carries the
+  // session-level metadata (model, adapter, workspace, terminal
+  // state, replay tier, budget, optional failure record). Lifecycle
+  // is single-shot: written once when the session terminates.
+  // `agent-turn`: one per LLM call within a session; carries the
+  // turn-scoped metadata (input/output blob refs or inline payloads,
+  // tool-call ledger, latency, optional failure record). Each turn
+  // atom's `provenance.derived_from` points at the parent
+  // `agent-session` atom for taint propagation, AND
+  // `metadata.agent_turn.session_atom_id` carries the same pointer
+  // for projection-scoped queries (the two pointers are required
+  // to agree; a future validator may enforce this).
+  | 'agent-session'
+  | 'agent-turn';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite
@@ -444,4 +468,123 @@ export interface SearchHit {
   readonly atom: Atom;
   /** Normalized to [0, 1] where 1 is the best match. */
   readonly score: number;
+}
+
+// ---------------------------------------------------------------------------
+// Agentic actor loop substrate (PR1 of agentic-actor-loop spec)
+// ---------------------------------------------------------------------------
+
+/**
+ * Replay determinism tier the session was executed under. `best-effort`
+ * captures the LLM transcript only; `content-addressed` additionally
+ * pins all tool inputs/outputs to `BlobRef`s so the chain is replayable
+ * without re-running tools; `strict` further requires the adapter to
+ * pin a `canon_snapshot_blob_ref` so canon at session-start is
+ * reproducible. See spec sections 3.6 and 4.1 for the trade-offs.
+ */
+export type ReplayTier = 'best-effort' | 'content-addressed' | 'strict';
+
+/**
+ * Coarse failure taxonomy used by sessions and turns. Distinguished so
+ * the surrounding plan-state machine (and any retry policy) can branch
+ * on whether the failure is worth retrying (`transient`), a contract
+ * violation that should be surfaced to the operator (`structural`), or
+ * a host-level fault that should trip a circuit breaker
+ * (`catastrophic`). See spec section 5.1.
+ */
+export type FailureKind = 'transient' | 'structural' | 'catastrophic';
+
+/**
+ * Structured failure record stored on session/turn metadata when the
+ * agentic loop did not complete cleanly. `reason` is a short
+ * operator-readable explanation; `stage` is the loop checkpoint where
+ * the failure surfaced (e.g. `'workspace-acquire'`, `'agent-init'`,
+ * `'turn-3'`, `'commit'`) so postmortems can map the failure to a
+ * specific seam without parsing free text. Modeled as an interface so
+ * future fields (cause chain, retry count) can be added without a
+ * breaking type change.
+ */
+export interface FailureRecord {
+  readonly kind: FailureKind;
+  readonly reason: string;
+  /** e.g. 'workspace-acquire', 'agent-init', 'turn-3', 'commit'. */
+  readonly stage: string;
+}
+
+/**
+ * Stored on atoms with `type: 'agent-session'` under
+ * `metadata.agent_session`. One per agent run, principal-bound, written
+ * once when the session terminates. Modeled as an interface (not a
+ * type alias) so adapters can extend via declaration-merging if a
+ * future need arises; today, the structured `extra` slot is the
+ * sanctioned extension point.
+ */
+export interface AgentSessionMeta {
+  readonly model_id: string;
+  readonly adapter_id: string;
+  readonly workspace_id: string;
+  readonly started_at: Time;
+  readonly completed_at?: Time;
+  readonly terminal_state: 'completed' | 'budget-exhausted' | 'error' | 'aborted';
+  readonly replay_tier: ReplayTier;
+  /**
+   * Pinned content-hash of the canon snapshot at session-start. Required
+   * by the `strict` replay tier; omitted for `best-effort` and
+   * `content-addressed`.
+   */
+  readonly canon_snapshot_blob_ref?: BlobRef;
+  readonly budget_consumed: {
+    readonly turns: number;
+    readonly wall_clock_ms: number;
+    readonly usd?: number;
+  };
+  readonly failure?: FailureRecord;
+  /**
+   * Open extension slot for adapter-specific metadata. Kept as
+   * `Readonly<Record<string, unknown>>` rather than a typed surface so
+   * substrate consumers do not need to fork the type to record
+   * implementation-specific signals (e.g. CLI exit codes, MCP tool
+   * counts). Adapters MUST namespace keys to avoid collision.
+   */
+  readonly extra?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Stored on atoms with `type: 'agent-turn'` under `metadata.agent_turn`.
+ * One atom per LLM call within a session; the parent session is
+ * referenced by BOTH `provenance.derived_from` (the substrate-wide
+ * chain pointer used by taint propagation and the standard atom-graph
+ * traversal) AND `session_atom_id` below (the projection-specific
+ * pointer used by `buildSessionTree` for ordering and cheap
+ * session-scoped queries without parsing provenance arrays). Both
+ * pointers MUST agree; collapsing to one is a substrate violation a
+ * future validator may enforce.
+ */
+export interface AgentTurnMeta {
+  readonly session_atom_id: AtomId;
+  /** 0-based turn index within the session. */
+  readonly turn_index: number;
+  /**
+   * Either an inline payload (small turns; convenient for tests and
+   * solo-dev replay) or a `BlobRef` into the content-addressed store
+   * (large turns; required for the `content-addressed` and `strict`
+   * replay tiers). The discriminated-union shape keeps the storage
+   * decision a property of each turn rather than a global setting.
+   */
+  readonly llm_input: { readonly ref: BlobRef } | { readonly inline: string };
+  readonly llm_output: { readonly ref: BlobRef } | { readonly inline: string };
+  readonly tool_calls: ReadonlyArray<{
+    readonly tool: string;
+    readonly args: { readonly ref: BlobRef } | { readonly inline: string };
+    readonly result: { readonly ref: BlobRef } | { readonly inline: string };
+    readonly latency_ms: number;
+    readonly outcome: 'success' | 'tool-error' | 'policy-refused';
+  }>;
+  readonly latency_ms: number;
+  readonly failure?: FailureRecord;
+  /**
+   * Open extension slot, namespaced by adapter. Same rationale as
+   * `AgentSessionMeta.extra`.
+   */
+  readonly extra?: Readonly<Record<string, unknown>>;
 }
