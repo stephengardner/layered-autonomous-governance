@@ -41,6 +41,7 @@ import type {
   Reflection,
 } from '../types.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../../types.js';
+import type { BlastRadius } from '../../actor-message/intent-approve.js';
 import { aggregateRelevantContext } from './aggregate-context.js';
 import type { AggregateContextOptions } from './aggregate-context.js';
 import type {
@@ -183,7 +184,7 @@ function buildQuestionMetadata(
 export interface DelegationDescriptor {
   readonly sub_actor_principal_id: PrincipalId;
   readonly reason?: string;
-  readonly implied_blast_radius?: string;
+  readonly implied_blast_radius?: BlastRadius;
 }
 
 /**
@@ -201,25 +202,28 @@ function buildDelegationMetadata(
   delegateTo: PlanningActorOptions['delegateTo'],
   descriptor?: DelegationDescriptor,
 ): Record<string, unknown> {
-  // Full descriptor takes precedence when supplied.
-  if (descriptor !== undefined) {
-    if (
-      typeof descriptor.sub_actor_principal_id !== 'string' ||
-      descriptor.sub_actor_principal_id.trim().length === 0
-    ) {
-      return {};
-    }
+  // Full descriptor takes precedence when supplied AND its
+  // sub_actor_principal_id is a non-empty string. A descriptor
+  // present with an unusable principal id (whitespace, missing,
+  // wrong type) is treated like "no descriptor"; control flows
+  // through to the delegateTo fallback below so the orchestrator's
+  // hint still wins over an empty LLM emission.
+  const descriptorUsable =
+    descriptor !== undefined
+    && typeof descriptor.sub_actor_principal_id === 'string'
+    && descriptor.sub_actor_principal_id.trim().length > 0;
+  if (descriptorUsable) {
     const out: Record<string, unknown> = {
-      sub_actor_principal_id: descriptor.sub_actor_principal_id,
+      sub_actor_principal_id: descriptor!.sub_actor_principal_id,
     };
-    if (typeof descriptor.reason === 'string' && descriptor.reason.trim().length > 0) {
-      out.reason = descriptor.reason;
+    if (typeof descriptor!.reason === 'string' && descriptor!.reason.trim().length > 0) {
+      out.reason = descriptor!.reason;
     }
     if (
-      typeof descriptor.implied_blast_radius === 'string' &&
-      descriptor.implied_blast_radius.trim().length > 0
+      typeof descriptor!.implied_blast_radius === 'string'
+      && descriptor!.implied_blast_radius.trim().length > 0
     ) {
-      out.implied_blast_radius = descriptor.implied_blast_radius;
+      out.implied_blast_radius = descriptor!.implied_blast_radius;
     }
     return { delegation: out };
   }
@@ -263,6 +267,14 @@ export interface BuildPlanAtomInput {
   };
   /** Running principal id; becomes atom.principal_id + provenance.source.agent_id. */
   readonly principalId: string;
+  /**
+   * Orchestrator-set sub-actor target for the plan. The lighter
+   * delegation hint: principal-id only, no rationale or blast-radius.
+   * `draft.delegation` (LLM-emitted, full descriptor) takes precedence
+   * when both are set; both omitted produces no delegation key on
+   * the atom.
+   */
+  readonly delegateTo?: PrincipalId;
   /**
    * When the plan was triggered by an intent atom, append the intent
    * id to provenance.derived_from so the provenance chain is
@@ -359,7 +371,7 @@ export function buildPlanAtom(input: BuildPlanAtomInput): Atom {
       principles_applied: [...draft.principles_applied],
       alternatives_rejected: draft.alternatives_rejected.map((a) => a.option),
       what_breaks_if_revisit: draft.what_breaks_if_revisit,
-      ...buildDelegationMetadata(undefined, draft.delegation),
+      ...buildDelegationMetadata(input.delegateTo, draft.delegation),
     },
   };
 }
@@ -469,14 +481,24 @@ export class PlanningActor implements Actor<
         alternatives_rejected: [...plan.alternativesRejected],
         what_breaks_if_revisit: plan.whatBreaksIfRevisit,
         ...(plan.confidence !== undefined ? { confidence: plan.confidence } : {}),
-        // DelegationDescriptor is not on ProposedPlan; it comes from
-        // actor options only. The pure function path picks it up via
-        // the descriptor field; absence means no delegation key.
-        ...(this.options.delegateTo
-          ? { delegation: { sub_actor_principal_id: this.options.delegateTo } satisfies DelegationDescriptor }
+        // LLM-emitted descriptor; richer than options.delegateTo
+        // because it carries reason + implied_blast_radius. Threaded
+        // through buildDelegationMetadata which enforces precedence
+        // (descriptor wins over plain delegateTo) + whitespace
+        // emptiness checks; both branches in one place keeps the
+        // contract testable from a single seam.
+        ...(plan.delegation
+          ? {
+              delegation: {
+                sub_actor_principal_id: plan.delegation.sub_actor_principal_id as PrincipalId,
+                reason: plan.delegation.reason,
+                implied_blast_radius: plan.delegation.implied_blast_radius,
+              } satisfies DelegationDescriptor,
+            }
           : {}),
       },
       principalId,
+      ...(this.options.delegateTo !== undefined ? { delegateTo: this.options.delegateTo } : {}),
       intentId: this.options.intentId ?? null,
       now: new Date(now),
       // Nonce: use the wall-clock timestamp string so the id is

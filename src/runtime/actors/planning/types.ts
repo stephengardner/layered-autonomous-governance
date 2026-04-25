@@ -14,6 +14,7 @@
  */
 
 import type { Atom, AtomId, PrincipalId, Time } from '../../../types.js';
+import type { BlastRadius } from '../../actor-message/intent-approve.js';
 
 /**
  * The aggregated state the PlanningActor considers when drafting a
@@ -117,6 +118,19 @@ export interface ProposedPlan {
    * threshold) the actor escalates instead of proposing.
    */
   readonly confidence?: number;
+  /**
+   * Optional sub-actor delegation declared by the planner (LLM via
+   * PLAN_DRAFT). When present, gets written to plan.metadata.delegation;
+   * the approval tick (runIntentAutoApprovePass) reads this field to
+   * gate auto-approval. Distinct from actor-option delegateTo which
+   * is set by the orchestrator; the LLM-emitted form here takes
+   * precedence when both are set.
+   */
+  readonly delegation?: {
+    readonly sub_actor_principal_id: string;
+    readonly reason: string;
+    readonly implied_blast_radius: BlastRadius;
+  };
 }
 
 /**

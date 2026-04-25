@@ -423,6 +423,10 @@ export class HostLlmPlanningJudgment implements PlanningJudgment {
         alternativesRejected: p.alternatives_rejected,
         whatBreaksIfRevisit: p.what_breaks_if_revisit,
         confidence: p.confidence,
+        // Propagate LLM-emitted delegation (PLAN_DRAFT schema requires
+        // it). The downstream apply() merges this with actor-option
+        // delegateTo, with LLM-emitted taking precedence.
+        ...(p.delegation ? { delegation: p.delegation } : {}),
       });
     }
 
