@@ -184,14 +184,26 @@ jobs:
   # migration but can confuse a reader of branch-protection logs who sees
   # one PR with a "check" and another with a "status" under the same name.
   #
-  # Identity note: this job posts as the machine user via LAG_OPS_PAT
-  # (rather than the default GITHUB_TOKEN, which would attribute the
-  # check-run to `github-actions[bot]`). Using LAG_OPS_PAT keeps the
-  # autonomous-intent surface attributed to a provisioned bot identity
-  # consistent with the rest of the flow (CR triggers, ReviewTriggerAdapter,
-  # etc.). The fork-PR `if:` guard above ensures LAG_OPS_PAT is never
-  # injected into a fork-controlled checkout (it would be empty there
-  # because the gate fails before this step runs).
+  # Identity note: this job posts the check-run as `github-actions[bot]`
+  # (via the default GITHUB_TOKEN). That is an attribution split from the
+  # rest of the autonomous-intent surface, which posts as `lag-ceo[bot]`
+  # via the lag-ceo GitHub App. Two cleaner identities were tried and
+  # rejected:
+  #   - LAG_OPS_PAT: rejected because GitHub's `checks.create` API
+  #     requires a GitHub App auth context and refuses PATs with
+  #     "You must authenticate via a GitHub App" (HTTP 403). The PAT
+  #     identity is fine for issue/PR comments via the autonomous flow
+  #     but not for check-runs.
+  #   - actions/create-github-app-token@v2 with lag-ceo App credentials:
+  #     the proper path; deferred because it requires adding
+  #     LAG_CEO_APP_ID and LAG_CEO_APP_PRIVATE_KEY as repo secrets.
+  #     Tracked as a follow-up; operator coordinates the secret rollout.
+  # Until the App-token path lands, this job's check-run shows up under
+  # `github-actions[bot]`. Branch protection accepts any poster of the
+  # `LAG-auditor` context (per `app_id: -1` in the migration script), so
+  # the merge gate is satisfied. The split is cosmetic; a future audit
+  # filter on `lag-ceo[bot]` will miss this noop until the App-token
+  # path lands.
   lag-auditor-noop:
     name: LAG-auditor (noop)
     runs-on: ubuntu-latest
@@ -214,17 +226,13 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.fork == false &&
       !contains(github.event.pull_request.labels.*.name, 'autonomous-intent')
-    # The PAT-authenticated check-run does not need the workflow's
-    # `permissions:` block to grant checks:write -- the PAT carries
-    # its own scopes -- but we leave the declaration as defensive
-    # documentation so a reader sees what scope the call requires.
     permissions:
       checks: write
     steps:
       - name: Post LAG-auditor success check-run
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.LAG_OPS_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             await github.rest.checks.create({
               owner: context.repo.owner,
