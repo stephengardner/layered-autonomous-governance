@@ -131,8 +131,8 @@ export class ResumeAuthorAgentLoopAdapter implements AgentLoopAdapter {
 
 1. Call `opts.assembleCandidates(input)` to get the candidate session list (newest-first; up to `maxStaleHours` filtering can also happen here, or be deferred to strategies).
 2. Build a `ResumeContext` from `{ candidateSessions, workspace: input.workspace, host: opts.host }`. Iterate `opts.strategies` in declaration order; first non-null `ResolvedSession` wins.
-3. If a strategy resolves: invoke `resolved.preparation?.()` if present (e.g., session-file rehydration writes `.jsonl` to local CLI cache). Then spawn the resume invocation via the underlying CLI / SDK using `resolved.resumableSessionId`. On success, the underlying adapter writes its own `agent-session` atom for this run; the wrapper THEN patches that atom's `metadata.agent_session.extra.resumed_from_atom_id` (= `resolved.resumedFromSessionAtomId`) and `extra.resume_strategy_used` (= `resolved.strategyName`) via `host.atoms.update` (read-merge-write so existing extras like `resumable_session_id` are preserved). Return `AgentLoopResult` as the underlying invocation produced it. Audit-trail correlation uses these `extra` fields; `provenance.derived_from` is NOT used because provenance is immutable post-put per substrate `AtomPatch`.
-4. If resume's invocation returns ANY non-`completed` result OR throws, the wrapper delegates to `opts.fallback.run(input)`. The wrapper does NOT retry resume itself; the underlying adapter (the spawn-call inside `findResumableSession.preparation`-and-spawn path) handles its own retries the same way the fallback does. Compounded retry is a known anti-pattern. Both attempts produce separate `agent-session` atoms (the underlying adapter writes one per `run()` call); audit-trail traversal correlates them via the success-side `extra.resumed_from_atom_id` set by the wrapper at step 3, plus same-correlation-id timestamps on the failure pair. The wrapper does NOT retroactively patch the failed-resume atom (`provenance` is immutable post-put per substrate `AtomPatch`; an additional `extra.fallback_invoked` marker was considered and rejected as adding store-write cost without query-value the existing fields can't already deliver).
+3. If a strategy resolves: invoke `resolved.preparation?.()` if present. Preparation does substrate-specific work (e.g., session-file rehydration writes `.jsonl` to local CLI cache for `BlobShippedSessionResumeStrategy`); same-machine deployments typically have no preparation. The wrapper itself does NOT spawn the underlying CLI / SDK. Instead it delegates to `opts.fallback.run({ ...input, resumeSessionId: resolved.resumableSessionId })` (per the §2.1.2 substrate touch on `AgentLoopInput.resumeSessionId`); the resume-aware fallback adapter is responsible for honoring the token (e.g. `claude --resume <uuid>`). On a `completed` result, the wrapper patches the new session atom's `metadata.agent_session.extra.resumed_from_atom_id` (= `resolved.resumedFromSessionAtomId`) and `extra.resume_strategy_used` (= `resolved.strategyName`) via `host.atoms.update` (read-merge-write so existing extras like `resumable_session_id` are preserved). Returns the `AgentLoopResult` from the fallback invocation. Audit-trail correlation uses these `extra` fields; `provenance.derived_from` is NOT used because provenance is immutable post-put per substrate `AtomPatch`.
+4. If `preparation` throws OR the resume invocation returns ANY non-`completed` result OR throws, the wrapper delegates to `opts.fallback.run(input)` (without `resumeSessionId`, i.e. fresh-spawn). The wrapper does NOT retry resume itself; the underlying adapter handles its own retries the same way the fallback does. Compounded retry is a known anti-pattern. The failed-resume attempt (if any) and the fresh-spawn produce separate `agent-session` atoms; audit-trail traversal correlates the success-path via the `extra.resumed_from_atom_id` set in step 3, and the failure pair via same-correlation-id timestamps. The wrapper does NOT retroactively patch the failed-resume atom (`provenance` is immutable post-put per substrate `AtomPatch`; an additional `extra.fallback_invoked` marker was considered and rejected as adding store-write cost without query-value the existing fields can't already deliver).
 5. If NO strategy resolves (all return null OR throw): skip resume entirely, delegate to `opts.fallback.run(input)` directly. A strategy throw is treated as `null` (defer to next); a misbehaving strategy MUST NOT poison the wrapper.
 
 The intent is that the wrapper itself is policy-free: it doesn't classify failures, doesn't retry, doesn't escalate. Strategies own resume-specific decisions; the fallback owns its own behavior; the wrapper only orchestrates the try-resume-then-fallback shape.
@@ -335,7 +335,7 @@ The `assembleCandidates` callback closes over the per-iteration context an actor
 
 ### 4.1 Capture (when blob-shipped is enabled, future deployment)
 
-```
+```text
 [author Claude session ends successfully on machine A]
      -> ClaudeCodeAgentLoopAdapter.sessionPersistExtras hook fires
      -> BlobShippedSessionResumeStrategy.onSessionPersist runs:
@@ -349,7 +349,7 @@ The `assembleCandidates` callback closes over the per-iteration context an actor
 
 ### 4.2 Resume (today's same-machine flow)
 
-```
+```text
 PrFixActor.apply -> ctx.adapters.agentLoop.run(input)
      -> ResumeAuthorAgentLoopAdapter.run:
             walk dispatched_session_atom_id chain on PR observations -> candidate sessions
@@ -443,7 +443,7 @@ Two fix-iterations running concurrently on the same PR would both try to resume 
 
 ## 7. Components by file
 
-```
+```text
 src/substrate/blob-store.ts                                    # +describeStorage method
 examples/blob-stores/file/blob-store.ts                        # +describeStorage impl
 examples/agent-loops/claude-code/loop.ts                       # +resumable_session_id persist + sessionPersistExtras hook

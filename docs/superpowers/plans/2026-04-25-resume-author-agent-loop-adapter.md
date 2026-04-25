@@ -1173,7 +1173,7 @@ EOF
 
 ## Implementation order (suggested DAG)
 
-```
+```text
 Task 1 (BlobStore.describeStorage) ──┐
                                      ├─ Task 4 (SessionResumeStrategy types)
 Task 2 (FileBlobStore impl)  ────────┤
