@@ -3,7 +3,8 @@
   "compilerOptions": {
     "noEmit": true,
     "composite": false,
-    "incremental": false
+    "incremental": false,
+    "rootDir": "."
   },
   "include": ["src/**/*", "examples/**/*"],
   "exclude": ["node_modules", "dist", "test"]

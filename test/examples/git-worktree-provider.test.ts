@@ -177,20 +177,26 @@ describe('GitWorktreeProvider checkoutBranch', () => {
     // Defense-in-depth path-traversal guard: a branch name with `..`
     // segments must throw before any git command runs.
     const dir = await mkdtemp(join(tmpdir(), 'lag-checkout-bad-'));
-    await execa('git', ['init', '-b', 'main'], { cwd: dir });
-    await execa('git', ['config', 'user.email', 't@e.com'], { cwd: dir });
-    await execa('git', ['config', 'user.name', 'Test'], { cwd: dir });
-    await execa('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
-    await writeFile(join(dir, 'a.md'), 'a\n');
-    await execa('git', ['add', '.'], { cwd: dir });
-    await execa('git', ['commit', '-m', 'i'], { cwd: dir });
-    const provider = new GitWorktreeProvider({ repoDir: dir, copyCredsForRoles: [] });
-    await expect(provider.acquire({
-      principal: 'p' as PrincipalId,
-      baseRef: 'main',
-      correlationId: 'corr-bad',
-      checkoutBranch: '../escape',
-    })).rejects.toThrow(/must not contain/);
-    await rm(dir, { recursive: true, force: true });
+    try {
+      await execa('git', ['init', '-b', 'main'], { cwd: dir });
+      await execa('git', ['config', 'user.email', 't@e.com'], { cwd: dir });
+      await execa('git', ['config', 'user.name', 'Test'], { cwd: dir });
+      await execa('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+      await writeFile(join(dir, 'a.md'), 'a\n');
+      await execa('git', ['add', '.'], { cwd: dir });
+      await execa('git', ['commit', '-m', 'i'], { cwd: dir });
+      const provider = new GitWorktreeProvider({ repoDir: dir, copyCredsForRoles: [] });
+      await expect(provider.acquire({
+        principal: 'p' as PrincipalId,
+        baseRef: 'main',
+        correlationId: 'corr-bad',
+        checkoutBranch: '../escape',
+      })).rejects.toThrow(/must not contain/);
+    } finally {
+      // Cleanup must run even if the assertion above fails, otherwise
+      // the bootstrap repo lingers in os.tmpdir(). Mirrors the
+      // try/finally pattern in the sibling test on L170-173.
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
