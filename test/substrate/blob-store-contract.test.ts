@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { blobRefFromHash, parseBlobRef } from '../../src/substrate/blob-store.js';
-import type { BlobStore, BlobRef } from '../../src/substrate/blob-store.js';
+import type { BlobStore, BlobRef, BlobStorageDescriptor } from '../../src/substrate/blob-store.js';
 
 describe('blobRefFromHash + parseBlobRef', () => {
   it('round-trips a 64-char hex hash', () => {
@@ -84,6 +84,47 @@ export function runBlobStoreContract(name: string, build: () => Promise<{ store:
       try {
         const fake = blobRefFromHash('0'.repeat(64));
         await expect(store.get(fake)).rejects.toThrow();
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it('describeStorage() returns a BlobStorageDescriptor with the expected discriminated-union shape', async () => {
+      // Pin the contract: every conformant BlobStore returns a
+      // descriptor whose `kind` is one of the known variants and
+      // whose payload field matches the variant. The exhaustive
+      // switch is the load-bearing assertion: a future variant
+      // added to the union triggers a TypeScript error here at
+      // the `_: never` line, forcing every consumer to update.
+      const { store, cleanup } = await build();
+      try {
+        const desc: BlobStorageDescriptor = store.describeStorage();
+        if (desc.kind === 'local-file') {
+          expect(typeof desc.rootPath).toBe('string');
+          expect(desc.rootPath.length).toBeGreaterThan(0);
+        } else if (desc.kind === 'remote') {
+          expect(typeof desc.target).toBe('string');
+          expect(desc.target.length).toBeGreaterThan(0);
+        } else {
+          // Exhaustive switch: if a new kind is added the type system
+          // catches it here at compile time.
+          const _: never = desc;
+          throw new Error(`unexpected descriptor kind: ${(_ as { kind: string }).kind}`);
+        }
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it('describeStorage() is deterministic across calls', async () => {
+      // The interface contract states callers may cache the result.
+      // Verify two consecutive calls return structurally-identical
+      // descriptors so caching is safe.
+      const { store, cleanup } = await build();
+      try {
+        const a = store.describeStorage();
+        const b = store.describeStorage();
+        expect(b).toEqual(a);
       } finally {
         await cleanup();
       }
