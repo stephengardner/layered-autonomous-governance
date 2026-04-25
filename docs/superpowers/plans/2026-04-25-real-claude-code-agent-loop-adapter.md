@@ -955,16 +955,29 @@ function inMemBlob(): BlobStore {
 }
 
 function makeStubExeca(stdoutLines: string[], opts: { exitCode?: number; stderr?: string } = {}) {
-  return ((async (..._args: unknown[]) => {
-    const stdout = Readable.from(stdoutLines.map((l) => `${l}\n`));
-    return {
-      stdout,
-      stderr: { on: () => {}, [Symbol.asyncIterator]: async function* () { yield opts.stderr ?? ''; } },
+  // Real `execa()` returns a `ResultPromise` -- a Promise that ALSO
+  // exposes `.stdout` / `.stderr` (Readables) AND a `.kill()` method
+  // synchronously, before the promise resolves. Plain
+  // `async (..._args) => obj` fails this contract because the result
+  // is just a Promise<obj>, with no `.stdout` accessor on the promise
+  // itself. The adapter does `proc.stdout!` BEFORE `await proc`, so
+  // the stub MUST expose `.stdout` on the synchronously-returned
+  // promise. Object.assign onto a Promise is the canonical pattern.
+  return ((..._args: unknown[]) => {
+    const stdoutStream = Readable.from(stdoutLines.map((l) => `${l}\n`));
+    const stderrText = opts.stderr ?? '';
+    const stderrStream = Readable.from([stderrText]);
+    const resultPromise = Promise.resolve({
+      stdout: stdoutLines.join('\n'),
+      stderr: stderrText,
       exitCode: opts.exitCode ?? 0,
-      then: undefined, // unused; the adapter consumes stdout stream then awaits the result
-      // execa returns a result-promise; for the stub we synthesize what the adapter actually reads
-    } as never;
-  }) as never);
+    });
+    return Object.assign(resultPromise, {
+      stdout: stdoutStream,
+      stderr: stderrStream,
+      kill: (_signal?: NodeJS.Signals) => true,
+    }) as never;
+  }) as never;
 }
 
 function mkInput(host: ReturnType<typeof createMemoryHost>, execImpl: unknown, signal?: AbortSignal): AgentLoopInput {
@@ -1215,14 +1228,22 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
           } catch (e) {
             throw Object.assign(new Error('redactor crashed on llm-output'), { name: 'RedactorError', cause: e });
           }
+          // Read the existing turn atom + preserve llm_input + tool_calls;
+          // update only llm_output + latency_ms. The placeholder set
+          // llm_input at open-time using a redacted prompt; re-redacting
+          // here would double-call the redactor and waste work.
+          const existing = await input.host.atoms.get(currentTurnAtomId);
+          const existingMeta = existing !== null
+            ? ((existing.metadata as Record<string, unknown>)['agent_turn'] as AgentTurnMeta)
+            : undefined;
           await input.host.atoms.update(currentTurnAtomId, {
             metadata: {
               agent_turn: {
                 session_atom_id: sessionId,
                 turn_index: currentTurnIndex,
-                llm_input: { inline: input.redactor.redact(prompt, { kind: 'llm-input', principal: input.principal }) },
+                llm_input: existingMeta?.llm_input ?? { inline: '' },
                 llm_output: { inline: redactedOut },
-                tool_calls: [],
+                tool_calls: existingMeta?.tool_calls ?? [],
                 latency_ms: Date.now() - startedAtMs,
               } satisfies AgentTurnMeta,
             },
@@ -1464,7 +1485,7 @@ In the `for await` loop in `run()`, add cases:
   const argsStr = JSON.stringify(ev.input);
   let redactedArgs: string;
   try {
-    redactedArgs = input.redactor.redact(argsStr, { kind: 'llm-input', principal: input.principal });
+    redactedArgs = input.redactor.redact(argsStr, { kind: 'tool-args', principal: input.principal });
   } catch (e) {
     throw Object.assign(new Error('redactor crashed on tool_use args'), { name: 'RedactorError', cause: e });
   }
@@ -1474,6 +1495,7 @@ In the `for await` loop in `run()`, add cases:
   if (turnAtom !== null) {
     const meta = turnAtom.metadata as Record<string, unknown>;
     const turnMeta = meta['agent_turn'] as AgentTurnMeta;
+    const newIndex = turnMeta.tool_calls.length; // index BEFORE we append
     const updated: AgentTurnMeta = {
       ...turnMeta,
       tool_calls: [...turnMeta.tool_calls, {
@@ -1485,18 +1507,26 @@ In the `for await` loop in `run()`, add cases:
       }],
     };
     await input.host.atoms.update(currentTurnAtomId, { metadata: { agent_turn: updated } });
+    // Track BOTH which turn AND which tool_call index this id maps
+    // to. Parallel tool_use blocks within one assistant message land
+    // as multiple entries in tool_calls; the LAST-empty-result
+    // heuristic could write the wrong tool's result into the wrong
+    // entry. The (tool_use_id -> turn_id, index) pair is the only
+    // safe correlation.
     toolUseToTurn.set(ev.toolUseId, currentTurnAtomId);
+    toolUseToCallIndex.set(ev.toolUseId, newIndex);
     toolUseStartMs.set(ev.toolUseId, Date.now());
   }
 } else if (ev.kind === 'tool-result') {
   const targetTurnId = toolUseToTurn.get(ev.toolUseId);
-  if (targetTurnId === undefined) {
+  const targetCallIndex = toolUseToCallIndex.get(ev.toolUseId);
+  if (targetTurnId === undefined || targetCallIndex === undefined) {
     // Unknown tool_use_id -- log + skip; never throw.
     continue;
   }
   let redactedResult: string;
   try {
-    redactedResult = input.redactor.redact(ev.content, { kind: 'tool-output', principal: input.principal });
+    redactedResult = input.redactor.redact(ev.content, { kind: 'tool-result', principal: input.principal });
   } catch (e) {
     throw Object.assign(new Error('redactor crashed on tool_result'), { name: 'RedactorError', cause: e });
   }
@@ -1509,35 +1539,25 @@ In the `for await` loop in `run()`, add cases:
     const outcome: 'success' | 'tool-error' | 'policy-refused' = ev.isError
       ? (policyDenied ? 'policy-refused' : 'tool-error')
       : 'success';
-    const updatedCalls = turnMeta.tool_calls.map((c) =>
-      c.tool === ev.toolUseId
-        || (c.args !== undefined && 'inline' in c.args && JSON.stringify(c.args.inline).includes(ev.toolUseId))
-        ? c
-        : c
-    );
-    // Replace by tool_use_id correlation: walk the calls and find the
-    // first matching one (we tracked it via toolUseToTurn map). To
-    // avoid relying on string-search inside args, we keep a parallel
-    // list ordered by tool_use_id.
-    // Simpler: replace the LAST tool_call entry whose result is empty.
-    const newCalls = [...turnMeta.tool_calls];
-    for (let i = newCalls.length - 1; i >= 0; i--) {
-      const c = newCalls[i]!;
-      if ('inline' in c.result && c.result.inline === '') {
-        newCalls[i] = {
-          tool: c.tool,
-          args: c.args,
-          result: { inline: redactedResult },
-          latency_ms: Date.now() - startedToolMs,
-          outcome,
-        };
-        break;
-      }
+    // Replace the SPECIFIC tool_calls[targetCallIndex] entry. This is
+    // safe under parallel tool_use blocks because the index was
+    // recorded at tool_use time, before the result arrived.
+    const newCalls = turnMeta.tool_calls.slice();
+    const existing = newCalls[targetCallIndex];
+    if (existing !== undefined) {
+      newCalls[targetCallIndex] = {
+        tool: existing.tool,
+        args: existing.args,
+        result: { inline: redactedResult },
+        latency_ms: Date.now() - startedToolMs,
+        outcome,
+      };
     }
     const updated: AgentTurnMeta = { ...turnMeta, tool_calls: newCalls };
     await input.host.atoms.update(targetTurnId, { metadata: { agent_turn: updated } });
   }
   toolUseToTurn.delete(ev.toolUseId);
+  toolUseToCallIndex.delete(ev.toolUseId);
   toolUseStartMs.delete(ev.toolUseId);
   // Now open the NEXT placeholder turn -- the CLI is feeding tool
   // results back to the LLM, which triggers a new LLM call.
@@ -1546,9 +1566,10 @@ In the `for await` loop in `run()`, add cases:
 }
 ```
 
-Also add the `toolUseStartMs` map alongside `toolUseToTurn`:
+Also add these correlation maps alongside `toolUseToTurn`:
 
 ```ts
+const toolUseToCallIndex = new Map<string, number>();   // tool_use_id -> index in current turn's tool_calls
 const toolUseStartMs = new Map<string, number>();
 ```
 
