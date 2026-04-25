@@ -85,6 +85,15 @@ describe('looksLikeGitPush', () => {
     expect(looksLikeGitPush(undefined as unknown as string[])).toBe(false);
     expect(looksLikeGitPush(null as unknown as string[])).toBe(false);
   });
+
+  it('returns false for empty argv', () => {
+    expect(looksLikeGitPush([])).toBe(false);
+  });
+
+  it('returns false when only flags are present and no verb is reachable', () => {
+    expect(looksLikeGitPush(['-c', 'user.name=foo'])).toBe(false);
+    expect(looksLikeGitPush(['-C', '/tmp/repo'])).toBe(false);
+  });
 });
 
 describe('buildAuthedGitInvocation', () => {
@@ -112,9 +121,15 @@ describe('buildAuthedGitInvocation', () => {
       inheritedEnv: {},
     });
     expect(out.env.GIT_TERMINAL_PROMPT).toBe('0');
+    expect(out.env.GIT_CONFIG_KEY_0).toBe('credential.helper');
     expect(out.env.GIT_CONFIG_VALUE_0).toBe('');
-    // Bearer must NOT appear on push: GitHub receive-pack rejects it.
-    expect(JSON.stringify(out.env)).not.toContain('Bearer');
+    // GitHub receive-pack rejects Bearer auth: the http.extraHeader
+    // entry that buildReadOnlyEnv emits must NOT appear on push.
+    // Asserting the specific keys (not a substring scan) keeps the
+    // test stable when env values legitimately contain the literal
+    // word 'Bearer' for unrelated reasons.
+    const envKeys = Object.keys(out.env);
+    expect(envKeys.some((k) => out.env[k] === 'http.extraHeader')).toBe(false);
   });
 
   it('push: preserves `-c k=v` git-level options that precede the verb', () => {
@@ -147,10 +162,13 @@ describe('buildAuthedGitInvocation', () => {
       inheritedEnv: { PATH: '/x' },
     });
     expect(out.args).toEqual(['fetch', 'origin', 'main', '--quiet']);
-    const headerKey = Object.keys(out.env).find((k) => out.env[k] === 'http.extraHeader');
-    expect(headerKey).toBeDefined();
-    const valKey = headerKey!.replace('KEY', 'VALUE');
-    expect(out.env[valKey]).toBe(`Authorization: Bearer ${TOKEN}`);
+    // Literal env keys: buildReadOnlyEnv emits a single GIT_CONFIG
+    // pair (KEY_0/VALUE_0) for http.extraHeader. Asserting the
+    // specific slots keeps the test focused; the upstream
+    // git-as-push-auth tests already cover the indexing convention.
+    expect(out.env.GIT_CONFIG_COUNT).toBe('2');
+    expect(out.env.GIT_CONFIG_KEY_0).toBe('http.extraHeader');
+    expect(out.env.GIT_CONFIG_VALUE_0).toBe(`Authorization: Bearer ${TOKEN}`);
     expect(out.env.GIT_TERMINAL_PROMPT).toBe('0');
   });
 

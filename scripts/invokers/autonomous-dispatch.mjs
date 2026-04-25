@@ -38,11 +38,15 @@
  */
 import { execa } from 'execa';
 import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   buildAuthedGitInvocation,
   parseRepoSlug,
 } from '../lib/autonomous-dispatch-exec.mjs';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const GH_AS_PATH = resolve(HERE, '..', 'gh-as.mjs');
 
 export default async function register(host, registry) {
   const { runCodeAuthor } = await import('../../dist/runtime/actor-message/code-author-invoker.js');
@@ -111,13 +115,19 @@ export default async function register(host, registry) {
       const intentId = plan ? await findIntentInProvenance(host, plan) : null;
       if (intentId) {
         try {
+          // Resolve gh-as.mjs against this invoker's location and run
+          // it with cwd=repoDir so the spawn works whether the
+          // approval-cycle CLI was invoked from the repo root or
+          // from elsewhere via LAG_REPO_DIR. A relative path here
+          // would silently swallow into the catch below and disable
+          // the LAG-auditor label flow without operator visibility.
           await execa('node', [
-            'scripts/gh-as.mjs', role,
+            GH_AS_PATH, role,
             'api', `repos/${owner}/${repo}/issues/${capturedPrNumber}/labels`,
             '-X', 'POST',
             '-f', 'labels[]=autonomous-intent',
             '-f', `labels[]=plan-id:${capturedPlanId}`,
-          ], { stdio: 'inherit' });
+          ], { stdio: 'inherit', cwd: repoDir });
         } catch (err) {
           console.error(`[autonomous-dispatch] WARNING: failed to label PR #${capturedPrNumber}: ${err.message}. LAG-auditor gate will not fire until labels are added manually.`);
         }
@@ -130,13 +140,29 @@ export default async function register(host, registry) {
 async function resolveOwnerRepo() {
   const fromEnv = parseRepoSlug(process.env.GH_REPO);
   if (fromEnv) return fromEnv;
-  const result = await execa('gh', ['repo', 'view', '--json', 'owner,name'], { reject: false });
+  // execa with reject:false suppresses non-zero exits but still
+  // throws ENOENT when the binary is absent. Catch the spawn error
+  // explicitly so a host without the gh CLI gets the same actionable
+  // diagnostic as a host where `gh repo view` runs but exits non-zero.
+  let result;
+  try {
+    result = await execa('gh', ['repo', 'view', '--json', 'owner,name'], { reject: false });
+  } catch (err) {
+    throw new Error(
+      `[autonomous-dispatch] could not resolve owner/repo: set GH_REPO=owner/repo or install the gh CLI. cause: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
   if (result.exitCode !== 0) {
     throw new Error(
       `[autonomous-dispatch] could not resolve owner/repo: set GH_REPO=owner/repo or run from a repo where 'gh repo view' works. stderr: ${result.stderr}`,
     );
   }
   const parsed = JSON.parse(result.stdout);
+  if (!parsed?.owner?.login || !parsed?.name) {
+    throw new Error(
+      `[autonomous-dispatch] gh repo view returned an unexpected JSON shape; cannot resolve owner/repo from: ${result.stdout}`,
+    );
+  }
   return { owner: parsed.owner.login, repo: parsed.name };
 }
 
