@@ -103,6 +103,22 @@ describe('looksLikeGitPush', () => {
     expect(looksLikeGitPush(['-c', 'user.name=foo'])).toBe(false);
     expect(looksLikeGitPush(['-C', '/tmp/repo'])).toBe(false);
   });
+
+  it('distinguishes the verb from a refspec named "push"', () => {
+    // A benign `git fetch origin push` (refspec literally named
+    // `push`) must not route into the push-auth path; positional
+    // detection guards against the false positive a naive
+    // `args.includes('push')` would emit.
+    expect(looksLikeGitPush(['fetch', 'origin', 'push'])).toBe(false);
+    expect(looksLikeGitPush(['-c', 'user.name=foo', 'fetch', 'origin', 'push'])).toBe(false);
+  });
+
+  it('handles `-C dir` and `--` separator', () => {
+    expect(looksLikeGitPush(['-C', '/tmp/repo', 'push', 'origin', 'main'])).toBe(true);
+    expect(looksLikeGitPush(['-C', '/tmp/repo', 'fetch', 'origin'])).toBe(false);
+    // After `--`, the next arg is treated as the verb.
+    expect(looksLikeGitPush(['--', 'push', 'origin', 'main'])).toBe(true);
+  });
 });
 
 describe('buildAuthedGitInvocation', () => {
@@ -214,22 +230,6 @@ describe('buildAuthedGitInvocation', () => {
     // to `{...buildReadOnlyEnv(token), ...callerEnv}` would silently
     // let an ambient askpass back in and hang the dispatch.
     expect(out.env.GIT_TERMINAL_PROMPT).toBe('0');
-  });
-
-  it('looksLikeGitPush distinguishes the verb from a refspec named "push"', () => {
-    // A benign `git fetch origin push` (refspec literally named
-    // `push`) must not route into the push-auth path; positional
-    // detection guards against the false positive a naive
-    // `args.includes('push')` would emit.
-    expect(looksLikeGitPush(['fetch', 'origin', 'push'])).toBe(false);
-    expect(looksLikeGitPush(['-c', 'user.name=foo', 'fetch', 'origin', 'push'])).toBe(false);
-  });
-
-  it('looksLikeGitPush handles `-C dir` and `--` separator', () => {
-    expect(looksLikeGitPush(['-C', '/tmp/repo', 'push', 'origin', 'main'])).toBe(true);
-    expect(looksLikeGitPush(['-C', '/tmp/repo', 'fetch', 'origin'])).toBe(false);
-    // After `--`, the next arg is treated as the verb.
-    expect(looksLikeGitPush(['--', 'push', 'origin', 'main'])).toBe(true);
   });
 
   it('buildAuthedGitInvocation throws when the rewriter cannot translate the remote', () => {
