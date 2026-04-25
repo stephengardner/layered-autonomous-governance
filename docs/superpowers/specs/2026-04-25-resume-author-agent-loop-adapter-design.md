@@ -8,7 +8,7 @@ This design must survive a 3-month-later review with 10x more actors, 10x more c
 
 | Canon | How this design satisfies it |
 |---|---|
-| `dev-design-decisions-3-month-review` | Strategy pluggability + adapter-neutral naming (`resumable_session_id`, not `resumable_session_id`; `sessionPersistExtras`, not `sessionPersistExtras`) means LangGraph or other future agent-loop adapters reuse the same shape without forking. The wrapper itself is generic; today's claude-code-specific logic lives only in the strategy implementation. |
+| `dev-design-decisions-3-month-review` | Strategy pluggability + adapter-neutral naming (`resumable_session_id`, `sessionPersistExtras`) means LangGraph or other future agent-loop adapters reuse the same shape without forking. The wrapper itself is generic; today's claude-code-specific logic lives only in the strategy implementation. See §3.3, §3.4. |
 | `dev-indie-floor-org-ceiling` | Indie default is `[SameMachineCliResumeStrategy]` (zero config; works with the operator's existing local Claude CLI sessions). Org ceiling enables `BlobShippedSessionResumeStrategy` (with operator-tuned redactor + BYO BlobStore + explicit consent). Same wrapper code; capability dialed by constructor options. See §6.5. |
 | `dev-substrate-not-prescription` | The wrapper + strategies live in `examples/agent-loops/resume-author/`, not `src/`. The only `src/` touch is `BlobStore.describeStorage()` (general-purpose; useful for any caller wanting destination introspection). No actor names, no PR-specific logic, no claude-code-specific surface in `src/`. |
 | `dev-easy-vs-pluggability-tradeoff` | The "easy" path would be embedding resume into `ClaudeCodeAgentLoopAdapter` directly. Rejected for pluggability: a wrapper-pattern keeps the existing adapter narrow ("spawn fresh CLI session") and lets operators compose. See §2 + §3.7. |
@@ -149,9 +149,6 @@ export interface ResumeContext {
   readonly candidateSessions: ReadonlyArray<CandidateSession>;
   readonly workspace: Workspace;
   readonly host: Host;
-  /** Adapter-neutral identifier the captured session was tagged with at persist time.
-      For ClaudeCodeAgentLoopAdapter, this is the CLI session UUID. For other adapters,
-      it's whatever opaque token the adapter's `sessionPersistExtras` produced. */
 }
 
 export interface CandidateSession {
@@ -307,7 +304,12 @@ const agentLoop = new ResumeAuthorAgentLoopAdapter({
   fallback: fresh,
   host,
   strategies: [new SameMachineCliResumeStrategy({ maxStaleHours: 8 })],
-  prObservationAtomId: /* threaded from the actor or runner */,
+  // PR-fix's candidate walk: from the current iteration's PrFixObservation,
+  // walk dispatched_session_atom_id back through prior iterations on the same
+  // PR, return the agent-session atoms with `extra.resumable_session_id`
+  // populated, sorted newest-first. The runner constructs this closure with
+  // a reference to the current observation atom id supplied by the driver.
+  assembleCandidates: walkAuthorSessionsForPrFix(host, currentPrObservationAtomId),
   maxStaleHours: 8,
 });
 ```
@@ -327,7 +329,7 @@ strategies: [
 ],
 ```
 
-The `prObservationAtomId` is sourced from PrFixActor's per-iteration observation; the runner script threads it to the wrapper's constructor at construction time, OR (cleaner) PrFixActor's `apply` accepts a wrapper-aware adapter that reads it from `AgentLoopInput`. **Decision pending:** see Section 6 on the threading question.
+The `assembleCandidates` callback closes over the per-iteration context an actor needs (for PR-fix: the current PR observation atom). It is invoked once per `run(input)` call by the wrapper. Future actors plug different walk-functions for different chain shapes. See §6.1.
 
 ## 4. Data flow
 
@@ -404,7 +406,7 @@ Shipping this content into framework-managed blob storage is a privilege escalat
 
 `ResumeAuthorAgentLoopAdapter.run(input)` needs the candidate session list to pass to strategies. Two options:
 
-**Option I: Caller assembles candidates and threads them via a per-call factory.** The actor (e.g. PrFixActor) walks `dispatched_session_atom_id` and constructs a fresh wrapper per fix-iteration with `candidateSessions` baked in. Pro: keeps `AgentLoopInput` substrate-clean (no actor-specific fields); future actors with different walks (Auditor walks audit-event chains, etc.) compose naturally. Con: requires per-iteration wrapper construction.
+**Option I: Caller supplies an `assembleCandidates` callback at wrapper construction; wrapper invokes it per `run(input)` call.** The callback closes over whatever per-iteration context the actor needs (PR observation atom id for PR-fix; audit-event chain head for an auditor; etc.). Pro: keeps `AgentLoopInput` substrate-clean (no actor-specific fields); future actors with different walks compose naturally without changing the wrapper or the substrate; wrapper is built ONCE per driver run and invoked many times — no per-iteration construction. Con: callback indirection is one extra layer to reason about, but the closure is the natural place to thread per-iteration context.
 
 **Option II: Extend `AgentLoopInput` with optional `priorObservationAtomId?: AtomId`.** Substrate-additive (optional field). Wrapper walks the chain itself. Pro: stateless wrapper. Con: substrate gains a field whose semantic ("walk dispatched_session_atom_id") is actor-specific even though the field is optional.
 
@@ -469,7 +471,7 @@ docs/superpowers/plans/2026-04-25-resume-author-agent-loop-adapter.md         # 
 - `BlobShippedSessionResumeStrategy` constructor: throws on `acknowledgeSessionDataFlow: false`, missing redactor, identity redactor, in-tree FileBlobStore. Logs INFO on remote BlobStore.
 - `BlobShippedSessionResumeStrategy.findResumableSession`: skips on missing blob ref, skips on cli-version mismatch, returns ResolvedSession with preparation closure on match.
 - `BlobShippedSessionResumeStrategy.onSessionPersist`: applies redactor to file contents; computes BlobRef; returns expected extras.
-- `ResumeAuthorAgentLoopAdapter.run`: success path (strategy resolves, claude --resume succeeds); structural-failure delegation to fallback; transient retry; no-strategy-resolves delegation; both atoms cross-referenced via derived_from.
+- `ResumeAuthorAgentLoopAdapter.run`: success path (strategy resolves, resume invocation returns `completed`); non-completed-result delegation to fallback; throw-from-resume delegation to fallback; no-strategy-resolves delegation to fallback; both attempts get separate agent-session atoms cross-referenced via `derived_from` and `extra.fallback_invoked`.
 
 ### 8.2 Integration shape
 
