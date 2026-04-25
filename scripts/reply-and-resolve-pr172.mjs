@@ -11,7 +11,7 @@ const threads = [
     id: 'PRRT_kwDOSGhm9859nkyj',
     label: 'F1 (Minor) docs/cr-precheck.md:26 -- Exit codes line missing uncaught-exception path',
     body:
-      'Fixed in this push.\n\n'
+      'Fixed in 20bab77.\n\n'
       + '**What changed:** the Exit codes line in docs/cr-precheck.md '
       + 'now reads:\n\n'
       + '> Exit codes: `0` clean (or skipped on not-found, or empty diff), '
@@ -45,7 +45,7 @@ const threads = [
     id: 'PRRT_kwDOSGhm9859nkyk',
     label: 'F2 (MAJOR) docs/cr-precheck.md:72 -- doc contradicts shipped CI behavior + unsafe branch-protection advice',
     body:
-      'Fixed in this push using the suggested rewrite verbatim.\n\n'
+      'Fixed in 20bab77 using the suggested rewrite verbatim.\n\n'
       + '**What changed (lines 70-72):**\n'
       + '- Line 70 now states the workflow emits a loud `::warning::` '
       + 'and skips the install/verify/review steps (exit success), '
@@ -96,7 +96,7 @@ const threads = [
     id: 'PRRT_kwDOSGhm9859nkyl',
     label: 'F3 (Minor) scripts/cr-precheck.mjs:314 -- signal-terminated CR CLI silently falls through to clean',
     body:
-      'Fixed in this push via an extracted pure helper '
+      'Fixed in 20bab77 via an extracted pure helper '
       + '`isCliErrorResult` (the suggested-diff approach was '
       + 'correct but I went one step further and pulled the '
       + 'classification into a unit-testable helper so future '
