@@ -284,3 +284,25 @@ describe('ClaudeCodeAgentLoopAdapter -- blob threshold', () => {
     expect(result.failure?.stage).toBe('blob-store');
   });
 });
+
+describe('ClaudeCodeAgentLoopAdapter -- budget guards', () => {
+  it('terminates with kind=budget-exhausted when max_turns is reached', async () => {
+    const host = createMemoryHost();
+    // Stream emits 5 turn-result-turn cycles; max_turns=2 should kill after 2.
+    const lines: string[] = [
+      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+    ];
+    for (let i = 0; i < 5; i++) {
+      lines.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `tu_${i}`, name: 'Bash', input: {} }] } }));
+      lines.push(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `tu_${i}`, content: 'ok', is_error: false }] } }));
+    }
+    lines.push(JSON.stringify({ type: 'result', cost_usd: 0.05, is_error: false }));
+    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(lines) });
+    const input = {
+      ...mkInput(host),
+      budget: { max_turns: 2, max_wall_clock_ms: 60_000, max_usd: 1 },
+    };
+    const result = await adapter.run(input);
+    expect(result.kind).toBe('budget-exhausted');
+  });
+});

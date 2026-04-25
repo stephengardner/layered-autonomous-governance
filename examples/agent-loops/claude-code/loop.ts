@@ -89,6 +89,23 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
         ...(this.opts.execImpl !== undefined ? { execImpl: this.opts.execImpl } : {}),
       });
 
+      // Adapter-side wall-clock guard. The CLI's --max-budget-usd
+      // covers cost; the adapter enforces wall-clock at the process
+      // boundary so a hung subprocess cannot exceed the substrate
+      // contract's max_wall_clock_ms. SIGTERM first, then SIGKILL
+      // after killGracePeriodMs (default 5000ms) as a hard fallback.
+      // Both .unref() so the timer never blocks process exit on its own.
+      let wallClockExpired = false;
+      const wallClockTimer = setTimeout(() => {
+        wallClockExpired = true;
+        try { proc.kill('SIGTERM'); } catch { /* already dead */ }
+        const grace = this.opts.killGracePeriodMs ?? 5000;
+        setTimeout(() => {
+          try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+        }, grace).unref();
+      }, input.budget.max_wall_clock_ms);
+      wallClockTimer.unref();
+
       // The adapter does not override stdio, so execa always exposes
       // `proc.stdout` as a Readable; the non-null assertion is justified.
       const rl = createInterface({ input: proc.stdout!, crlfDelay: Infinity });
@@ -96,6 +113,11 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       let currentTurnAtomId: AtomId | null = null;
       let currentTurnIndex = 0;
       let pendingFirstTurnOpened = false;
+      // max_turns guard: tripped in the tool-result branch when the
+      // CLI is about to feed results back for the (max_turns+1)-th turn.
+      // The substrate distinguishes structural exhaustion (this) from
+      // catastrophic wall-clock cap above.
+      let turnsExhausted = false;
 
       // Tool-use correlation maps. In-memory only, never persisted.
       // The (turn_id, index) pair is the only safe correlation under
@@ -130,12 +152,18 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       };
 
       for await (const rawLine of rl) {
+        // Stop draining the stream once a budget guard has tripped.
+        // The subprocess has already been signalled (SIGTERM); we just
+        // need to exit cooperatively so the post-loop classifier can
+        // map the trip to the right `kind` + `failure`.
+        if (turnsExhausted || wallClockExpired) break;
         // Parser returns ReadonlyArray<StreamJsonEvent>: zero-or-many
         // events per line so multi-block assistant messages (text +
         // tool_use, parallel tool_use) and parallel tool_result blocks
         // are not lost. Iterate per-line.
         const events = parseStreamJsonLine(rawLine);
         for (const ev of events) {
+          if (turnsExhausted || wallClockExpired) break;
           if (ev.kind === 'system') {
             if (!pendingFirstTurnOpened) {
               currentTurnAtomId = await openPlaceholderTurn(currentTurnIndex, prompt);
@@ -250,7 +278,16 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
             toolUseStartMs.delete(ev.toolUseId);
             // Open the NEXT placeholder turn -- the CLI is feeding tool
             // results back to the LLM, which triggers a new LLM call.
+            // Enforce max_turns here: if opening the next turn would
+            // exceed the budget, signal the subprocess + flag the trip
+            // and break out. The post-loop classifier maps this to
+            // `kind: 'budget-exhausted'`.
             currentTurnIndex += 1;
+            if (currentTurnIndex >= input.budget.max_turns) {
+              turnsExhausted = true;
+              try { proc.kill('SIGTERM'); } catch { /* already dead */ }
+              break;
+            }
             currentTurnAtomId = await openPlaceholderTurn(currentTurnIndex, '<tool-results-summary>');
           }
           // parse-error: log + skip (no-op)
@@ -258,7 +295,32 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       }
 
       const procResult = await proc;
-      if (procResult.exitCode !== 0) {
+      // Clear the wall-clock timer if we exited normally; otherwise
+      // its closure leaks for the timer's full duration in a long-lived
+      // host. .unref() prevents process-hang but the closure still
+      // holds `proc` in memory until the timer fires.
+      clearTimeout(wallClockTimer);
+
+      if (wallClockExpired) {
+        // Catastrophic: the subprocess hung past max_wall_clock_ms.
+        // Distinguished from max_turns (structural) so postmortems can
+        // separate "agent ran too long" from "agent hit turn budget".
+        kind = 'aborted';
+        failure = {
+          kind: 'catastrophic',
+          reason: 'wall-clock budget exhausted',
+          stage: 'wall-clock-cap',
+        };
+      } else if (turnsExhausted) {
+        // Structural: the agent used its whole turn budget without
+        // converging. Recoverable by raising the cap or splitting work.
+        kind = 'budget-exhausted';
+        failure = {
+          kind: 'structural',
+          reason: 'turn budget hit',
+          stage: 'max-turns-cap',
+        };
+      } else if (procResult.exitCode !== 0) {
         const failureKind = classifyClaudeCliFailure(null, procResult.exitCode, String(procResult.stderr ?? ''));
         kind = 'error';
         failure = {
