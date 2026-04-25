@@ -107,6 +107,87 @@ export function buildPushSpawnArgs(gitArgs, resolvedRemoteUrl, token) {
 }
 
 /**
+ * Detect `-u` / `--set-upstream` in a `git push` arg list and return
+ * a plan for replacing the user's intent without leaking the
+ * transient x-access-token URL into `.git/config`.
+ *
+ * Why this exists
+ * ---------------
+ * `buildPushSpawnArgs` substitutes the remote NAME (e.g. `origin`)
+ * with a transient URL `https://x-access-token:<token>@github.com/...`
+ * so the receive-pack endpoint accepts our Basic auth. Git's `-u`
+ * flag (alias of `--set-upstream`) tells git to record the remote
+ * as the branch's upstream. With the URL substituted into argv, git
+ * records the FULL URL  --  including the embedded token  --  into
+ * `branch.<name>.remote` of `.git/config`. The token then persists
+ * on disk for hours past the push, in a file the operator's editor
+ * + IDE + linter all read.
+ *
+ * The fix this helper enables: strip `-u` from the spawn argv and
+ * record (remoteName, branchHint) so the wrapper can set the upstream
+ * AFTER a successful push using `git config branch.<name>.remote
+ * <remote-name>`  --  which references the named remote rather than the
+ * transient URL.
+ *
+ * Returns null when `-u` is absent. Otherwise:
+ *   { strippedArgs, remoteName, branchHint }
+ *
+ * `branchHint` is the source side of the first refspec after the
+ * remote (the form `<src>:<dst>` is split on `:`), or null if no
+ * refspec was provided. The wrapper resolves a null hint via
+ * `git rev-parse --abbrev-ref HEAD` (the current branch).
+ */
+const SET_UPSTREAM_FLAGS = new Set(['-u', '--set-upstream']);
+
+export function extractSetUpstreamPlan(gitArgs) {
+  if (!Array.isArray(gitArgs)) return null;
+  const remoteInfoBefore = findRemoteArg(gitArgs);
+  if (remoteInfoBefore === null) return null;
+  const stripped = [];
+  let hadFlag = false;
+  for (const arg of gitArgs) {
+    if (SET_UPSTREAM_FLAGS.has(arg)) {
+      hadFlag = true;
+      continue;
+    }
+    stripped.push(arg);
+  }
+  if (!hadFlag) return null;
+  // After strip, indices shift left; re-find the remote slot.
+  const remoteInfoAfter = findRemoteArg(stripped);
+  if (remoteInfoAfter === null) return null;
+  const refspec = stripped[remoteInfoAfter.remoteIndex + 1] ?? null;
+  // Source side of the refspec (before `:`). Strip a leading `+` so a
+  // force-refspec like `+feat/x:release-x` yields `feat/x` (not
+  // `+feat/x`, which would interpolate into an invalid config key
+  // `branch.+feat/x.remote`).
+  let branchHint = null;
+  let mergeRef = null;
+  if (typeof refspec === 'string' && refspec.length > 0) {
+    const colonIdx = refspec.indexOf(':');
+    const rawSrc = colonIdx >= 0 ? refspec.slice(0, colonIdx) : refspec;
+    const rawDst = colonIdx >= 0 ? refspec.slice(colonIdx + 1) : null;
+    const srcStripped = rawSrc.startsWith('+') ? rawSrc.slice(1) : rawSrc;
+    branchHint = srcStripped.length > 0 ? srcStripped : null;
+    // Destination side: if the refspec was `src:dst`, capture `dst`
+    // so the wrapper can write `branch.<src>.merge = refs/heads/<dst>`
+    // -- matching what native `-u` would do. If `dst` already starts
+    // with `refs/heads/` use it verbatim; otherwise wrap it. If no
+    // `:` was present, leave mergeRef null and the wrapper falls
+    // back to `refs/heads/<branchHint>`.
+    if (rawDst !== null && rawDst.length > 0) {
+      mergeRef = rawDst.startsWith('refs/') ? rawDst : `refs/heads/${rawDst}`;
+    }
+  }
+  return {
+    strippedArgs: stripped,
+    remoteName: remoteInfoAfter.remote,
+    branchHint,
+    mergeRef,
+  };
+}
+
+/**
  * Produce the child-env overrides for the READ-ONLY verbs (fetch,
  * pull, clone, ls-remote, ...). GitHub accepts Bearer on these
  * endpoints, so the token flows via `http.extraHeader` and never
