@@ -1956,8 +1956,8 @@ node scripts/git-as.mjs lag-ceo commit -m "test(e2e): assert canonical AgentTurn
 # emdash check (matches CI scope exactly)
 grep -rP --exclude-dir=fixtures --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist $'\u2014' src/ test/ docs/ examples/ README.md design/ 2>/dev/null && echo "FAIL: emdashes" || echo "OK: no emdashes"
 
-# Private terms (matches CI)
-git ls-files | grep -v '^\.github/workflows/ci\.yml$' | xargs grep -lEi '\bphx\b|Phoenix|palace-phoenix' 2>/dev/null && echo "FAIL: private terms" || echo "OK"
+# Private terms (matches CI; consult .github/workflows/ci.yml for the exact regex,
+# which is intentionally NOT inlined here so this plan does not match its own check)
 
 # AI attribution
 grep -rEn 'Co-Authored-By|🤖|Generated with.*Claude|claude\.ai' --include='*.ts' --include='*.md' src/ test/ docs/ examples/ 2>/dev/null && echo "FAIL: AI attribution" || echo "OK"
