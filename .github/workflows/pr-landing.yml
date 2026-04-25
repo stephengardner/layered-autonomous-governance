@@ -165,3 +165,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/run-auditor.mjs --pr ${{ github.event.pull_request.number }} --plan ${{ steps.plan.outputs.plan-id }}
+
+  # lag-auditor-noop is a migration shim; see plan-atom plan-add-lag-auditor-noop-job-to-github-workf-cto-actor-20260424231351
+  lag-auditor-noop:
+    name: LAG-auditor (noop)
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'autonomous-intent') }}
+    steps:
+      - name: Post LAG-auditor success check-run
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.BOT_GITHUB_TOKEN }}
+          script: |
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'LAG-auditor',
+              head_sha: context.payload.pull_request.head.sha,
+              status: 'completed',
+              conclusion: 'success',
+              output: {
+                title: 'No autonomous-intent label - auditor not required',
+                summary: 'Migration shim. See plan-atom plan-add-lag-auditor-noop-job-to-github-workf-cto-actor-20260424231351. When a real unlabeled-PR auditor ships, replace this step with the auditor invocation.'
+              }
+            });
