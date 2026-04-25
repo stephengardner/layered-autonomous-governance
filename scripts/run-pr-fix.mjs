@@ -257,19 +257,36 @@ async function main() {
   const agentLoopAdapter = new ResumeAuthorAgentLoopAdapter({
     fallback: freshAgentLoop,
     host,
+    // Single source of truth for the staleness window: strategy-level.
+    // The wrapper intentionally does not surface a top-level
+    // maxStaleHours knob (would be dead weight; strategies own their
+    // own windows).
     strategies: [new SameMachineCliResumeStrategy({ maxStaleHours: 8 })],
     assembleCandidates: async (_input) => {
+      // Filter the most-recent pr-fix observation atoms by the current
+      // PR identity (owner / repo / number) before walking the
+      // dispatched_session_atom_id chain. Under concurrent runs against
+      // a shared `.lag/`, the most-recent pr-fix-observation in store
+      // may belong to a sibling PR; without this filter the walker
+      // would walk that PR's session chain, the strategy would attempt
+      // to resume the wrong session, and the wrapper would silently
+      // degrade to fresh-spawn (a soft miss, not a corruption, but a
+      // scaling liability against the org-ceiling story).
       const recent = await host.atoms.query({ type: ['observation'] }, 50);
       const prFixObs = recent.atoms.find((a) => {
         const meta = a.metadata;
-        return meta !== null
-          && typeof meta === 'object'
-          && meta.kind === 'pr-fix-observation';
+        if (meta === null || typeof meta !== 'object') return false;
+        if (meta.kind !== 'pr-fix-observation') return false;
+        const obs = meta.pr_fix_observation;
+        return obs !== null
+          && typeof obs === 'object'
+          && obs.pr_owner === owner
+          && obs.pr_repo === repo
+          && obs.pr_number === args.prNumber;
       });
       if (prFixObs === undefined) return [];
       return walkAuthorSessions(host, prFixObs.id);
     },
-    maxStaleHours: 8,
   });
 
   // GitWorktreeProvider checks out the PR's existing HEAD branch (per

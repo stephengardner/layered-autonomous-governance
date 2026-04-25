@@ -396,6 +396,7 @@ describe('BlobShippedSessionResumeStrategy -- onSessionPersist', () => {
       sessionId: 'uuid-cap-001',
       workspace: ws,
       host: stubHost,
+      principal: 'test-principal' as PrincipalId,
     });
     // returned extras shape
     expect(typeof result['session_file_blob_ref']).toBe('string');
@@ -419,6 +420,7 @@ describe('BlobShippedSessionResumeStrategy -- onSessionPersist', () => {
       sessionId: 'no-such-session',
       workspace: ws,
       host: stubHost,
+      principal: 'test-principal' as PrincipalId,
     });
     expect(result).toEqual({});
   });
@@ -477,6 +479,7 @@ describe('BlobShippedSessionResumeStrategy -- onSessionPersist', () => {
         sessionId: 'uuid-ord-001',
         workspace: ws,
         host: stubHost,
+        principal: 'test-principal' as PrincipalId,
       });
       // Redactor saw the raw bytes
       expect(seenByRedactor.length).toBe(1);
@@ -486,6 +489,62 @@ describe('BlobShippedSessionResumeStrategy -- onSessionPersist', () => {
       const putContent = seenByPut[0];
       const putString = typeof putContent === 'string' ? putContent : (putContent as Buffer).toString('utf8');
       expect(putString).toBe(raw + '__POST_REDACTION');
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('passes the session-owning principal (not the construction probe sentinel) to the redactor on real captures', async () => {
+    // Regression pin: previously the strategy reused the constructor's
+    // identity-probe sentinel as the redact `ctx.principal` for every
+    // real capture. Audit logs / per-principal redactor rules were
+    // therefore misattributed to the probe identity. The fix threads
+    // the session-owning principal through `onSessionPersist`.
+    const cwd = '/p3';
+    const slug = 'p3';
+    const projDir = join(homeOverride, '.claude', 'projects', slug);
+    mkdirSync(projDir, { recursive: true });
+    const sessionFile = join(projDir, 'uuid-attr-001.jsonl');
+    writeFileSync(sessionFile, 'attribution-test-payload', 'utf8');
+
+    const seenPrincipals: Array<PrincipalId> = [];
+    const recordingRedactor: Redactor = {
+      redact: (content: string, ctx: RedactContext) => {
+        seenPrincipals.push(ctx.principal);
+        return content + '__REDACTED';
+      },
+    };
+    const recordingBs: BlobStore = {
+      async put(): Promise<BlobRef> { return 'sha256:' + 'c'.repeat(64) as BlobRef; },
+      async get(): Promise<Buffer> { throw new Error('not used'); },
+      async has(): Promise<boolean> { return false; },
+      describeStorage(): BlobStorageDescriptor { return { kind: 'remote', target: 'recorder-2' }; },
+    };
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    try {
+      const s = new BlobShippedSessionResumeStrategy({
+        acknowledgeSessionDataFlow: true,
+        redactor: recordingRedactor,
+        blobStore: recordingBs,
+        cliVersion: '2.0.0',
+        homeDirOverride: homeOverride,
+      });
+      // Drop the construction-time probe call; we only care about the
+      // real capture call below.
+      seenPrincipals.length = 0;
+
+      const ws = { id: 'ws-1', path: cwd, baseRef: 'main' } as Workspace;
+      const realPrincipal = 'session-owner-principal' as PrincipalId;
+      await s.onSessionPersist!({
+        sessionId: 'uuid-attr-001',
+        workspace: ws,
+        host: stubHost,
+        principal: realPrincipal,
+      });
+      expect(seenPrincipals.length).toBe(1);
+      expect(seenPrincipals[0]).toBe(realPrincipal);
+      // Make sure the probe sentinel did NOT leak through.
+      expect(seenPrincipals[0]).not.toBe('redactor-probe');
     } finally {
       infoSpy.mockRestore();
     }

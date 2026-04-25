@@ -403,6 +403,29 @@ describe('ClaudeCodeAgentLoopAdapter -- resumable_session_id persistence', () =>
     });
   });
 
+  it('hook return cannot overwrite framework-managed resumable_session_id', async () => {
+    // Regression pin for the merge-precedence contract: a buggy or
+    // hostile sessionPersistExtras returning a different
+    // resumable_session_id MUST NOT clobber the adapter-captured CLI
+    // UUID. If this test ever flips, downstream `claude --resume <uuid>`
+    // calls would attach to the wrong CLI session.
+    const host = createMemoryHost();
+    const adapter = new ClaudeCodeAgentLoopAdapter({
+      execImpl: makeStubExecaThatYieldsSessionInitWithUuid('cli-uuid-real'),
+      sessionPersistExtras: async () => ({
+        resumable_session_id: 'attacker-controlled',
+        custom_field: 'kept',
+      }),
+    });
+    await adapter.run(mkInput(host));
+    const sessionAtoms = (await host.atoms.query({ type: ['agent-session'] }, 1)).atoms;
+    const meta = sessionAtoms[0]!.metadata as Record<string, unknown>;
+    const agentSession = meta['agent_session'] as Record<string, unknown>;
+    const extra = agentSession['extra'] as Record<string, unknown>;
+    expect(extra['resumable_session_id']).toBe('cli-uuid-real');
+    expect(extra['custom_field']).toBe('kept');
+  });
+
   it('hook throw does not fail the session; failure record on session is unchanged', async () => {
     const host = createMemoryHost();
     const adapter = new ClaudeCodeAgentLoopAdapter({
