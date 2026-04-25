@@ -52,6 +52,15 @@ describe('parseRepoSlug', () => {
     expect(parseRepoSlug('foo/')).toBe(null);
   });
 
+  it('returns null for over-segmented input (rejects "org/team/repo" typos)', () => {
+    // Regression for the truncate-on-extra-segments footgun: a
+    // GH_REPO env typo like 'org/team/repo' must not silently
+    // resolve to {owner:'org', repo:'team'} and dispatch against
+    // the wrong repo with no diagnostic.
+    expect(parseRepoSlug('org/team/repo')).toBe(null);
+    expect(parseRepoSlug('a/b/c/d')).toBe(null);
+  });
+
   it('returns null for non-string', () => {
     expect(parseRepoSlug(undefined)).toBe(null);
     expect(parseRepoSlug(null)).toBe(null);
@@ -162,10 +171,12 @@ describe('buildAuthedGitInvocation', () => {
       inheritedEnv: { PATH: '/x' },
     });
     expect(out.args).toEqual(['fetch', 'origin', 'main', '--quiet']);
-    // Literal env keys: buildReadOnlyEnv emits a single GIT_CONFIG
-    // pair (KEY_0/VALUE_0) for http.extraHeader. Asserting the
-    // specific slots keeps the test focused; the upstream
-    // git-as-push-auth tests already cover the indexing convention.
+    // Literal env keys: buildReadOnlyEnv emits two GIT_CONFIG
+    // pairs -- KEY_0/VALUE_0 for the http.extraHeader Bearer
+    // entry, and KEY_1/VALUE_1 to clear credential.helper so a
+    // cached PAT cannot cross-pollinate. Asserting the specific
+    // slots keeps the test focused; the upstream git-as-push-auth
+    // tests already cover the indexing convention.
     expect(out.env.GIT_CONFIG_COUNT).toBe('2');
     expect(out.env.GIT_CONFIG_KEY_0).toBe('http.extraHeader');
     expect(out.env.GIT_CONFIG_VALUE_0).toBe(`Authorization: Bearer ${TOKEN}`);

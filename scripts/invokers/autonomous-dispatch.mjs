@@ -129,7 +129,8 @@ export default async function register(host, registry) {
             '-f', `labels[]=plan-id:${capturedPlanId}`,
           ], { stdio: 'inherit', cwd: repoDir });
         } catch (err) {
-          console.error(`[autonomous-dispatch] WARNING: failed to label PR #${capturedPrNumber}: ${err.message}. LAG-auditor gate will not fire until labels are added manually.`);
+          const cause = err instanceof Error ? err.message : String(err);
+          console.error(`[autonomous-dispatch] WARNING: failed to label PR #${capturedPrNumber}: ${cause}. LAG-auditor gate will not fire until labels are added manually.`);
         }
       }
     }

@@ -12,13 +12,18 @@ import {
 /**
  * Parse a `GH_REPO=owner/repo` env value.
  * Returns { owner, repo } when the input is well-formed, or null
- * otherwise (caller falls back to `gh repo view`).
+ * otherwise (caller falls back to `gh repo view`). Reject over-
+ * segmented inputs like `org/team/repo` instead of silently
+ * truncating to `{owner:'org', repo:'team'}`; the prior
+ * `split('/', 2)` form would have dispatched against the wrong
+ * repo on a typo, with no diagnostic.
  */
 export function parseRepoSlug(slug) {
   if (typeof slug !== 'string') return null;
   const trimmed = slug.trim();
-  if (!trimmed.includes('/')) return null;
-  const [owner, repo] = trimmed.split('/', 2);
+  const parts = trimmed.split('/');
+  if (parts.length !== 2) return null;
+  const [owner, repo] = parts;
   if (!owner || !repo) return null;
   return { owner, repo };
 }
