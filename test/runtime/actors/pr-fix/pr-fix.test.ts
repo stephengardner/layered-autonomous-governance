@@ -1277,3 +1277,235 @@ describe('PrFixActor.reflect', () => {
     expect(reflection.note).toBe('agent loop completed but did not commit');
   });
 });
+
+// ---------------------------------------------------------------------------
+// PrFixActor end-to-end (MemoryHost)
+//
+// Drives observe -> classify -> propose -> apply -> reflect against a single
+// MemoryHost-backed AtomStore using the same stub adapter helpers from the
+// per-method blocks. The intent is to assert the contracts compose: the
+// observation atom written in observe() lands in the store, classify and
+// propose see the freshest counts, apply receives `checkoutBranch ===
+// observation.headBranch`, and reflect produces the right done/progress
+// signal for the iteration. Convergence-loop interaction is out of scope
+// (runActor's responsibility); this block exercises the actor contract chain.
+// ---------------------------------------------------------------------------
+
+const E2E_PR: PrIdentifier = { owner: 'o', repo: 'r', number: 42 };
+
+function makeE2EAdapters(args: {
+  status: PrReviewStatus;
+  prDetails: { head: { ref: string; sha: string }; base: { ref: string } };
+  agentLoop: AgentLoopAdapter;
+  workspaceProvider: WorkspaceProvider;
+  resolveBehavior?: (commentId: string) => Promise<void>;
+}): { adapters: PrFixAdapters; review: StubResolveAdapter; ghClient: GhClient } {
+  const review = new StubResolveAdapter(args.resolveBehavior);
+  // Override getPrReviewStatus so the e2e exercises non-empty findings sets.
+  review.getPrReviewStatus = async (pr: PrIdentifier): Promise<PrReviewStatus> => ({
+    ...args.status,
+    pr,
+  });
+  const ghClient = makeStubGhClient(args.prDetails);
+  const adapters = {
+    review,
+    agentLoop: { ...args.agentLoop, name: 'stub-agent-loop', version: '0' },
+    workspaceProvider: { ...args.workspaceProvider, name: 'stub-workspace', version: '0' },
+    blobStore: { ...EMPTY_BLOB_STORE, name: 'stub-blob', version: '0' },
+    redactor: { ...NOOP_REDACTOR, name: 'stub-redactor', version: '0' },
+    ghClient: { ...(ghClient as object), name: 'stub-gh', version: '0' } as unknown as GhClient & { readonly name: string; readonly version: string },
+  } as unknown as PrFixAdapters;
+  return { adapters, review, ghClient };
+}
+
+describe('PrFixActor end-to-end (MemoryHost)', () => {
+  it('one full pass with findings: observe -> classify=has-findings -> propose dispatch -> apply fix-pushed -> reflect progress', async () => {
+    const host = createMemoryHost();
+    const findings = [
+      mkLineCommentForApply({ id: 'l1', path: 'src/foo.ts', body: 'rename this', kind: 'line' }),
+    ];
+    const status: PrReviewStatus = {
+      pr: E2E_PR,
+      mergeable: true,
+      mergeStateStatus: 'BLOCKED',
+      lineComments: findings,
+      bodyNits: [],
+      submittedReviews: [
+        { author: 'coderabbitai', state: 'CHANGES_REQUESTED', submittedAt: '2026-04-25T00:00:00.000Z' },
+      ],
+      checkRuns: [],
+      legacyStatuses: [],
+      partial: false,
+      partialSurfaces: [],
+    };
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'sess-e2e' as AtomId,
+      turnAtomIds: ['t-e2e' as AtomId],
+      artifacts: { commitSha: 'sha-e2e', branchName: 'feat/x', touchedPaths: ['src/foo.ts'] },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const { adapters, review } = makeE2EAdapters({
+      status,
+      prDetails: { head: { ref: 'feat/x', sha: 'before-fix-sha' }, base: { ref: 'main' } },
+      agentLoop,
+      workspaceProvider,
+    });
+    const actor = new PrFixActor({
+      pr: E2E_PR,
+      readWorkspaceHeadSha: async () => 'sha-e2e',
+      readTouchedPaths: async () => new Set<string>(['src/foo.ts']),
+    });
+    const ctx = makeStubCtx({ host, adapters });
+
+    // observe
+    const obs = await actor.observe(ctx);
+    expect(obs.headBranch).toBe('feat/x');
+    expect(obs.lineComments).toHaveLength(1);
+    const obsAtoms = await host.atoms.query({ type: ['pr-fix-observation'] }, 100);
+    expect(obsAtoms.atoms).toHaveLength(1);
+
+    // classify
+    const classified = await actor.classify(obs, ctx);
+    expect((classified.metadata as { classification: PrFixClassification }).classification).toBe('has-findings');
+
+    // propose
+    const actions = await actor.propose(classified, ctx);
+    expect(actions).toHaveLength(1);
+    const action = actions[0]!;
+    expect(action.tool).toBe('agent-loop-dispatch');
+    if (action.payload.kind !== 'agent-loop-dispatch') throw new Error('discriminant');
+    expect(action.payload.headBranch).toBe(obs.headBranch);
+
+    // apply
+    const outcome = await actor.apply(action, ctx);
+    expect(outcome.kind).toBe('fix-pushed');
+    if (outcome.kind !== 'fix-pushed') throw new Error('unreachable');
+    expect(outcome.commitSha).toBe('sha-e2e');
+    expect(outcome.resolvedCommentIds).toEqual(['l1']);
+
+    // Regression guard: workspace acquired with checkoutBranch === observation.headBranch.
+    expect(workspaceProvider.captured.acquire).toHaveLength(1);
+    expect(workspaceProvider.captured.acquire[0]?.checkoutBranch).toBe(obs.headBranch);
+    expect(workspaceProvider.captured.acquire[0]?.baseRef).toBe(obs.baseRef);
+    expect(review.resolveCalls.map((c) => c.commentId)).toEqual(['l1']);
+
+    // reflect
+    const reflection = await actor.reflect([outcome], classified, ctx);
+    expect(reflection.done).toBe(false);
+    expect(reflection.progress).toBe(true);
+    expect(reflection.note).toBe('fix pushed; reobserving');
+  });
+
+  it('all-clean iteration: observe -> classify=all-clean -> propose [] -> reflect done', async () => {
+    const host = createMemoryHost();
+    const status: PrReviewStatus = {
+      pr: E2E_PR,
+      mergeable: true,
+      mergeStateStatus: 'CLEAN',
+      lineComments: [],
+      bodyNits: [],
+      submittedReviews: [
+        { author: 'coderabbitai', state: 'APPROVED', submittedAt: '2026-04-25T00:00:00.000Z' },
+      ],
+      checkRuns: [
+        { name: 'CodeRabbit', status: 'completed', conclusion: 'success' },
+      ],
+      legacyStatuses: [],
+      partial: false,
+      partialSurfaces: [],
+    };
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'never' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'never', branchName: 'feat/x' },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const { adapters } = makeE2EAdapters({
+      status,
+      prDetails: { head: { ref: 'feat/x', sha: 'final-sha' }, base: { ref: 'main' } },
+      agentLoop,
+      workspaceProvider,
+    });
+    const actor = new PrFixActor({ pr: E2E_PR });
+    const ctx = makeStubCtx({ host, adapters });
+
+    const obs = await actor.observe(ctx);
+    const classified = await actor.classify(obs, ctx);
+    expect((classified.metadata as { classification: PrFixClassification }).classification).toBe('all-clean');
+
+    const actions = await actor.propose(classified, ctx);
+    expect(actions).toEqual([]);
+
+    // No actions => no apply call. reflect on empty outcomes + all-clean halts.
+    const reflection = await actor.reflect([], classified, ctx);
+    expect(reflection.done).toBe(true);
+    expect(reflection.progress).toBe(false);
+    expect(reflection.note).toBe('all clean; nothing to fix');
+
+    // Workspace was never touched on the all-clean path.
+    expect(workspaceProvider.captured.acquire).toHaveLength(0);
+    expect(workspaceProvider.captured.releaseCount).toBe(0);
+  });
+
+  it("commit-SHA mismatch: apply returns fix-failed stage='verify-commit-sha'; reflect done=false progress=false", async () => {
+    const host = createMemoryHost();
+    const findings = [
+      mkLineCommentForApply({ id: 'l1', path: 'src/foo.ts', body: 'rename this', kind: 'line' }),
+    ];
+    const status: PrReviewStatus = {
+      pr: E2E_PR,
+      mergeable: true,
+      mergeStateStatus: 'BLOCKED',
+      lineComments: findings,
+      bodyNits: [],
+      submittedReviews: [],
+      checkRuns: [],
+      legacyStatuses: [],
+      partial: false,
+      partialSurfaces: [],
+    };
+    // Stub adapter claims commit 'abc' but workspace HEAD is 'def'.
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'sess-mismatch' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'abc', branchName: 'feat/x' },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const { adapters, review } = makeE2EAdapters({
+      status,
+      prDetails: { head: { ref: 'feat/x', sha: 'before-fix-sha' }, base: { ref: 'main' } },
+      agentLoop,
+      workspaceProvider,
+    });
+    const actor = new PrFixActor({
+      pr: E2E_PR,
+      readWorkspaceHeadSha: async () => 'def',
+      readTouchedPaths: async () => new Set<string>(['src/foo.ts']),
+    });
+    const ctx = makeStubCtx({ host, adapters });
+
+    const obs = await actor.observe(ctx);
+    const classified = await actor.classify(obs, ctx);
+    expect((classified.metadata as { classification: PrFixClassification }).classification).toBe('has-findings');
+
+    const actions = await actor.propose(classified, ctx);
+    const action = actions[0]!;
+    const outcome = await actor.apply(action, ctx);
+    expect(outcome.kind).toBe('fix-failed');
+    if (outcome.kind !== 'fix-failed') throw new Error('unreachable');
+    expect(outcome.stage).toBe('verify-commit-sha');
+    expect(outcome.reason).toMatch(/abc/);
+    expect(outcome.reason).toMatch(/def/);
+    // No threads resolved on a SHA mismatch.
+    expect(review.resolveCalls).toHaveLength(0);
+    // Workspace still released in finally{}.
+    expect(workspaceProvider.captured.releaseCount).toBe(1);
+
+    const reflection = await actor.reflect([outcome], classified, ctx);
+    expect(reflection.done).toBe(false);
+    expect(reflection.progress).toBe(false);
+  });
+});
