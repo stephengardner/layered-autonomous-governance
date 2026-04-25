@@ -59,6 +59,19 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   // They are canonical governance signals with persistence similar to
   // directives; do not decay during the session.
   'operator-intent': 365 * 24 * 60 * 60 * 1000,  // ~1 year
+  // Agent-session and agent-turn atoms are audit/replay records of an
+  // agentic loop run. Confidence decay does not affect their function
+  // (the session/turn lifecycle is single-shot; the metadata is
+  // historical), and an active replay debugger may need to read a
+  // session months later. A long half-life keeps the records stable
+  // during their useful window without growing AtomType-specific
+  // expiry policy on the substrate. The 1-year value mirrors
+  // `operator-intent` deliberately: both are append-only audit
+  // artifacts whose value comes from later forensic re-reading,
+  // not from arbitration. Tune them together if at all; operational
+  // purge (after N months) lives in a follow-up policy atom.
+  'agent-session': 365 * 24 * 60 * 60 * 1000,    // ~1 year
+  'agent-turn': 365 * 24 * 60 * 60 * 1000,       // ~1 year
 });
 
 export interface LoopOptions {

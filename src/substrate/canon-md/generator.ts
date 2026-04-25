@@ -41,6 +41,15 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   'actor-message-ack',
   'circuit-breaker-trip',
   'circuit-breaker-reset',
+  'plan-approval-vote',
+  'plan-merge-settled',
+  'operator-intent',
+  // L1 audit/replay records (agent-session + agent-turn). Always
+  // filtered out by the canon applier; placed at the end so the
+  // deterministic-ordering guarantee covers them when a debug
+  // tooling path explicitly dumps non-L3 atoms.
+  'agent-session',
+  'agent-turn',
 ];
 
 const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
@@ -63,6 +72,12 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   'plan-approval-vote': 'Plan Approval Votes',
   'plan-merge-settled': 'Plan Merge Settlements',
   'operator-intent': 'Operator Intent',
+  // Agent-session and agent-turn are L1 audit/replay records, not
+  // canonical knowledge; the canon applier filters to L3 and never
+  // renders these. Included for deterministic ordering if a caller
+  // explicitly dumps non-L3 atoms (e.g. a session-replay debugger).
+  'agent-session': 'Agent Sessions',
+  'agent-turn': 'Agent Turns',
 };
 
 export interface RenderOptions {
