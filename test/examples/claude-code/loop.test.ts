@@ -232,3 +232,34 @@ describe('ClaudeCodeAgentLoopAdapter -- multi-turn + tool_calls', () => {
     expect(tc['outcome']).toBe('tool-error');
   });
 });
+
+describe('ClaudeCodeAgentLoopAdapter -- blob threshold', () => {
+  it('routes large llm_output through blobStore.put when over threshold', async () => {
+    const host = createMemoryHost();
+    let putCount = 0;
+    const counting: BlobStore = {
+      put: async (c) => {
+        putCount += 1;
+        const ref = `sha256:${randomBytes(32).toString('hex')}` as BlobRef;
+        return ref;
+      },
+      get: async () => Buffer.alloc(0),
+      has: async () => true,
+    };
+    const longText = 'x'.repeat(8192);
+    const stdoutLines = [
+      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: longText }] } }),
+      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
+    ];
+    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
+    const input = { ...mkInput(host), blobStore: counting, blobThreshold: 4096 };
+    await adapter.run(input);
+    expect(putCount).toBeGreaterThanOrEqual(1);
+    const turns = (await host.atoms.query({ type: ['agent-turn'] }, 100)).atoms;
+    const turnMeta = (turns[0]!.metadata as Record<string, unknown>)['agent_turn'] as Record<string, unknown>;
+    const llmOutput = turnMeta['llm_output'] as Record<string, unknown>;
+    expect(llmOutput).toHaveProperty('ref');
+    expect(typeof llmOutput['ref']).toBe('string');
+  });
+});

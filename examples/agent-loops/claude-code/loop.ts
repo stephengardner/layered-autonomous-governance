@@ -14,6 +14,7 @@
  *   - spawnClaudeCli      (./spawn.ts)
  */
 
+import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import type { execa as ExecaType } from 'execa';
@@ -23,6 +24,7 @@ import type {
   AgentLoopInput,
   AgentLoopResult,
 } from '../../../src/substrate/agent-loop.js';
+import type { BlobStore, BlobRef } from '../../../src/substrate/blob-store.js';
 import type {
   AgentSessionMeta,
   AgentTurnMeta,
@@ -163,7 +165,7 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
                   session_atom_id: sessionId,
                   turn_index: currentTurnIndex,
                   llm_input: existingMeta?.llm_input ?? { inline: '' },
-                  llm_output: { inline: redactedOut },
+                  llm_output: await routePayload(redactedOut, input.blobStore, input.blobThreshold),
                   tool_calls: existingMeta?.tool_calls ?? [],
                   latency_ms: Date.now() - startedAtMs,
                 } satisfies AgentTurnMeta,
@@ -193,7 +195,7 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
                 ...turnMeta,
                 tool_calls: [...turnMeta.tool_calls, {
                   tool: ev.toolName,
-                  args: { inline: redactedArgs },
+                  args: await routePayload(redactedArgs, input.blobStore, input.blobThreshold),
                   result: { inline: '' },
                   latency_ms: 0,
                   outcome: 'success',
@@ -235,7 +237,7 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
                 newCalls[targetCallIndex] = {
                   tool: existing.tool,
                   args: existing.args,
-                  result: { inline: redactedResult },
+                  result: await routePayload(redactedResult, input.blobStore, input.blobThreshold),
                   latency_ms: Date.now() - startedToolMs,
                   outcome,
                 };
@@ -337,4 +339,16 @@ function mkAtom(
     taint: 'clean',
     metadata,
   };
+}
+
+async function routePayload(
+  payload: string,
+  blobStore: BlobStore,
+  threshold: number,
+): Promise<{ readonly inline: string } | { readonly ref: BlobRef }> {
+  if (Buffer.byteLength(payload, 'utf8') > threshold) {
+    const ref = await blobStore.put(payload);
+    return { ref };
+  }
+  return { inline: payload };
 }
