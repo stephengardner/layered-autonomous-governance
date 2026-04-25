@@ -24,6 +24,18 @@ const MUTATING_SUBCOMMANDS = new Set([
   'lock',
   'unlock',
   'delete',
+  // Namespace-specific verbs that mutate: `gh release delete-asset`,
+  // `gh repo rename / archive`, `gh workflow disable / enable`,
+  // `gh run rerun / cancel`. Listed here so a sweep across the
+  // namespaces enumerated in NAMESPACES_WITH_MUTATIONS catches the
+  // verb and atomizes the audit chain.
+  'delete-asset',
+  'rename',
+  'archive',
+  'disable',
+  'enable',
+  'rerun',
+  'cancel',
   // 'review' alone is read; 'review --comment'/'--approve' are write.
   // Handled in the dedicated branch below.
 ]);
@@ -37,6 +49,9 @@ const NAMESPACES_WITH_MUTATIONS = new Set([
   'repo',
   'gist',
   'project',
+  // `gh run` namespace: list / view / download are reads; cancel /
+  // rerun / delete are writes (resolved via MUTATING_SUBCOMMANDS).
+  'run',
 ]);
 
 const HTTP_WRITE_VERBS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -81,9 +96,19 @@ export function isGhWriteInvocation(args) {
  * HTTP method override (`-X`/`--method` followed by a non-GET verb,
  * or the inline `-X=POST` / `--method=POST` form). The shorthand
  * field flags (`-f`, `-F`, `--field`, `--raw-field`) imply POST when
- * no method is specified, mirroring gh's own behaviour.
+ * no explicit method is specified, mirroring gh's own behaviour.
+ *
+ * Two-pass logic so an explicit `-X GET -f foo=bar` (rare but legal:
+ * gh accepts field flags on a forced-GET call as a query-string
+ * shorthand) is not misclassified as a write. Pass 1 records the
+ * explicit method (if any) and whether any field flag was seen;
+ * pass 2 -- well, there is no pass 2, the loop just records both
+ * signals and decides at the end.
  */
 function apiArgvIsWrite(args) {
+  let explicitMethod = null;
+  let fieldFlagSeen = false;
+
   // First positional after 'api' is the endpoint; everything else is
   // option/value pairs.
   for (let i = 1; i < args.length; i++) {
@@ -92,29 +117,38 @@ function apiArgvIsWrite(args) {
 
     // Inline form: --method=POST, -X=POST.
     const inlineMatch = a.match(/^(?:--method|-X)=(.+)$/);
-    if (inlineMatch && HTTP_WRITE_VERBS.has(inlineMatch[1].toUpperCase())) {
-      return true;
+    if (inlineMatch) {
+      explicitMethod = inlineMatch[1].toUpperCase();
+      continue;
     }
 
     // Separated form: -X POST | --method POST.
     if (a === '-X' || a === '--method') {
       const next = args[i + 1];
-      if (typeof next === 'string' && HTTP_WRITE_VERBS.has(next.toUpperCase())) {
-        return true;
+      if (typeof next === 'string') {
+        explicitMethod = next.toUpperCase();
       }
       i += 1;
       continue;
     }
 
-    // Field flags imply POST per gh's own semantics.
+    // Field flags imply POST per gh's own semantics, but only when
+    // no explicit method was set; an explicit `-X GET -f` is still
+    // a read.
     if (a === '-f' || a === '-F' || a === '--field' || a === '--raw-field') {
-      return true;
+      fieldFlagSeen = true;
+      continue;
     }
-    if (typeof a === 'string' && (a.startsWith('--field=') || a.startsWith('--raw-field='))) {
-      return true;
+    if (a.startsWith('--field=') || a.startsWith('--raw-field=')) {
+      fieldFlagSeen = true;
+      continue;
     }
   }
-  return false;
+
+  if (explicitMethod !== null) {
+    return HTTP_WRITE_VERBS.has(explicitMethod);
+  }
+  return fieldFlagSeen;
 }
 
 /**

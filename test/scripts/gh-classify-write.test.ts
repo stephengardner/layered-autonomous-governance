@@ -41,6 +41,20 @@ describe('isGhWriteInvocation: pr / issue / release subcommands', () => {
     expect(isGhWriteInvocation(['repo', 'view'])).toBe(false);
     expect(isGhWriteInvocation(['issue', 'view', '5'])).toBe(false);
     expect(isGhWriteInvocation(['issue', 'list'])).toBe(false);
+    expect(isGhWriteInvocation(['run', 'list'])).toBe(false);
+    expect(isGhWriteInvocation(['run', 'view', '12345'])).toBe(false);
+    expect(isGhWriteInvocation(['run', 'download', '12345'])).toBe(false);
+  });
+
+  it('namespace-specific mutating verbs across release / repo / workflow / run', () => {
+    expect(isGhWriteInvocation(['release', 'delete-asset', 'v1', 'asset.tar'])).toBe(true);
+    expect(isGhWriteInvocation(['repo', 'rename', 'new-name'])).toBe(true);
+    expect(isGhWriteInvocation(['repo', 'archive', 'owner/name'])).toBe(true);
+    expect(isGhWriteInvocation(['workflow', 'disable', 'ci.yml'])).toBe(true);
+    expect(isGhWriteInvocation(['workflow', 'enable', 'ci.yml'])).toBe(true);
+    expect(isGhWriteInvocation(['run', 'cancel', '12345'])).toBe(true);
+    expect(isGhWriteInvocation(['run', 'rerun', '12345'])).toBe(true);
+    expect(isGhWriteInvocation(['run', 'delete', '12345'])).toBe(true);
   });
 
   it('pr review: alone is a read; --approve / --comment / --request-changes are writes', () => {
@@ -76,6 +90,30 @@ describe('isGhWriteInvocation: gh api', () => {
   it('-X GET (explicit) is a read', () => {
     expect(isGhWriteInvocation(['api', 'repos/foo/bar', '-X', 'GET'])).toBe(false);
     expect(isGhWriteInvocation(['api', 'repos/foo/bar', '--method=GET'])).toBe(false);
+  });
+
+  it('-X GET with field flags stays a read (explicit method overrides field-flag implication)', () => {
+    // gh accepts `-f foo=bar` on a forced GET as a query-string
+    // shorthand. The explicit method beats the field-flag-implies-
+    // POST heuristic, so the audit chain treats it as a read.
+    expect(
+      isGhWriteInvocation(['api', 'repos/foo/bar', '-X', 'GET', '-f', 'foo=bar']),
+    ).toBe(false);
+    expect(
+      isGhWriteInvocation(['api', 'repos/foo/bar', '--method=GET', '--field=foo=bar']),
+    ).toBe(false);
+  });
+
+  it('-X POST with field flags is a write (explicit method matches field-flag heuristic)', () => {
+    // The field flags would imply POST anyway; the explicit method
+    // just makes the intent unambiguous. Both paths converge on
+    // the same audit decision.
+    expect(
+      isGhWriteInvocation(['api', 'repos/foo/bar', '-X', 'POST', '-f', 'name=test']),
+    ).toBe(true);
+    expect(
+      isGhWriteInvocation(['api', 'repos/foo/bar', '--method=PATCH', '--field=name=test']),
+    ).toBe(true);
   });
 
   it('field flags (-f / -F / --field / --raw-field) imply POST', () => {
