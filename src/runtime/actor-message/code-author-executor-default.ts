@@ -99,6 +99,18 @@ export function buildDefaultCodeAuthorExecutor(
   const remote = config.remote ?? 'origin';
   const draft = config.draft ?? true;
   const nonce = config.nonce ?? (() => randomBytes(3).toString('hex'));
+  // Fail-fast on a malformed maxDraftAttempts so a non-positive or
+  // non-integer value cannot silently land in the unreachable-branch
+  // generic error at the bottom of the loop. The retry budget is a
+  // contract value; if a caller supplies 0, NaN, or a float, that
+  // is a config bug, not a framework one.
+  const maxDraftAttemptsRaw = config.maxDraftAttempts ?? 3;
+  if (!Number.isInteger(maxDraftAttemptsRaw) || maxDraftAttemptsRaw < 1) {
+    throw new Error(
+      `DefaultExecutorConfig.maxDraftAttempts must be a positive integer; got ${String(config.maxDraftAttempts)}`,
+    );
+  }
+  const maxDraftAttempts: number = maxDraftAttemptsRaw;
 
   return {
     async execute(inputs): Promise<CodeAuthorExecutorResult> {
@@ -167,14 +179,19 @@ export function buildDefaultCodeAuthorExecutor(
       // engineer would react to `git apply` rejection: read the
       // error, look at the diff, fix it.
       //
-      // Two failure modes the loop retries:
-      //   - drafter/llm-call-failed (transient; network / rate)
-      //   - apply-branch/diff-apply-failed | diff-apply-check-failed
-      //     (LLM output quality)
-      // Non-retryable: dirty-worktree, fetch-failed, push-failed,
-      // pr-creation/* -- those are environment / auth issues, not
-      // LLM flakiness, and will persist across retries.
-      const MAX_DRAFT_ATTEMPTS = config.maxDraftAttempts ?? 3;
+      // Failure mode the loop retries today:
+      //   - apply-branch/diff-apply-failed (LLM diff quality;
+      //     ~10-30% empirical drift rate even with a tight prompt)
+      // Non-retryable: every drafter error (including transient
+      // llm-call-failed; the catch on DrafterError returns
+      // immediately), dirty-worktree, fetch-failed, push-failed,
+      // pr-creation/* -- those are environment / auth issues that
+      // persist across retries. If transient LLM failures should
+      // self-heal in a future iteration, the catch on DrafterError
+      // needs to fall through (with attempt-bound + backoff); the
+      // current single-shot behaviour for llm-call-failed is the
+      // committed contract.
+      const MAX_DRAFT_ATTEMPTS = maxDraftAttempts;
       let draftResult;
       let gitResult;
       let branchName: string | undefined;

@@ -915,34 +915,6 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       notes: 'first try',
       confidence: 0.7,
     });
-    const retryData = {
-      ...baseData,
-      question_prompt: expect.anything() as unknown as string,
-    };
-    // Use a permissive matcher: register a wildcard handler by
-    // intercepting the host.llm.register/invoke. Simpler: just
-    // register the SECOND call's exact data shape after the
-    // executor builds the self-correction prompt.
-    // The buildSelfCorrectingPrompt helper produces a stable prefix
-    // we can compute; mirror it here so the registration matches.
-    const selfCorrectionPrompt = [
-      'PREVIOUS_ATTEMPT_REJECTED_BY_GIT_APPLY:',
-      '__PLACEHOLDER_FOR_ERROR__',
-      '',
-      'PREVIOUS_DIFF (verbatim, do not repeat):',
-      '```diff',
-      malformedDiff,
-      '```',
-      '',
-      'Produce a CORRECTED unified diff. Pay close attention to: '
-      + '(1) the `@@ -X,Y +A,B @@` hunk header line counts must EXACTLY match the file content shown in file_contents; '
-      + '(2) every context line must match the source byte-for-byte (whitespace, indentation, trailing characters); '
-      + '(3) no BOM, no stray invisible characters; '
-      + '(4) line endings consistent with the source file. '
-      + 'If you are uncertain about line counts, prefer a smaller, tighter hunk over a larger speculative one.',
-    ].join('\n');
-    void selfCorrectionPrompt; // not used directly; the test relies on the executor to retry.
-    void retryData;
 
     // git replies: first apply-check fails (exit 1), then second
     // attempt's full happy-path replies. The git-ops sequence per
@@ -965,49 +937,17 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     ];
     const { impl: execImpl } = stubGitExeca(replies);
 
-    // The retry attempt's drafter call carries a different
-    // questionPrompt; rather than predict its hash, we register a
-    // SECOND response under a "broad" key and tweak MemoryLLM to
-    // fall through. Since MemoryLLM matches on full DATA hash, the
-    // simplest path is: stub the drafter directly via a different
-    // executor option. But that doesn't exist. Workaround:
-    // pre-compute the data with the question_prompt the executor
-    // will produce.
-    // The executor reads questionPrompt from plan.metadata; we
-    // didn't set one, so on retry the executor builds the
-    // self-correction block as the questionPrompt (no ORIGINAL
-    // section because base was undefined). Register that.
-    const retryBlock = [
-      'PREVIOUS_ATTEMPT_REJECTED_BY_GIT_APPLY:',
-      'git apply --check rejected the diff: error: corrupt patch at line 3 (stage=apply-check)',
-      '',
-      'PREVIOUS_DIFF (verbatim, do not repeat):',
-      '```diff',
-      malformedDiff,
-      '```',
-      '',
-      'Produce a CORRECTED unified diff. Pay close attention to: '
-      + '(1) the `@@ -X,Y +A,B @@` hunk header line counts must EXACTLY match the file content shown in file_contents; '
-      + '(2) every context line must match the source byte-for-byte (whitespace, indentation, trailing characters); '
-      + '(3) no BOM, no stray invisible characters; '
-      + '(4) line endings consistent with the source file. '
-      + 'If you are uncertain about line counts, prefer a smaller, tighter hunk over a larger speculative one.',
-    ].join('\n');
-    // Compute the EXACT prompt the executor will produce by calling
-    // the same helper. This avoids mirror-string drift between the
-    // test fixture and the implementation.
+    // Compute the EXACT self-correction prompt the executor will
+    // emit on retry by calling its own helper. Plan metadata
+    // carries no original question_prompt (base=undefined); the
+    // git-ops stub returns exit 1 at the `git apply` step (not the
+    // pre-check), so the error string mirrors the apply stage.
     const { buildSelfCorrectingPrompt } = await import('../../src/runtime/actor-message/code-author-executor-default.js');
-    // The diff that survives `git apply --check` (passes pre-check)
-    // but fails the unconditional `git apply` produces this exact
-    // error message via git-ops's two-stage path. The test's stub
-    // returns exit 1 at the apply step, NOT at apply-check, so we
-    // mirror the resulting error string.
     const exactRetryPrompt = buildSelfCorrectingPrompt({
       base: undefined,
       previousDiff: malformedDiff,
       previousError: 'git apply failed after successful --check: error: corrupt patch at line 3 (stage=apply)',
     });
-    void retryBlock; // legacy mirror, replaced by the helper-derived prompt above
     host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, { ...baseData, question_prompt: exactRetryPrompt }, {
       diff: VALID_DIFF,
       notes: 'second try (corrected)',
