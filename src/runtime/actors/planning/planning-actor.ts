@@ -264,6 +264,14 @@ export interface BuildPlanAtomInput {
   /** Running principal id; becomes atom.principal_id + provenance.source.agent_id. */
   readonly principalId: string;
   /**
+   * Orchestrator-set sub-actor target for the plan. The lighter
+   * delegation hint: principal-id only, no rationale or blast-radius.
+   * `draft.delegation` (LLM-emitted, full descriptor) takes precedence
+   * when both are set; both omitted produces no delegation key on
+   * the atom.
+   */
+  readonly delegateTo?: PrincipalId;
+  /**
    * When the plan was triggered by an intent atom, append the intent
    * id to provenance.derived_from so the provenance chain is
    * complete. Pass null when no intent drove this plan.
@@ -359,7 +367,7 @@ export function buildPlanAtom(input: BuildPlanAtomInput): Atom {
       principles_applied: [...draft.principles_applied],
       alternatives_rejected: draft.alternatives_rejected.map((a) => a.option),
       what_breaks_if_revisit: draft.what_breaks_if_revisit,
-      ...buildDelegationMetadata(undefined, draft.delegation),
+      ...buildDelegationMetadata(input.delegateTo, draft.delegation),
     },
   };
 }
@@ -469,12 +477,12 @@ export class PlanningActor implements Actor<
         alternatives_rejected: [...plan.alternativesRejected],
         what_breaks_if_revisit: plan.whatBreaksIfRevisit,
         ...(plan.confidence !== undefined ? { confidence: plan.confidence } : {}),
-        // Delegation precedence:
-        //   1. plan.delegation (LLM-emitted via PLAN_DRAFT) - richest;
-        //      carries reason + implied_blast_radius for the approval tick.
-        //   2. this.options.delegateTo (actor-option) - lighter; carries
-        //      sub_actor_principal_id only. Fallback when LLM doesn't emit.
-        //   3. Neither - no delegation key on the atom.
+        // LLM-emitted descriptor; richer than options.delegateTo
+        // because it carries reason + implied_blast_radius. Threaded
+        // through buildDelegationMetadata which enforces precedence
+        // (descriptor wins over plain delegateTo) + whitespace
+        // emptiness checks; both branches in one place keeps the
+        // contract testable from a single seam.
         ...(plan.delegation
           ? {
               delegation: {
@@ -483,11 +491,10 @@ export class PlanningActor implements Actor<
                 implied_blast_radius: plan.delegation.implied_blast_radius,
               } satisfies DelegationDescriptor,
             }
-          : this.options.delegateTo
-            ? { delegation: { sub_actor_principal_id: this.options.delegateTo } satisfies DelegationDescriptor }
-            : {}),
+          : {}),
       },
       principalId,
+      ...(this.options.delegateTo !== undefined ? { delegateTo: this.options.delegateTo } : {}),
       intentId: this.options.intentId ?? null,
       now: new Date(now),
       // Nonce: use the wall-clock timestamp string so the id is

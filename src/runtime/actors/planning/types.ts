@@ -14,6 +14,7 @@
  */
 
 import type { Atom, AtomId, PrincipalId, Time } from '../../../types.js';
+import type { BlastRadius } from '../../actor-message/intent-approve.js';
 
 /**
  * The aggregated state the PlanningActor considers when drafting a
@@ -128,7 +129,7 @@ export interface ProposedPlan {
   readonly delegation?: {
     readonly sub_actor_principal_id: string;
     readonly reason: string;
-    readonly implied_blast_radius: string;
+    readonly implied_blast_radius: BlastRadius;
   };
 }
 

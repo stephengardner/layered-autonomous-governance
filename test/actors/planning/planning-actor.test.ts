@@ -357,7 +357,7 @@ describe('PlanningActor', () => {
             title: 'Plan With-LLM-Delegation',
             delegation: {
               sub_actor_principal_id: 'code-author',
-              reason: 'CI YAML edit; per pol-code-author-signed-pr-only the change must ship as a signed PR.',
+              reason: 'CI YAML edit; signed-PR enforcement applies to this change.',
               implied_blast_radius: 'tooling',
             },
           }),
@@ -381,7 +381,7 @@ describe('PlanningActor', () => {
     // ProposedPlan and metadata.delegation.
     expect(plan.metadata.delegation).toEqual({
       sub_actor_principal_id: 'code-author',
-      reason: 'CI YAML edit; per pol-code-author-signed-pr-only the change must ship as a signed PR.',
+      reason: 'CI YAML edit; signed-PR enforcement applies to this change.',
       implied_blast_radius: 'tooling',
     });
   });
