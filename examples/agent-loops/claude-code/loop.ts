@@ -172,6 +172,13 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
         ...(this.opts.extraArgs !== undefined ? { extraArgs: this.opts.extraArgs } : {}),
         ...(input.signal !== undefined ? { signal: input.signal } : {}),
         ...(this.opts.execImpl !== undefined ? { execImpl: this.opts.execImpl } : {}),
+        // Honor the substrate's optional resume hint. When present, the
+        // spawn adds `--resume <uuid>` so the CLI continues an existing
+        // session instead of starting fresh. Same-machine resume strategies
+        // resolve the UUID from prior session atoms; cross-machine resume
+        // strategies rehydrate the session file via `preparation` before
+        // the spawn runs.
+        ...(input.resumeSessionId !== undefined ? { resumeSessionId: input.resumeSessionId } : {}),
       });
 
       // Adapter-side wall-clock guard. The CLI's --max-budget-usd

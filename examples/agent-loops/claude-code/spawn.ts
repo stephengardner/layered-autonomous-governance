@@ -18,6 +18,14 @@ export interface SpawnClaudeCliInput {
   readonly extraArgs?: ReadonlyArray<string>;
   readonly signal?: AbortSignal;
   readonly execImpl?: typeof ExecaType;
+  /**
+   * Optional CLI session UUID. When set, the spawn adds
+   * `--resume <uuid>` so the CLI re-enters the existing session instead
+   * of starting fresh. The caller is responsible for ensuring the
+   * session file exists in the local CLI cache (the resume strategy's
+   * `preparation` closure handles this for cross-machine deployments).
+   */
+  readonly resumeSessionId?: string;
 }
 
 export function spawnClaudeCli(input: SpawnClaudeCliInput): ResultPromise {
@@ -32,6 +40,9 @@ export function spawnClaudeCli(input: SpawnClaudeCliInput): ResultPromise {
     '--mcp-config',
     '{"mcpServers":{}}',
   ];
+  if (input.resumeSessionId !== undefined && input.resumeSessionId.length > 0) {
+    args.push('--resume', input.resumeSessionId);
+  }
   if (input.disallowedTools.length > 0) {
     args.push('--disallowedTools', input.disallowedTools.join(' '));
   }

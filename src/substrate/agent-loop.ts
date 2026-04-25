@@ -118,6 +118,19 @@ export interface AgentLoopInput {
   readonly blobThreshold: number;
   readonly correlationId: string;
   readonly signal?: AbortSignal;
+  /**
+   * Optional opaque resume token a resume-aware adapter MAY honor by
+   * spawning a resumed session instead of a fresh one. Adapters that do
+   * not support resume MUST ignore this field. Mechanism-neutral: the
+   * value's interpretation is adapter-specific (CLI session UUID for
+   * one adapter; whatever opaque token a different adapter's resume
+   * mechanism uses for another). Adapters that honor this field MUST
+   * still satisfy the standard `AgentLoopAdapter` contract (write
+   * session + turn atoms, apply redactor, honor budget + signal), but
+   * MAY pass the token through to their underlying resume invocation
+   * in lieu of starting fresh.
+   */
+  readonly resumeSessionId?: string;
 }
 
 export interface AgentLoopResult {
