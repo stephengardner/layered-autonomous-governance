@@ -5,7 +5,7 @@
  * ---------------
  * Agent-turn atoms can carry large LLM IO + tool-call payloads (file
  * reads, bash output dumps). Inlining everything blows up atom file
- * size and forfeits dedup. Above the per-actor `pol-blob-threshold`,
+ * size and forfeits dedup. Above the per-actor blob-threshold policy,
  * payloads are externalized to a BlobStore by content hash; the turn
  * atom holds only a small `BlobRef`.
  *
