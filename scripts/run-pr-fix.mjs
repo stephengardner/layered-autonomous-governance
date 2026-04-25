@@ -161,17 +161,27 @@ async function resolveOwnerRepo(args) {
  * Wrap a substrate primitive (BlobStore, Redactor, AgentLoopAdapter,
  * WorkspaceProvider, GhClient) with the `{name, version}` shape every
  * `ActorAdapter` carries. The wrap is non-mutating: a fresh object
- * spread holds the original methods plus the identification fields.
+ * preserves the original prototype + own properties plus the
+ * identification fields.
+ *
+ * `Object.create(Object.getPrototypeOf(adapter))` preserves the prototype
+ * chain so class-backed adapters keep their methods (`run()`, `acquire()`,
+ * `release()`, etc.). A plain `{ ...adapter, name, version }` spread copies
+ * only own enumerable properties; for class-backed adapters the prototype
+ * methods would drop and any caller of e.g. `adapters.agentLoop.run(...)`
+ * would fail with "... is not a function" at runtime.
  *
  * Necessary because the substrate primitives are minimal-interface
  * (no name/version on the contract) but `ActorAdapters` carries the
  * shape across the actor boundary so audit + escalation surfaces can
- * cite the adapter that produced an event. Per Task 6's adapter
- * typing (src/runtime/actors/pr-fix/types.ts) we tolerate the extra
- * keys via the `[k: string]: unknown` index signature.
+ * cite the adapter that produced an event.
  */
 function withAdapterIdentity(adapter, name, version) {
-  return { ...adapter, name, version };
+  return Object.assign(
+    Object.create(Object.getPrototypeOf(adapter)),
+    adapter,
+    { name, version },
+  );
 }
 
 async function main() {
@@ -230,9 +240,18 @@ async function main() {
     redactor: withAdapterIdentity(redactor, 'regex-default-redactor', '0.1.0'),
   };
 
+  // In dry-run mode, gate Bash so the spawned sub-agent cannot shell out
+  // to `git push`, `gh pr edit`, or any other write. The actor's
+  // SUB_AGENT_DISALLOWED_FLOOR (WebFetch / WebSearch / NotebookEdit) is
+  // sized for substrate-level write paths; Bash is the operator-controlled
+  // surface that toggles between dry-run and live. The CLI contract
+  // ("Dry-run is the DEFAULT") is enforced here, not at the adapter layer
+  // (FileBlobStore / GitWorktreeProvider / ClaudeCodeAgentLoopAdapter
+  // are dry-run-agnostic substrate primitives; the right place to gate
+  // writes is the spawned agent's tool-policy).
   const actor = new PrFixActor({
     pr: { owner, repo, number: args.prNumber },
-    additionalDisallowedTools: [],
+    additionalDisallowedTools: args.live ? [] : ['Bash'],
     budget: {
       max_turns: args.maxTurns,
       max_wall_clock_ms: args.maxWallClockMs,

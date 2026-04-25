@@ -3,7 +3,7 @@
  * Canon bootstrap for the pr-fix autonomous role.
  *
  * Run from repo root (after `npm run build`):
- *   node scripts/bootstrap-pr-fix-canon.mjs
+ *   LAG_OPERATOR_ID=<your-id> node scripts/bootstrap-pr-fix-canon.mjs
  *
  * Creates:
  *   1. A `pr-fix-actor` Principal, signed_by `claude-agent` (depth 2
@@ -25,9 +25,18 @@
  * and is NOT seeded as canon -- the floor is hard-coded in the actor
  * so a missing canon entry cannot accidentally widen sub-agent reach.
  *
- * Idempotent per atom id: re-running skips atoms whose id already
- * exists. To refresh a policy shape, change its id here or use the
- * atom-update path explicitly (not exercised here).
+ * Idempotent per atom / principal id; drift against the expected shape
+ * fails loud on a second run (matches the `bootstrap-code-author-canon.mjs`
+ * + `bootstrap-inbox-canon.mjs` drift patterns). Principal identity,
+ * provenance integrity, and the full policy payload are all in the drift
+ * surface so a silent re-attribution under unchanged numeric fields is
+ * loud. A rewritten provenance under unchanged policy payload is exactly
+ * the class of silent re-attribution this check catches.
+ *
+ * No hardcoded operator fallback is permitted. The pr-fix-actor is a
+ * principal that can dispatch sub-agent loops which write to a shared
+ * repo; a silent-default operator id would make the provenance chain
+ * unverifiable.
  */
 
 import { resolve } from 'node:path';
@@ -40,6 +49,31 @@ const STATE_DIR = resolve(REPO_ROOT, '.lag');
 const BOOTSTRAP_TIME = '2026-04-25T00:00:00.000Z';
 
 const PR_FIX_AGENT = 'pr-fix-actor';
+
+const OPERATOR_ID = process.env.LAG_OPERATOR_ID;
+if (!OPERATOR_ID || OPERATOR_ID.length === 0) {
+  console.error(
+    '[bootstrap-pr-fix] ERROR: LAG_OPERATOR_ID is not set.\n'
+    + 'Set it to the operator principal id used at initial bootstrap, e.g.\n\n'
+    + '  export LAG_OPERATOR_ID=<your-operator-id>\n\n'
+    + 'A silent fallback would attribute six L3 policy atoms to a sentinel id\n'
+    + 'that may not exist in this repo, silently forking the authority chain.',
+  );
+  process.exit(2);
+}
+
+// Canonical agent id. Soft-fallback matches bootstrap-code-author-canon.mjs:
+// 'claude-agent' is the project's canonical agent-principal id, and every
+// bootstrap script in this repo roots its agent chain on it. If a deployment
+// chooses a different agent id, it MUST set LAG_AGENT_ID consistently for
+// all bootstrap scripts.
+//
+// The risk this fallback could create (silent re-attribution through a
+// freshly-minted 'claude-agent' parent) is closed by the parent-chain
+// drift check in ensureParentChain: if an existing claude-agent principal
+// has drifted shape, the script fails loud rather than adopting the
+// compromise into pr-fix-actor.signed_by.
+const CLAUDE_AGENT_ID = process.env.LAG_AGENT_ID || 'claude-agent';
 
 /**
  * Policy atom shape matches checkToolPolicy's parsePolicy contract:
@@ -118,7 +152,7 @@ function policyAtom(spec) {
       validation_status: 'unchecked',
       last_validated_at: null,
     },
-    principal_id: process.env.LAG_OPERATOR_ID || 'stephen-human',
+    principal_id: OPERATOR_ID,
     taint: 'clean',
     metadata: {
       policy: {
@@ -134,67 +168,110 @@ function policyAtom(spec) {
   };
 }
 
-async function main() {
-  await mkdir(STATE_DIR, { recursive: true });
-  const host = await createFileHost({ rootDir: STATE_DIR });
-
-  const operatorId = process.env.LAG_OPERATOR_ID || 'stephen-human';
-  const claudeAgentId = process.env.LAG_AGENT_ID || 'claude-agent';
-
-  // Ensure parent chain exists. bootstrap.mjs normally creates these;
-  // re-assert here so this script is runnable standalone.
-  const existingOperator = await host.principals.get(operatorId);
-  if (!existingOperator) {
-    await host.principals.put({
-      id: operatorId,
-      name: 'Operator (human)',
-      role: 'user',
-      permitted_scopes: {
-        read: ['session', 'project', 'user', 'global'],
-        write: ['session', 'project', 'user', 'global'],
-      },
-      permitted_layers: {
-        read: ['L0', 'L1', 'L2', 'L3'],
-        write: ['L0', 'L1', 'L2', 'L3'],
-      },
-      goals: [],
-      constraints: [],
-      active: true,
-      compromised_at: null,
-      signed_by: null,
-      created_at: BOOTSTRAP_TIME,
-    });
+/**
+ * Compare a stored pr-fix policy atom's payload to the expected shape.
+ * Mirrors bootstrap-inbox-canon.mjs's diffPolicyAtom: every load-bearing
+ * sub-field is compared so a silent edit to POLICIES (or a tampered atom)
+ * is loud on the next bootstrap run.
+ *
+ * The four integrity fields (principal_id, provenance.kind,
+ * provenance.source, provenance.derived_from) sit alongside the policy
+ * payload (subject, tool, origin, principal, action, reason, priority)
+ * because bootstrap is the only point where principal-id swaps or
+ * provenance tampering can be caught cheaply; once the substrate trusts
+ * .lag/atoms/, runtime tooling won't.
+ */
+function diffPolicyAtom(existing, expected) {
+  const diffs = [];
+  for (const k of ['type', 'layer', 'content']) {
+    if (existing[k] !== expected[k]) {
+      diffs.push(`${k}: stored=${JSON.stringify(existing[k])} expected=${JSON.stringify(expected[k])}`);
+    }
   }
-
-  const existingClaude = await host.principals.get(claudeAgentId);
-  if (!existingClaude) {
-    await host.principals.put({
-      id: claudeAgentId,
-      name: 'Agent (Claude Code instance)',
-      role: 'agent',
-      permitted_scopes: {
-        read: ['session', 'project', 'user', 'global'],
-        write: ['session', 'project', 'user'],
-      },
-      permitted_layers: {
-        read: ['L0', 'L1', 'L2', 'L3'],
-        write: ['L0', 'L1', 'L2'],
-      },
-      goals: [],
-      constraints: [],
-      active: true,
-      compromised_at: null,
-      signed_by: operatorId,
-      created_at: BOOTSTRAP_TIME,
-    });
+  if (existing.principal_id !== expected.principal_id) {
+    diffs.push(
+      `principal_id: stored=${JSON.stringify(existing.principal_id)} `
+      + `expected=${JSON.stringify(expected.principal_id)}`,
+    );
   }
+  const ev = existing.provenance ?? {};
+  const xv = expected.provenance;
+  if (ev.kind !== xv.kind) {
+    diffs.push(`provenance.kind: stored=${JSON.stringify(ev.kind)} expected=${JSON.stringify(xv.kind)}`);
+  }
+  if (JSON.stringify(ev.source ?? {}) !== JSON.stringify(xv.source)) {
+    diffs.push(`provenance.source: stored=${JSON.stringify(ev.source)} expected=${JSON.stringify(xv.source)}`);
+  }
+  if (JSON.stringify(ev.derived_from ?? []) !== JSON.stringify(xv.derived_from)) {
+    diffs.push(`provenance.derived_from: stored=${JSON.stringify(ev.derived_from)} expected=${JSON.stringify(xv.derived_from)}`);
+  }
+  const ep = existing.metadata?.policy ?? {};
+  const xp = expected.metadata.policy;
+  const keys = new Set([...Object.keys(ep), ...Object.keys(xp)]);
+  for (const k of keys) {
+    if (JSON.stringify(ep[k]) !== JSON.stringify(xp[k])) {
+      diffs.push(`policy.${k}: stored=${JSON.stringify(ep[k])} expected=${JSON.stringify(xp[k])}`);
+    }
+  }
+  return diffs;
+}
 
-  // The pr-fix-actor: signed_by claude-agent (depth 2 from operator).
-  // Narrow scope: project only. Layers: read L0..L3, write L0..L1 so
-  // the actor can observe + record outcomes but cannot write curated
-  // or canon. Goals + constraints summarize the role for human readers
-  // (not enforced; the policy atoms above are the enforcement).
-  await host.principals.put({
+// Expected operator shape; factored into a builder so ensureParentChain
+// seeds + drift-checks against the same source of truth. Drift on
+// compromised_at, permitted_scopes, permitted_layers is load-bearing
+// because a mutated parent silently re-attributes every child's signed_by
+// edge to a weakened parent, and pr-fix-actor inherits.
+function operatorPrincipal() {
+  return {
+    id: OPERATOR_ID,
+    name: 'Operator (human)',
+    role: 'user',
+    permitted_scopes: {
+      read: ['session', 'project', 'user', 'global'],
+      write: ['session', 'project', 'user', 'global'],
+    },
+    permitted_layers: {
+      read: ['L0', 'L1', 'L2', 'L3'],
+      write: ['L0', 'L1', 'L2', 'L3'],
+    },
+    goals: [],
+    constraints: [],
+    active: true,
+    compromised_at: null,
+    signed_by: null,
+    created_at: BOOTSTRAP_TIME,
+  };
+}
+
+function claudeAgentPrincipal() {
+  return {
+    id: CLAUDE_AGENT_ID,
+    name: 'Agent (Claude Code instance)',
+    role: 'agent',
+    permitted_scopes: {
+      read: ['session', 'project', 'user', 'global'],
+      write: ['session', 'project', 'user'],
+    },
+    permitted_layers: {
+      read: ['L0', 'L1', 'L2', 'L3'],
+      write: ['L0', 'L1', 'L2'],
+    },
+    goals: [],
+    constraints: [],
+    active: true,
+    compromised_at: null,
+    signed_by: OPERATOR_ID,
+    created_at: BOOTSTRAP_TIME,
+  };
+}
+
+// Shape of the pr-fix-actor principal. Goals + constraints summarize the
+// role for human readers (not enforced; the policy atoms above are the
+// enforcement). Narrow scope: project only. Layers: read L0..L3, write
+// L0..L1 so the actor can observe + record outcomes but cannot write
+// curated or canon.
+function prFixActorPrincipal() {
+  return {
     id: PR_FIX_AGENT,
     name: 'PR-fix actor',
     role: 'agent',
@@ -214,27 +291,114 @@ async function main() {
     ],
     active: true,
     compromised_at: null,
-    signed_by: claudeAgentId,
+    signed_by: CLAUDE_AGENT_ID,
     created_at: BOOTSTRAP_TIME,
-  });
+  };
+}
 
-  let written = 0;
-  let skipped = 0;
-  for (const spec of POLICIES) {
-    const existing = await host.atoms.get(spec.id);
-    if (existing) {
-      skipped++;
+function diffPrincipal(existing, expected) {
+  const diffs = [];
+  // compromised_at drift is load-bearing: a stored parent with a
+  // non-null compromised_at (or a cleared value under a rotated key)
+  // is exactly the class of silent re-attribution this bootstrap
+  // exists to prevent.
+  for (const k of ['name', 'role', 'signed_by', 'active', 'compromised_at']) {
+    if (existing[k] !== expected[k]) {
+      diffs.push(`${k}: stored=${JSON.stringify(existing[k])} expected=${JSON.stringify(expected[k])}`);
+    }
+  }
+  for (const k of ['permitted_scopes', 'permitted_layers']) {
+    if (JSON.stringify(existing[k]) !== JSON.stringify(expected[k])) {
+      diffs.push(`${k}: stored=${JSON.stringify(existing[k])} expected=${JSON.stringify(expected[k])}`);
+    }
+  }
+  return diffs;
+}
+
+async function ensureParentChain(host) {
+  // Seed OR drift-check the operator + claude-agent chain so this script
+  // is runnable standalone AND surfaces a compromised / tampered parent
+  // as loudly as it would a compromised pr-fix-actor. Earlier versions
+  // of this script seeded parents only when absent and silently accepted
+  // any existing shape; that is the exact silent-re-attribution class
+  // the policy atoms exist to close, applied one hop up. If the parent
+  // is tampered, the write that inherits from it is already suspect.
+  for (const expected of [operatorPrincipal(), claudeAgentPrincipal()]) {
+    const existing = await host.principals.get(expected.id);
+    if (!existing) {
+      await host.principals.put(expected);
       continue;
     }
-    await host.atoms.put(policyAtom(spec));
-    written++;
+    const pdiffs = diffPrincipal(existing, expected);
+    if (pdiffs.length > 0) {
+      console.error(
+        `[bootstrap-pr-fix] DRIFT on parent principal ${expected.id}:\n  ${pdiffs.join('\n  ')}\n`
+        + 'pr-fix-actor cannot safely inherit a signed_by edge to a drifted '
+        + 'parent. Resolve by: (a) aligning the stored parent with the canonical '
+        + 'shape, or (b) explicitly revoking the stored parent through an operator '
+        + 'tool before re-bootstrapping. No principals or policy atoms have been written.',
+      );
+      process.exit(1);
+    }
+  }
+}
+
+async function main() {
+  await mkdir(STATE_DIR, { recursive: true });
+  const host = await createFileHost({ rootDir: STATE_DIR });
+
+  await ensureParentChain(host);
+
+  // Seed or drift-check the pr-fix-actor principal. Earlier versions
+  // unconditionally `put`-ed on every re-run, silently overwriting any
+  // operator-curated edits to goals / constraints / permitted_layers.
+  const expectedActor = prFixActorPrincipal();
+  const existingActor = await host.principals.get(PR_FIX_AGENT);
+  let actorWritten = false;
+  if (!existingActor) {
+    await host.principals.put(expectedActor);
+    actorWritten = true;
+  } else {
+    const pdiffs = diffPrincipal(existingActor, expectedActor);
+    if (pdiffs.length > 0) {
+      console.error(
+        `[bootstrap-pr-fix] DRIFT on principal ${PR_FIX_AGENT}:\n  ${pdiffs.join('\n  ')}\n`
+        + 'Resolve by: (a) aligning this script with the stored principal if that is '
+        + 'authoritative, or (b) revoking the stored principal explicitly through an '
+        + 'operator tool before re-bootstrapping.',
+      );
+      process.exit(1);
+    }
+  }
+
+  let written = 0;
+  let ok = 0;
+  for (const spec of POLICIES) {
+    const expected = policyAtom(spec);
+    const existing = await host.atoms.get(expected.id);
+    if (existing === null) {
+      await host.atoms.put(expected);
+      written += 1;
+      console.log(`[bootstrap-pr-fix] wrote ${expected.id}`);
+      continue;
+    }
+    const diffs = diffPolicyAtom(existing, expected);
+    if (diffs.length > 0) {
+      console.error(
+        `[bootstrap-pr-fix] DRIFT on ${expected.id}:\n  ${diffs.join('\n  ')}\n`
+        + 'Resolve by: (a) editing POLICIES[] to match stored shape if the '
+        + 'stored value is authoritative, or (b) bumping the atom id and '
+        + 'superseding the old one if you are intentionally changing policy.',
+      );
+      process.exit(1);
+    }
+    ok += 1;
   }
 
   console.log(
-    `[bootstrap-pr-fix] Principal '${PR_FIX_AGENT}' signed_by '${claudeAgentId}' created or refreshed.`,
+    `[bootstrap-pr-fix] principal ${PR_FIX_AGENT} ${actorWritten ? 'written' : 'in sync'}; `
+    + `${written} policy atoms written, ${ok} already in sync.`,
   );
-  console.log(`[bootstrap-pr-fix] Wrote ${written} new L3 policy atoms (${skipped} already existed, skipped).`);
-  console.log('[bootstrap-pr-fix] Done.');
 }
 
 main().catch((err) => {
