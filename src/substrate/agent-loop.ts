@@ -15,9 +15,10 @@
  * Threat model
  * ------------
  * - The agent process inherits whatever credentials are in
- *   `input.workspace`'s `.lag/apps/`. The caller (typically a
- *   code-author or planning executor) is responsible for cred
- *   provisioning with the minimum scope before invoking the adapter.
+ *   `input.workspace`'s `.lag/apps/`. The caller (the actor or
+ *   executor invoking the adapter) is responsible for cred
+ *   provisioning with the minimum scope before invoking the adapter;
+ *   concrete callers live outside this seam.
  * - Adapters MUST apply `input.redactor` to ALL content before atom
  *   write. A redactor crash MUST surface as `catastrophic`; never
  *   fall through to write unredacted content.

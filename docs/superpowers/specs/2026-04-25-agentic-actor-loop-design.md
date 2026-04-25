@@ -90,12 +90,15 @@ export interface AgentLoopAdapter {
 
   /**
    * Drive one agent run end-to-end. The adapter MUST:
-   *   1. Write an agent-session atom on entry (state: 'started').
+   *   1. Write an agent-session atom on entry, populating started_at,
+   *      replay_tier, workspace_id, and an optimistic terminal_state
+   *      (typically 'completed'); the same atom is updated on exit.
    *   2. Write an agent-turn atom for each LLM call, before issuing the call.
    *   3. Apply input.redactor to all content before atom write.
    *   4. Honor input.budget (turns + wall_clock_ms; usd if capabilities.tracks_cost).
    *   5. Honor input.signal (cooperative cancellation).
-   *   6. Update the session atom on exit (terminal_state, failure, budget_consumed).
+   *   6. Update the agent-session atom on exit (completed_at, terminal_state,
+   *      failure, budget_consumed).
    *
    * Threat model:
    *   - The agent inherits whatever auth is in input.workspace's `.lag/apps/`.
@@ -128,7 +131,7 @@ export interface AgentLoopInput {
 }
 
 export interface AgentLoopResult {
-  readonly kind: 'completed' | 'budget-exhausted' | 'error';
+  readonly kind: 'completed' | 'budget-exhausted' | 'error' | 'aborted';
   readonly sessionAtomId: AtomId;
   readonly turnAtomIds: ReadonlyArray<AtomId>;
   readonly failure?: FailureRecord;
@@ -277,7 +280,7 @@ Validator enforces clamp. Resolution order: `target_principal` (most specific) �
 
 ## 4. Data flow
 
-```
+```text
 operator-intent
    │
    ▼
@@ -292,13 +295,15 @@ plan atom (approved → executing)
    ▼
 WorkspaceProvider.acquire() → Workspace
 AgentLoopAdapter.run({...})
-   │ writes agent-session atom (state: 'started')
+   │ writes agent-session atom on entry (started_at, replay_tier,
+   │   workspace_id, optimistic terminal_state)
    │ for each turn:
    │   • Redactor applied at-write to all content
    │   • payloads ≤ pol-blob-threshold → inline in agent-turn metadata
    │   • payloads > threshold → BlobStore.put → BlobRef in metadata
    │   • write agent-turn atom (derived_from: session)
-   │ on completion: update agent-session (terminal_state, budget_consumed)
+   │ on completion: update agent-session
+   │   (completed_at, terminal_state, budget_consumed, optional failure)
    ▼
 AgentLoopResult { kind: 'completed', commitSha, branchName }
    │
@@ -323,7 +328,7 @@ PR review + merge (existing flow; PrLandingActor handles CR loop)
 
 A future projection (`src/projections/session-tree.ts`) walks dispatch atoms by `correlation_id` to produce a multi-actor session log:
 
-```
+```text
 intent-<id>
   └── plan-<id> (CTO session: T turns)
        └── dispatch-<id>

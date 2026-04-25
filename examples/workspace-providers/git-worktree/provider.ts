@@ -75,27 +75,40 @@ export class GitWorktreeProvider implements WorkspaceProvider {
     if (create.exitCode !== 0) {
       throw new Error(`GitWorktreeProvider: worktree add failed: ${create.stderr}`);
     }
-    // Copy bot creds.
-    for (const role of this.opts.copyCredsForRoles) {
-      const src = join(this.opts.repoDir, '.lag', 'apps', `${role}.json`);
-      try {
-        await stat(src);
-      } catch {
-        continue; // role not provisioned in this repo; skip silently.
+    // Cred-copy is wrapped: if any mkdir/copyFile throws, the worktree
+    // we just created would otherwise leak to disk + leave a dangling
+    // branch. Tear it down and re-throw so the caller sees the
+    // original error and acquire() is atomic (succeeds with creds, or
+    // fails with no side effects).
+    try {
+      // Copy bot creds.
+      for (const role of this.opts.copyCredsForRoles) {
+        const src = join(this.opts.repoDir, '.lag', 'apps', `${role}.json`);
+        try {
+          await stat(src);
+        } catch {
+          continue; // role not provisioned in this repo; skip silently.
+        }
+        const dst = join(path, '.lag', 'apps', `${role}.json`);
+        await mkdir(join(path, '.lag', 'apps'), { recursive: true });
+        await copyFile(src, dst);
+        // Also copy the `.pem` if present (App private key for token mint).
+        const srcKey = join(this.opts.repoDir, '.lag', 'apps', 'keys', `${role}.pem`);
+        const dstKey = join(path, '.lag', 'apps', 'keys', `${role}.pem`);
+        try {
+          await stat(srcKey);
+          await mkdir(join(path, '.lag', 'apps', 'keys'), { recursive: true });
+          await copyFile(srcKey, dstKey);
+        } catch {
+          // No key for this role; omit silently (some roles use OAuth).
+        }
       }
-      const dst = join(path, '.lag', 'apps', `${role}.json`);
-      await mkdir(join(path, '.lag', 'apps'), { recursive: true });
-      await copyFile(src, dst);
-      // Also copy the `.pem` if present (App private key for token mint).
-      const srcKey = join(this.opts.repoDir, '.lag', 'apps', 'keys', `${role}.pem`);
-      const dstKey = join(path, '.lag', 'apps', 'keys', `${role}.pem`);
-      try {
-        await stat(srcKey);
-        await mkdir(join(path, '.lag', 'apps', 'keys'), { recursive: true });
-        await copyFile(srcKey, dstKey);
-      } catch {
-        // No key for this role; omit silently (some roles use OAuth).
-      }
+    } catch (err) {
+      // Best-effort cleanup; reject:false so a tear-down failure can't
+      // shadow the original cred-copy error. Operators see the real
+      // cause; orphaned worktrees surface via `git worktree prune`.
+      await execa('git', ['-C', this.opts.repoDir, 'worktree', 'remove', '--force', path], { reject: false });
+      throw err;
     }
     return { id, path, baseRef: input.baseRef };
   }
