@@ -26,10 +26,11 @@ export type RegistrationId = string & { readonly __brand: 'RegistrationId' };
 
 /**
  * Content-addressed reference for the agentic-actor-loop `BlobStore`.
- * Format: `sha256:<64-hex>`. Constructed via `blobRefFromHash` (added in
- * a later task of PR1). Branded so callers cannot accidentally pass
- * arbitrary strings where a `BlobRef` is required; the brand exists at
- * type-check time only and has no runtime representation.
+ * Format: `sha256:<64-hex>`. Constructed via `blobRefFromHash` and
+ * parsed via `parseBlobRef` (both in `blob-store.ts`). Branded so
+ * callers cannot accidentally pass arbitrary strings where a `BlobRef`
+ * is required; the brand exists at type-check time only and has no
+ * runtime representation.
  */
 export type BlobRef = string & { readonly __brand: 'BlobRef' };
 
@@ -476,21 +477,27 @@ export interface SearchHit {
 
 /**
  * Replay determinism tier the session was executed under. `best-effort`
- * captures the LLM transcript only; `content-addressed` additionally
- * pins all tool inputs/outputs to `BlobRef`s so the chain is replayable
- * without re-running tools; `strict` further requires the adapter to
- * pin a `canon_snapshot_blob_ref` so canon at session-start is
- * reproducible. See spec sections 3.6 and 4.1 for the trade-offs.
+ * captures the LLM transcript only and makes no replay promise.
+ * `content-addressed` additionally pins all tool inputs/outputs to
+ * `BlobRef`s so a future replay can re-feed the model deterministically
+ * (modulo provider sampling noise) without re-running tools. `strict`
+ * further requires the adapter to pin a `canon_snapshot_blob_ref` so
+ * canon at session-start is reproducible — at the cost of an extra
+ * 10-100 KB blob per session.
  */
 export type ReplayTier = 'best-effort' | 'content-addressed' | 'strict';
 
 /**
  * Coarse failure taxonomy used by sessions and turns. Distinguished so
  * the surrounding plan-state machine (and any retry policy) can branch
- * on whether the failure is worth retrying (`transient`), a contract
- * violation that should be surfaced to the operator (`structural`), or
- * a host-level fault that should trip a circuit breaker
- * (`catastrophic`). See spec section 5.1.
+ * on whether the failure is worth retrying (`transient`: rate limit,
+ * network blip, EBUSY), a contract violation that should be surfaced
+ * to the operator (`structural`: out-of-budget, agent stuck,
+ * policy-refused tool), or a host-level fault that should trip a
+ * circuit breaker (`catastrophic`: workspace-acquire failure, redactor
+ * crashed, atom-store write failed). The default classifier in
+ * `agent-loop.ts` covers common error shapes; adapters may override
+ * for adapter-specific failure modes.
  */
 export type FailureKind = 'transient' | 'structural' | 'catastrophic';
 
