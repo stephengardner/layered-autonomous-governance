@@ -1821,7 +1821,7 @@ async function walk(atoms: AtomStore, sessionId: AtomId, seen: Set<AtomId>): Pro
 npx vitest run test/substrate/projections/session-tree.test.ts 2>&1 | tail -10
 ```
 
-Expected: 3 tests pass. (NOTE: the second test currently asserts the missing session throws, matching the projection's behavior. If `MemoryAtomStore.query` doesn't filter on `derived_from`, that gap is the next sub-task; verify the filter is supported. If not, fall back to scanning — write a follow-up task to optimize once the production AtomStore needs it.)
+Expected: 3 tests pass. The implementation in Step 3 is committed to the `query({ type: ['agent-turn'] })` + in-memory filter path (no runtime decision deferred). If a future PR adds typed `derived_from` filtering to `AtomFilter`, the projection switches to the indexed path as a separate follow-up.
 
 - [ ] **Step 5: Confirm `AtomFilter` shape (sanity check, not gate)**
 
