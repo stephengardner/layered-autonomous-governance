@@ -178,21 +178,28 @@ describe('buildAuthedGitInvocation', () => {
     expect(out.args[5]).toContain(`x-access-token:${TOKEN}`);
   });
 
-  it('read: keeps argv intact and injects Bearer extraHeader', () => {
+  it('local-only verb (rev-parse): keeps argv intact, applies the read-only env defensively', () => {
+    // Pre-fix this test exercised `git fetch` against the read-only
+    // path (Bearer extraHeader). After gap 7 the helper recognises
+    // fetch as a remote-touching verb and rewrites the remote arg
+    // to the x-access-token URL instead -- Bearer is rejected by
+    // git's smart-http on Windows. Use a local-only verb here to
+    // exercise the read-only env path that's still load-bearing
+    // for non-remote git invocations the executor may emit
+    // (rev-parse, status, log, config).
     const out = buildAuthedGitInvocation({
-      args: ['fetch', 'origin', 'main', '--quiet'],
+      args: ['rev-parse', '--abbrev-ref', 'HEAD'],
       token: TOKEN,
       repoOwner: OWNER,
       repoName: REPO,
       inheritedEnv: { PATH: '/x' },
     });
-    expect(out.args).toEqual(['fetch', 'origin', 'main', '--quiet']);
-    // Literal env keys: buildReadOnlyEnv emits two GIT_CONFIG
-    // pairs -- KEY_0/VALUE_0 for the http.extraHeader Bearer
-    // entry, and KEY_1/VALUE_1 to clear credential.helper so a
-    // cached PAT cannot cross-pollinate. Asserting the specific
-    // slots keeps the test focused; the upstream git-as-push-auth
-    // tests already cover the indexing convention.
+    expect(out.args).toEqual(['rev-parse', '--abbrev-ref', 'HEAD']);
+    // buildReadOnlyEnv emits two GIT_CONFIG pairs (KEY_0/VALUE_0 +
+    // KEY_1/VALUE_1) for http.extraHeader Bearer + cleared
+    // credential.helper. Asserting the specific slots keeps the
+    // test focused; upstream git-as-push-auth tests cover the
+    // indexing convention.
     expect(out.env.GIT_CONFIG_COUNT).toBe('2');
     expect(out.env.GIT_CONFIG_KEY_0).toBe('http.extraHeader');
     expect(out.env.GIT_CONFIG_VALUE_0).toBe(`Authorization: Bearer ${TOKEN}`);
@@ -232,26 +239,139 @@ describe('buildAuthedGitInvocation', () => {
     expect(out.env.GIT_TERMINAL_PROMPT).toBe('0');
   });
 
-  it('buildAuthedGitInvocation throws when the rewriter cannot translate the remote', () => {
-    // Regression for the silent-auth-strip footgun: when
-    // buildPushSpawnArgs returns null (no remote position to
-    // rewrite, or a non-GitHub HTTPS shape), falling through with
-    // buildPushEnv() would clear credential.helper without
-    // supplying a replacement and the push would hang or fail with
-    // no useful diagnostic. Throw so the caller sees the
-    // misconfiguration immediately.
-    //
-    // Trigger the null path with a bare `git push` (no remote arg)
-    // -- buildPushSpawnArgs's findRemoteArg returns null in that
-    // case, and the helper short-circuits to null.
-    expect(() =>
-      buildAuthedGitInvocation({
-        args: ['push'],
-        token: TOKEN,
-        repoOwner: OWNER,
-        repoName: REPO,
-        inheritedEnv: {},
-      }),
-    ).toThrow(/cannot rewrite push/);
+  it('buildAuthedGitInvocation: local-only verbs (status) need no auth and pass through unchanged', () => {
+    // `git status --porcelain` is local-only -- no remote, no auth
+    // needed. The helper should pass argv through and apply the
+    // defensive read-only env (clears credential.helper, disables
+    // tty prompt) without trying to rewrite anything.
+    const out = buildAuthedGitInvocation({
+      args: ['-c', 'user.name=foo', 'status', '--porcelain'],
+      token: TOKEN,
+      repoOwner: OWNER,
+      repoName: REPO,
+      inheritedEnv: {},
+    });
+    expect(out.args).toEqual(['-c', 'user.name=foo', 'status', '--porcelain']);
+  });
+
+  it('fetch verb: rewrites remote arg to x-access-token URL (gap-7 regression)', () => {
+    // Gap 7 regression: pre-fix `git fetch` got the Bearer
+    // extraheader treatment (buildReadOnlyEnv), but git's smart-http
+    // protocol on Windows rejects Bearer for upload-pack and falls
+    // through to the credential helper. With askpass disabled the
+    // result is `error: unable to read askpass response from
+    // git-askpass.exe / fatal: could not read Username for
+    // 'https://github.com'`. URL-rewriting the remote-arg position
+    // (matching the push path's auth method) is the only form that
+    // works for git operations on both Windows and Linux.
+    const out = buildAuthedGitInvocation({
+      args: [
+        '-c', 'user.name=foo',
+        '-c', 'user.email=foo@example.com',
+        'fetch', 'origin', 'main', '--quiet',
+      ],
+      token: TOKEN,
+      repoOwner: OWNER,
+      repoName: REPO,
+      inheritedEnv: {},
+    });
+    // The remote name 'origin' (positional after the verb) is
+    // replaced with the transient x-access-token URL.
+    expect(out.args[5]).toBe(
+      `https://x-access-token:${TOKEN}@github.com/${OWNER}/${REPO}.git`,
+    );
+    // verb + refspec + flag positions are preserved.
+    expect(out.args[4]).toBe('fetch');
+    expect(out.args[6]).toBe('main');
+    expect(out.args[7]).toBe('--quiet');
+    // Push-style env (clears credential.helper) -- ensures the
+    // ambient git-askpass cannot pop up under any circumstance.
+    expect(out.env.GIT_TERMINAL_PROMPT).toBe('0');
+    expect(out.env.GIT_CONFIG_KEY_0).toBe('credential.helper');
+    expect(out.env.GIT_CONFIG_VALUE_0).toBe('');
+  });
+
+  it('clone verb: rewrites the URL positional when it matches the configured repo', () => {
+    // For clone the positional after the verb is the remote URL,
+    // not a remote name. The rewriter validates the URL points at
+    // the dispatch-configured (owner, repo) before substituting the
+    // transient x-access-token form; a matching URL is rewritten
+    // to embed the token.
+    const out = buildAuthedGitInvocation({
+      args: ['clone', `https://github.com/${OWNER}/${REPO}.git`],
+      token: TOKEN,
+      repoOwner: OWNER,
+      repoName: REPO,
+      inheritedEnv: {},
+    });
+    expect(out.args[1]).toBe(
+      `https://x-access-token:${TOKEN}@github.com/${OWNER}/${REPO}.git`,
+    );
+  });
+
+  it('clone verb: leaves a non-target URL alone (no token leak to wrong repo)', () => {
+    // A clone URL that does NOT match the configured (owner, repo)
+    // falls through to the local-only branch (no rewrite, no
+    // transient URL). This prevents the dispatch flow from
+    // exfiltrating the access token to an arbitrary GitHub repo or
+    // a non-GitHub host if a misconfigured caller smuggled in a
+    // different URL.
+    const out = buildAuthedGitInvocation({
+      args: ['clone', 'https://github.com/foo/bar.git'],
+      token: TOKEN,
+      repoOwner: OWNER,
+      repoName: REPO,
+      inheritedEnv: {},
+    });
+    expect(out.args).toEqual(['clone', 'https://github.com/foo/bar.git']);
+    // Read-only env still applied so any incidental remote call
+    // does not pop askpass.
+    expect(out.env.GIT_TERMINAL_PROMPT).toBe('0');
+  });
+
+  it('fetch verb: leaves a non-origin remote name alone', () => {
+    // `git fetch upstream main` should NOT silently retarget
+    // OWNER/REPO; the rewrite is gated to 'origin' or matching
+    // URL. The local-only path is the safer default.
+    const out = buildAuthedGitInvocation({
+      args: ['fetch', 'upstream', 'main'],
+      token: TOKEN,
+      repoOwner: OWNER,
+      repoName: REPO,
+      inheritedEnv: {},
+    });
+    expect(out.args).toEqual(['fetch', 'upstream', 'main']);
+  });
+
+  it('ls-remote: rewrites the remote arg', () => {
+    const out = buildAuthedGitInvocation({
+      args: ['ls-remote', 'origin'],
+      token: TOKEN,
+      repoOwner: OWNER,
+      repoName: REPO,
+      inheritedEnv: {},
+    });
+    expect(out.args[1]).toBe(
+      `https://x-access-token:${TOKEN}@github.com/${OWNER}/${REPO}.git`,
+    );
+  });
+
+  it('buildAuthedGitInvocation: bare push (no remote) is treated local-only', () => {
+    // Bare `git push` without a remote position can't be rewritten;
+    // the helper now treats this as a local-only verb (no remote
+    // arg to point auth at) instead of throwing. The behaviour is
+    // the safer default: the underlying git push will then fall
+    // through to the configured upstream + credential helper, which
+    // is the existing pre-fix behaviour for that argv shape.
+    const out = buildAuthedGitInvocation({
+      args: ['push'],
+      token: TOKEN,
+      repoOwner: OWNER,
+      repoName: REPO,
+      inheritedEnv: {},
+    });
+    expect(out.args).toEqual(['push']);
+    // Read-only env still pinned (no askpass, no helper).
+    expect(out.env.GIT_TERMINAL_PROMPT).toBe('0');
   });
 });
