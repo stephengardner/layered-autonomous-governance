@@ -111,6 +111,15 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
     let costUsd: number | undefined;
     let kind: AgentLoopResult['kind'] = 'completed';
     let failure: AgentLoopResult['failure'] | undefined;
+    // Hoisted so `finally` can clean them up even when the try block
+    // throws before reaching its own cleanup site. The wall-clock
+    // timer, signal-abort listener, and SIGKILL fallback timer all
+    // hold `proc` in their closures; on a long-lived host across
+    // many invocations, leaking these would tie up memory until the
+    // timers fire (potentially minutes per invocation).
+    let wallClockTimer: NodeJS.Timeout | null = null;
+    let killTimerHard: NodeJS.Timeout | null = null;
+    let onAbort: (() => void) | null = null;
 
     try {
       const prompt = buildPromptText(input.task);
@@ -132,7 +141,7 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       // after killGracePeriodMs (default 5000ms) as a hard fallback.
       // Both .unref() so the timer never blocks process exit on its own.
       let wallClockExpired = false;
-      const wallClockTimer = setTimeout(() => {
+      wallClockTimer = setTimeout(() => {
         wallClockExpired = true;
         try { proc.kill('SIGTERM'); } catch { /* already dead */ }
         const grace = this.opts.killGracePeriodMs ?? 5000;
@@ -147,8 +156,7 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       // fallback. Set a flag so the post-loop classifier can map this
       // to kind: 'aborted' instead of relying on the exitCode.
       let signalAborted = false;
-      let killTimerHard: NodeJS.Timeout | null = null;
-      const onAbort = () => {
+      onAbort = () => {
         signalAborted = true;
         try { proc.kill('SIGTERM'); } catch { /* already dead */ }
         const grace = this.opts.killGracePeriodMs ?? 5000;
@@ -348,20 +356,9 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       }
 
       const procResult = await proc;
-      // Clear the wall-clock timer if we exited normally; otherwise
-      // its closure leaks for the timer's full duration in a long-lived
-      // host. .unref() prevents process-hang but the closure still
-      // holds `proc` in memory until the timer fires.
-      clearTimeout(wallClockTimer);
-
-      // Remove the abort listener and clear the SIGKILL fallback timer.
-      // Mirrors the wall-clock cleanup discipline: even with .unref(),
-      // the listener + timer closures hold `proc` in memory and would
-      // leak on a long-lived host across many invocations.
-      if (input.signal !== undefined) {
-        input.signal.removeEventListener('abort', onAbort);
-      }
-      if (killTimerHard !== null) clearTimeout(killTimerHard);
+      // Cleanup of timers + listeners is hoisted to the finally block
+      // below so a thrown exception inside the streaming loop cannot
+      // leak the closures (which all hold `proc`).
 
       if (signalAborted) {
         // Highest precedence: operator-explicit "stop NOW". Beats
@@ -413,6 +410,17 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
         stage: isRedactorErr ? 'redactor' : (isBlobStoreErr ? 'blob-store' : 'claude-cli'),
       };
     } finally {
+      // Hoisted-cleanup discipline: clear timers + remove the abort
+      // listener even when the try block throws. Each closure holds
+      // `proc` in scope; on a long-lived host across many invocations,
+      // leaking these would tie up memory until the timers fire (up
+      // to max_wall_clock_ms per leak). .unref() is not enough -- it
+      // prevents process-hang but does not release the closure.
+      if (wallClockTimer !== null) clearTimeout(wallClockTimer);
+      if (killTimerHard !== null) clearTimeout(killTimerHard);
+      if (input.signal !== undefined && onAbort !== null) {
+        input.signal.removeEventListener('abort', onAbort);
+      }
       const completedAt = new Date().toISOString();
       try {
         await input.host.atoms.update(sessionId, {
