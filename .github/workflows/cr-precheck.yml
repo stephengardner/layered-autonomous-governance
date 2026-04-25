@@ -10,9 +10,13 @@ name: CR Precheck
 #
 # Auth: CR CLI requires CODERABBIT_API_KEY for review calls. The key
 # lives in repo secrets and is injected via env var to the helper.
-# Operator MUST add the secret before this gate becomes useful;
-# without it the helper will treat CR CLI's auth failure as cli-error,
-# block the merge, and write a skip atom on the runner side.
+# When the secret is NOT set, the workflow logs LOUD and skips the
+# review step (exits success, does NOT block merge). This is the
+# same progressive-enhancement pattern the local helper uses: the
+# CI backstop activates when the secret lands, and stays inert but
+# loud-about-it until then. Operator follow-up: add the secret to
+# activate the backstop. Local cr-precheck remains the gate in the
+# meantime for contributors with CR CLI installed.
 
 on:
   pull_request:
@@ -56,11 +60,30 @@ jobs:
         # atom-write path crashes and the gate becomes invisible.
         run: npm run build
 
+      - name: Check CODERABBIT_API_KEY presence
+        # Progressive-enhancement gate: when the secret is missing,
+        # log loud and skip the review steps below. Workflow exits
+        # success so the gate is inert-but-honest, not a hard block
+        # on every PR until the operator gets around to adding the
+        # secret. Same pattern the local helper uses for missing CLI.
+        id: check_secret
+        env:
+          CODERABBIT_API_KEY: ${{ secrets.CODERABBIT_API_KEY }}
+        run: |
+          if [ -z "$CODERABBIT_API_KEY" ]; then
+            echo "::warning ::CODERABBIT_API_KEY repo secret is not set; CI cr-precheck backstop is inert. Local cr-precheck remains the gate. Operator: add the secret to activate the backstop."
+            echo "secret_present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "[cr-precheck-ci] CODERABBIT_API_KEY present; will run CR CLI review."
+            echo "secret_present=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install CodeRabbit CLI
         # Official install script drops the binary at ~/.local/bin/coderabbit
         # plus a `cr` alias. The script also tries to update shell rc
         # files for PATH; on a non-interactive runner that's a no-op,
         # so we add the bin dir to GITHUB_PATH explicitly below.
+        if: steps.check_secret.outputs.secret_present == 'true'
         run: |
           curl -fsSL https://cli.coderabbit.ai/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -70,18 +93,14 @@ jobs:
         # find the binary. If this step fails, the cr-precheck step
         # below would skip-with-atom rather than run the review,
         # which is the exact silent-skip we are trying to avoid in CI.
+        if: steps.check_secret.outputs.secret_present == 'true'
         run: |
           which coderabbit
           coderabbit --version
 
       - name: Run cr-precheck against PR base
+        if: steps.check_secret.outputs.secret_present == 'true'
         env:
-          # CR CLI reads CODERABBIT_API_KEY from env. Repo secret must
-          # be configured by the operator; without it CR CLI errors on
-          # the API call and the helper records a cli-error skip atom
-          # plus exits non-zero (blocks the merge). Anonymous mode is
-          # not assumed available; if CR ships OSS-anonymous later,
-          # remove the secret requirement here.
           CODERABBIT_API_KEY: ${{ secrets.CODERABBIT_API_KEY }}
         run: |
           node scripts/cr-precheck.mjs --base "origin/${{ github.base_ref }}"
