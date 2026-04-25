@@ -166,11 +166,45 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/run-auditor.mjs --pr ${{ github.event.pull_request.number }} --plan ${{ steps.plan.outputs.plan-id }}
 
-  # lag-auditor-noop is a migration shim; see plan-atom plan-add-lag-auditor-noop-job-to-github-workf-cto-actor-20260424231351
+  # lag-auditor-noop is a migration shim. See plan-atom
+  # plan-add-lag-auditor-noop-job-to-github-workf-cto-actor-20260424231351.
+  #
+  # DELETE WHEN: a real unlabeled-PR auditor ships (e.g.
+  # scripts/run-auditor-unlabeled.mjs). Today scripts/run-auditor.mjs only
+  # fires on `plan-id:` labels, so this shim is the only LAG-auditor signal
+  # for the entire unlabeled-PR population. Once the real auditor covers
+  # this path, remove this job in the same PR. Grep for `DELETE WHEN:` to
+  # find other migration shims awaiting removal.
+  #
+  # Dual-mechanism note: branch protection registers `LAG-auditor` with
+  # `app_id: -1`, so any poster satisfies the required-status. The sibling
+  # `lag-auditor` job posts a commit status via scripts/run-auditor.mjs;
+  # this job posts a check-run via actions/github-script. Both surface
+  # under the same `LAG-auditor` context, which is intentional during the
+  # migration but can confuse a reader of branch-protection logs who sees
+  # one PR with a "check" and another with a "status" under the same name.
   lag-auditor-noop:
     name: LAG-auditor (noop)
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'autonomous-intent') }}
+    timeout-minutes: 2
+    # Same-repo PRs only. Two reasons:
+    #   1. pull_request from forks gets a read-only GITHUB_TOKEN
+    #      regardless of declared `permissions:`, so checks.create
+    #      returns 403. Once `LAG-auditor` becomes required by
+    #      branch protection, fork PRs would hang waiting for a
+    #      check that cannot be created.
+    #   2. pull_request_review and pull_request_review_comment
+    #      events would re-fire this job on every review action,
+    #      producing duplicate completed checks per head SHA.
+    # The `pull_request` event guard mirrors the sibling
+    # lag-auditor job at line 147. Fork-PR support for the
+    # unlabeled-auditor population is deferred until the broader
+    # auditor flow handles forks (e.g. via App-installation token
+    # injection mirroring the LAG_OPS_PAT pattern at line 129).
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork == false &&
+      !contains(github.event.pull_request.labels.*.name, 'autonomous-intent')
     permissions:
       checks: write
     steps:
