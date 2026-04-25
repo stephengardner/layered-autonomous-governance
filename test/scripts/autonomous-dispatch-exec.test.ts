@@ -175,9 +175,54 @@ describe('buildAuthedGitInvocation', () => {
       repoOwner: OWNER,
       repoName: REPO,
       inheritedEnv: { A: 'inherited' },
-      callerEnv: { A: 'caller', B: 'caller-only' },
+      callerEnv: { A: 'caller', B: 'caller-only', GIT_TERMINAL_PROMPT: '1' },
     });
     expect(out.env.A).toBe('caller');
     expect(out.env.B).toBe('caller-only');
+    // Auth env wins over caller env: a caller cannot re-enable the
+    // prompt that buildReadOnlyEnv / buildPushEnv pin to '0'.
+    // Regression guard: a future refactor that reordered the spread
+    // to `{...buildReadOnlyEnv(token), ...callerEnv}` would silently
+    // let an ambient askpass back in and hang the dispatch.
+    expect(out.env.GIT_TERMINAL_PROMPT).toBe('0');
+  });
+
+  it('looksLikeGitPush distinguishes the verb from a refspec named "push"', () => {
+    // A benign `git fetch origin push` (refspec literally named
+    // `push`) must not route into the push-auth path; positional
+    // detection guards against the false positive a naive
+    // `args.includes('push')` would emit.
+    expect(looksLikeGitPush(['fetch', 'origin', 'push'])).toBe(false);
+    expect(looksLikeGitPush(['-c', 'user.name=foo', 'fetch', 'origin', 'push'])).toBe(false);
+  });
+
+  it('looksLikeGitPush handles `-C dir` and `--` separator', () => {
+    expect(looksLikeGitPush(['-C', '/tmp/repo', 'push', 'origin', 'main'])).toBe(true);
+    expect(looksLikeGitPush(['-C', '/tmp/repo', 'fetch', 'origin'])).toBe(false);
+    // After `--`, the next arg is treated as the verb.
+    expect(looksLikeGitPush(['--', 'push', 'origin', 'main'])).toBe(true);
+  });
+
+  it('buildAuthedGitInvocation throws when the rewriter cannot translate the remote', () => {
+    // Regression for the silent-auth-strip footgun: when
+    // buildPushSpawnArgs returns null (no remote position to
+    // rewrite, or a non-GitHub HTTPS shape), falling through with
+    // buildPushEnv() would clear credential.helper without
+    // supplying a replacement and the push would hang or fail with
+    // no useful diagnostic. Throw so the caller sees the
+    // misconfiguration immediately.
+    //
+    // Trigger the null path with a bare `git push` (no remote arg)
+    // -- buildPushSpawnArgs's findRemoteArg returns null in that
+    // case, and the helper short-circuits to null.
+    expect(() =>
+      buildAuthedGitInvocation({
+        args: ['push'],
+        token: TOKEN,
+        repoOwner: OWNER,
+        repoName: REPO,
+        inheritedEnv: {},
+      }),
+    ).toThrow(/cannot rewrite push/);
   });
 });

@@ -25,17 +25,52 @@ export function parseRepoSlug(slug) {
 
 /**
  * Detect a push command in a git argv that may carry git-level `-c`
- * options before the verb. The shared `isPushCommand` helper bails as
- * soon as it sees a non-flag positional, so it misclassifies
- * `-c user.name=foo push origin` (the shape git-ops produces) as a
- * read. Search the args for the literal `push` token instead; false
- * positives are unreachable because git-ops only constructs argvs
- * shaped like `[-c, kv, -c, kv, <verb>, ...]` and never lets a
- * refspec land before the verb.
+ * options before the verb. Skip git-level flags (`-c key=val`,
+ * `-C dir`, single-letter switches) and report whether the first
+ * non-flag positional is `push`. This avoids the false positive a
+ * naive `args.includes('push')` would emit on a benign refspec named
+ * `push` (e.g. `git fetch origin push`); the shared isPushCommand
+ * helper instead misclassifies `-c user.name=foo push origin` as a
+ * read because it bails on the first non-`-` token, which is the gap
+ * this helper exists to plug.
+ *
+ * Verbs are git's positional commands (push, fetch, clone, ...).
+ * Anything before the verb is either a flag, a flag value, or
+ * unrecognized; once we see the verb, that token decides routing.
  */
 export function looksLikeGitPush(args) {
   if (!Array.isArray(args)) return false;
-  return args.includes('push');
+  return findGitVerb(args) === 'push';
+}
+
+/**
+ * Walk a git argv past git-level options and return the first
+ * positional token (the verb), or null if no verb is reachable.
+ * Handles the two value-taking git-level options the dispatcher
+ * actually emits (`-c <key>=<val>` from git-ops, `-C <dir>` from
+ * tooling); other long flags are treated as boolean. Mirrors the
+ * structure of findRemoteArg in git-as-push-auth.mjs.
+ */
+function findGitVerb(args) {
+  const valueTaking = new Set(['-c', '-C']);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (typeof a !== 'string') return null;
+    if (a === '--') {
+      return args[i + 1] ?? null;
+    }
+    if (a.startsWith('-')) {
+      if (valueTaking.has(a)) {
+        i += 1; // skip the value
+        continue;
+      }
+      // Inline value form (e.g. `-C=dir`, `--git-dir=.git`) is one
+      // token; ignore it entirely.
+      continue;
+    }
+    return a;
+  }
+  return null;
 }
 
 /**
@@ -64,8 +99,21 @@ export function buildAuthedGitInvocation({
   if (looksLikeGitPush(args)) {
     const remoteUrl = `https://github.com/${repoOwner}/${repoName}.git`;
     const rewritten = buildPushSpawnArgs(args, remoteUrl, token);
+    if (rewritten === null) {
+      // The shared rewriter only knows the GitHub HTTPS shape. A
+      // non-GitHub remote (SSH, enterprise, etc.) cannot accept the
+      // x-access-token URL, and falling through with buildPushEnv()
+      // would clear credential.helper without supplying a
+      // replacement -- the push would prompt or fail with no useful
+      // diagnostic. Fail loud so the caller sees the misconfiguration.
+      throw new Error(
+        '[autonomous-dispatch] cannot rewrite push to App-installation auth: '
+        + 'remote URL did not parse as github.com HTTPS. '
+        + `Inspect remote configuration for ${repoOwner}/${repoName}.`,
+      );
+    }
     return {
-      args: rewritten ?? args,
+      args: rewritten,
       env: { ...inheritedEnv, ...callerEnv, ...buildPushEnv() },
     };
   }
