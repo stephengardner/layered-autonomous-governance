@@ -43,7 +43,7 @@ describe('buildSessionTree', () => {
     await expect(buildSessionTree(host.atoms, 'not-a-session' as AtomId)).rejects.toThrow(/not type/);
   });
 
-  it('orders turns by turn_index, not by created_at', async () => {
+  it('orders turns by turn_index, not by insertion order', async () => {
     const host = createMemoryHost();
     await host.atoms.put(mkAtom('s2', 'agent-session', [], { agent_session: { model_id: 'x', adapter_id: 'y', workspace_id: 'w', started_at: NOW, terminal_state: 'completed', replay_tier: 'content-addressed', budget_consumed: { turns: 2, wall_clock_ms: 1 } } }));
     // Insert in reverse order

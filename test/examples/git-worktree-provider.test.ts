@@ -92,11 +92,15 @@ describe('GitWorktreeProvider specifics', () => {
     // Test multiple traversal-attempt shapes, each with a distinct
     // suffix so the resulting branch names don't collide across the
     // loop iterations (tests share the same `repoDir`).
+    // Use distinctive label tokens so the includes-check actually
+    // proves the label survived sanitization (single-letter labels
+    // like 'a','b' would coincidentally appear in surrounding text
+    // such as 'escape', 'attempt-a').
     const attempts = [
-      { raw: '../escape/attempt-a', label: 'a' },
-      { raw: '..\\windows-escape-b', label: 'b' },
-      { raw: '....\\double-c', label: 'c' },
-      { raw: '../../absolute-d', label: 'd' },
+      { raw: '../escape-XQA1', label: 'XQA1' },
+      { raw: '..\\windows-XQB2', label: 'XQB2' },
+      { raw: '....\\double-XQC3', label: 'XQC3' },
+      { raw: '../../absolute-XQD4', label: 'XQD4' },
     ];
     for (const { raw, label } of attempts) {
       const ws = await p.acquire({ principal: 'p' as PrincipalId, baseRef: 'main', correlationId: raw });

@@ -27,11 +27,17 @@
  * -----------------
  * `release()` runs `git worktree remove --force <path>` and treats
  * "not a working tree" stderr as success (idempotent: safe to call
- * twice). The branch `agentic/<id>` is left in place; orphaned
- * branches are cleaned up by `git worktree prune` separately.
+ * twice). Note: `git worktree remove` does not delete the underlying
+ * branch, and `git worktree prune` only removes administrative
+ * metadata for vanished worktrees - it does NOT delete branches
+ * either. Operators who want to clean up `agentic/<id>` branches
+ * after release should run
+ * `git for-each-ref --format='%(refname:short)' refs/heads/agentic/ | xargs -n1 git branch -D`
+ * (after confirming none have unmerged work).
  */
 
 import { execa } from 'execa';
+import { randomBytes } from 'node:crypto';
 import { copyFile, mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
@@ -111,12 +117,24 @@ export class GitWorktreeProvider implements WorkspaceProvider {
 
 function sanitizeId(raw: string): string {
   // Strip path-traversal segments AND any embedded '..' substring.
-  // Splitting on /\\ and removing '..' segments handles `../foo` and
-  // `..\foo`; the subsequent `..` -> '_' replace handles `....` and
-  // any embedded '..' that survives segment splitting (defense in depth).
-  const noTraversal = raw.split(/[/\\]/).filter((seg) => seg !== '..' && seg.length > 0).join('-');
+  // Splitting on /\\ and removing '.' / '..' / empty segments handles
+  // `../foo`, `..\foo`, and lone '.' inputs; the subsequent `..` -> '_'
+  // replace handles `....` and any embedded '..' that survives segment
+  // splitting (defense in depth).
+  const noTraversal = raw
+    .split(/[/\\]/)
+    .filter((seg) => seg !== '..' && seg !== '.' && seg.length > 0)
+    .join('-');
   const safe = noTraversal
     .replace(/[^A-Za-z0-9._-]/g, '-')
     .replace(/\.{2,}/g, '_'); // collapse any '..' or '...' run to '_'
-  return safe.slice(0, 80);
+  const clipped = safe.slice(0, 80);
+  if (clipped.length === 0 || /^[._]+$/.test(clipped)) {
+    // Pathological input (empty, '..', '.', '/', etc.); fall back to a
+    // deterministic-but-unique id so the workspace path is non-empty
+    // and not '.'. Caller still sees a reachable workspace; the id
+    // surfaces in logs for postmortem traceability.
+    return `corr-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+  }
+  return clipped;
 }

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Workspace } from '../../src/substrate/workspace-provider.js';
 import type { AtomId, PrincipalId } from '../../src/substrate/types.js';
+import type { BlobRef } from '../../src/substrate/blob-store.js';
 import { defaultBudgetCap } from '../../src/substrate/agent-budget.js';
 import { runAgentLoopContract } from '../substrate/agent-loop-contract.test.js';
 
@@ -67,7 +68,7 @@ describe('ClaudeCodeAgentLoopSkeleton', () => {
       const turn = await host.atoms.get(result.turnAtomIds[0]!);
       const turnMeta = (turn?.metadata as Record<string, unknown>)['agent_turn'] as Record<string, unknown>;
       const out = turnMeta['llm_output'] as { inline: string } | { ref: string };
-      const inlineOrFetch = 'inline' in out ? out.inline : await blobStore.get(out.ref as never).then((b) => b.toString('utf8'));
+      const inlineOrFetch = 'inline' in out ? out.inline : await blobStore.get(out.ref as BlobRef).then((b) => b.toString('utf8'));
       expect(inlineOrFetch).not.toContain('AKIAIOSFODNN7EXAMPLE');
       expect(inlineOrFetch).toContain('[REDACTED:aws-access-key]');
     } finally {

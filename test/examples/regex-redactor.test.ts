@@ -62,6 +62,15 @@ describe('RegexRedactor: default patterns', () => {
     expect(out).toContain('[REDACTED:customer-id]');
     expect(out).not.toContain('CUST-ABCDEF123456');
   });
+
+  it('rejects a pattern missing the global flag (/g) at construction', () => {
+    // Without /g, String.replace would replace only the first match,
+    // so a multi-occurrence secret would silently leak. The constructor
+    // refuses such patterns up front rather than failing quietly.
+    expect(() => new RegexRedactor([
+      { name: 'no-g-flag', pattern: /\bCUST-[A-Z0-9]{12}\b/, replacement: '[REDACTED:bad]' },
+    ])).toThrow(/global flag/i);
+  });
 });
 
 // Run the contract test against the reference adapter.

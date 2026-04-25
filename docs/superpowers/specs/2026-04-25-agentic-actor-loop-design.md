@@ -400,7 +400,9 @@ Implementer subagent runs the pre-push grep (memory `feedback_pre_push_grep_chec
 
 ### 6.4 At-write redaction is mandatory, not opt-in
 
-The seam composes `Redactor` unconditionally. Adapters that bypass it (e.g., write raw LLM output to atom store) violate the substrate contract. A validator atom enforces this at write time: agent-turn atoms whose payload has any byte that the principal's resolved `Redactor` would have caught are rejected.
+The seam composes `Redactor` unconditionally. Adapters that bypass it (e.g., write raw LLM output to atom store) violate the substrate contract.
+
+A future validator can enforce this at write-time by re-running the principal's `Redactor` over agent-turn payloads and rejecting any payload that produces redaction markers a second time. This validator is NOT shipped in PR1; redaction is enforced at the adapter level via the `AgentLoopAdapter` MUST contract. The validator-atom design lands in a separate substrate plan when org-scale deployments need the second line of defense.
 
 ### 6.5 Default-deny tool policy
 
@@ -455,8 +457,9 @@ The seam composes `Redactor` unconditionally. Adapters that bypass it (e.g., wri
 - `src/substrate/blob-store.ts` - `BlobStore`, `BlobRef` interfaces.
 - `src/substrate/redactor.ts` - `Redactor`, `RedactContext` interfaces.
 - `src/substrate/types.ts` - additive entries in `AtomType` union; `AgentSessionMeta`, `AgentTurnMeta` shapes.
-- `src/substrate/policies.ts` - `PolReplayTier`, `PolBlobThreshold` parsers + validators (clamp threshold).
-- `src/projections/session-tree.ts` - projection helper.
+- `src/substrate/policy/replay-tier.ts` - `pol-replay-tier` parser + resolver (read from `metadata.kind === 'pol-replay-tier'`).
+- `src/substrate/policy/blob-threshold.ts` - `pol-blob-threshold` parser + clamp.
+- `src/substrate/projections/session-tree.ts` - projection helper.
 
 **`examples/`:**
 - `examples/agent-loops/claude-code/` - `ClaudeCodeAgentLoop` reference adapter.

@@ -33,7 +33,9 @@ try {
 - No process isolation beyond the OS user. For stronger isolation
   (docker, k8s pod), implement a different `WorkspaceProvider`.
 - No GC of stale worktrees from crashed runs. Operators should run
-  `git worktree prune` periodically.
+  `git worktree prune` periodically. Note: `prune` only cleans up
+  the administrative metadata for vanished worktrees; it does NOT
+  delete the underlying branches.
 - No branch deletion on release. Orphan branches accumulate; clean
   them up via `git for-each-ref --format='%(refname:short)' refs/heads/agentic/`
   + `git branch -D` on the ones whose worktree no longer exists.

@@ -18,9 +18,9 @@
  *   provider is responsible for cred provisioning at acquire time and
  *   cleanup at release time; fresh worktrees start with no creds, so
  *   the copy step is the integration point.
- * - The default git-worktree-backed adapter is process-local (same OS
- *   user, same disk). Stronger isolation (docker, k8s) is an opt-in
- *   swap; the seam is unchanged.
+ * - Process-local isolation (same OS user, same disk) is the typical
+ *   default. Stronger isolation (docker, k8s) is an opt-in swap; the
+ *   seam is unchanged regardless of impl.
  * - Cleanup-on-error: `release()` MUST succeed even after an agent
  *   crash. Adapter implementations should not assume the workspace
  *   is in a sane state.

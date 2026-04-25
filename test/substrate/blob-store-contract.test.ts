@@ -75,5 +75,18 @@ export function runBlobStoreContract(name: string, build: () => Promise<{ store:
         await cleanup();
       }
     });
+
+    it('get() throws on unknown ref (does not silently return empty)', async () => {
+      // Pin loud-fail behavior so consumers can't accidentally treat
+      // a missing blob as an empty payload (which would silently
+      // discard tool inputs/outputs in the agentic actor loop).
+      const { store, cleanup } = await build();
+      try {
+        const fake = blobRefFromHash('0'.repeat(64));
+        await expect(store.get(fake)).rejects.toThrow();
+      } finally {
+        await cleanup();
+      }
+    });
   });
 }

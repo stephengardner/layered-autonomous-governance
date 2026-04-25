@@ -96,7 +96,7 @@ export type AtomType =
   // `directive` (L3 canon, persistent governance) and `observation`
   // (passive record): this is an L1 authorizing act that expires.
   | 'operator-intent'
-  // Agentic actor loop substrate (PR1 of agentic-actor-loop spec).
+  // Agentic actor loop substrate.
   // `agent-session`: one per agent run; principal-bound; carries the
   // session-level metadata (model, adapter, workspace, terminal
   // state, replay tier, budget, optional failure record). Lifecycle
@@ -472,7 +472,7 @@ export interface SearchHit {
 }
 
 // ---------------------------------------------------------------------------
-// Agentic actor loop substrate (PR1 of agentic-actor-loop spec)
+// Agentic actor loop substrate
 // ---------------------------------------------------------------------------
 
 /**

@@ -27,8 +27,12 @@ const redactor = new RegexRedactor([
 
 - Customer data (PII, addresses, emails).
 - Org-internal API tokens with custom shapes.
-- Inline base64-encoded credentials inside larger strings (the AWS-
-  secret-key heuristic catches some but not all).
+- AWS secret access keys. A 40-char base64-ish pattern collides with
+  git commit SHAs (40 hex) and JWT segments, so the default set
+  intentionally omits this. Operators who need it should ship a
+  context-aware match (e.g., scan only AWS-CLI tool output, or look
+  for an `aws_secret_access_key=` assignment context).
+- Inline base64-encoded credentials inside larger strings.
 
 For those, ship your own `Redactor` implementation against the
 substrate seam at `src/substrate/redactor.ts`.

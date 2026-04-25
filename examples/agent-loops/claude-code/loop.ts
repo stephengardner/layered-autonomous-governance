@@ -52,7 +52,11 @@ export interface ClaudeCodeAgentLoopSkeletonOptions {
 export class ClaudeCodeAgentLoopSkeleton implements AgentLoopAdapter {
   readonly capabilities: AdapterCapabilities = {
     tracks_cost: false,
-    supports_signal: true,
+    // The skeleton checks the signal once at entry; real adapters that
+    // loop should set this true and re-check between turns. We declare
+    // false here so consumers don't expect mid-run cancellation we
+    // don't actually implement.
+    supports_signal: false,
     classify_failure: defaultClassifyFailure,
   };
 

@@ -41,7 +41,7 @@
  */
 
 import type { AtomStore } from '../interface.js';
-import type { Atom, AtomId } from '../types.js';
+import type { Atom, AtomId, AtomPage } from '../types.js';
 
 export interface SessionTreeNode {
   readonly session: Atom;
@@ -85,17 +85,26 @@ async function walk(
   if (session.type !== 'agent-session') {
     throw new SessionTreeError(`atom ${sessionId} is not type='agent-session' (got ${session.type})`);
   }
-  const page = await atoms.query({ type: ['agent-turn'] }, 1000);
-  const turnAtoms: Atom[] = page.atoms.filter((a) => {
-    const md = a.metadata as Record<string, unknown>;
-    const turn = md['agent_turn'] as Record<string, unknown> | undefined;
-    return turn !== undefined && turn['session_atom_id'] === sessionId;
-  });
-  // Deterministic ordering by turn_index. Both turns are guaranteed
-  // to have a numeric turn_index per the AgentTurnMeta contract; if
-  // that invariant is violated upstream, the comparator returns
-  // NaN-driven ordering which sort() coerces to a stable run; the
-  // contract test pins the index-based ordering.
+  // Drain the cursor so sessions with > 1 page of turn atoms reconstruct
+  // fully. A single bounded query truncates at the page size and would
+  // silently drop late turns from the projection.
+  const turnAtoms: Atom[] = [];
+  let cursor: string | undefined = undefined;
+  do {
+    const page: AtomPage = await atoms.query({ type: ['agent-turn'] }, 1000, cursor);
+    for (const a of page.atoms) {
+      const md = a.metadata as Record<string, unknown>;
+      const turn = md['agent_turn'] as Record<string, unknown> | undefined;
+      if (turn !== undefined && turn['session_atom_id'] === sessionId) {
+        turnAtoms.push(a);
+      }
+    }
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  // Sort by `turn_index` ascending. The `agent-turn` contract requires
+  // a numeric `turn_index` per `AgentTurnMeta`; producers that violate
+  // the invariant get undefined ordering, which is acceptable substrate
+  // behavior (the contract test pins the well-formed case).
   turnAtoms.sort((a, b) => {
     const ai = (((a.metadata as Record<string, unknown>)['agent_turn']) as Record<string, unknown>)['turn_index'] as number;
     const bi = (((b.metadata as Record<string, unknown>)['agent_turn']) as Record<string, unknown>)['turn_index'] as number;

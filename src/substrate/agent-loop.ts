@@ -115,7 +115,17 @@ export interface AgentLoopInput {
 }
 
 export interface AgentLoopResult {
-  readonly kind: 'completed' | 'budget-exhausted' | 'error';
+  /**
+   * Terminal kind aligned with `AgentSessionMeta.terminal_state` so the
+   * adapter return value and the persisted session atom share one
+   * vocabulary. `'aborted'` is reserved for adapters that honor an
+   * `AbortSignal` and want to return cooperatively rather than throw
+   * `AbortError`; the skeleton in `examples/agent-loops/claude-code`
+   * declares `supports_signal: false` and currently throws on
+   * pre-entry signal aborts, so production adapters that loop are
+   * the natural producers of `kind: 'aborted'`.
+   */
+  readonly kind: 'completed' | 'budget-exhausted' | 'error' | 'aborted';
   readonly sessionAtomId: AtomId;
   readonly turnAtomIds: ReadonlyArray<AtomId>;
   readonly failure?: FailureRecord;
@@ -140,6 +150,16 @@ export interface AgentLoopResult {
  * The intentional bias: lean toward `structural` for unknown errors.
  * Retrying an unknown failure burns budget; escalating asks the
  * operator. Operator escalation is recoverable; runaway retry is not.
+ *
+ * AbortError mapping rationale: signal-driven cancellation maps to
+ * `catastrophic` (not a literal "host fault") because (a) running a
+ * retry loop on an operator's "cancel" is the worst possible UX -
+ * the operator clicked stop, the loop must halt; and (b) it's a
+ * control-flow event that needs to terminate the chain, semantically
+ * equivalent to a host fault from the agent loop's perspective. The
+ * `FailureKind` doc-comment uses "host-level fault" as the canonical
+ * description of `catastrophic`; treat operator-cancel as the same
+ * "do not retry, stop the chain" outcome.
  */
 export function defaultClassifyFailure(err: unknown): FailureKind {
   if (err instanceof Error && err.name === 'AbortError') {

@@ -29,9 +29,14 @@ export interface RedactionPattern {
 export const DEFAULT_PATTERNS: ReadonlyArray<RedactionPattern> = [
   // AWS access key id format: AKIA followed by 16 uppercase alphanumeric.
   { name: 'aws-access-key', pattern: /\bAKIA[0-9A-Z]{16}\b/g, replacement: '[REDACTED:aws-access-key]' },
-  // AWS secret access key (40-char base64-ish, very loose). Generic
-  // high-entropy catches these in practice; explicit is safer.
-  { name: 'aws-secret-key', pattern: /\b[A-Za-z0-9/+=]{40}\b/g, replacement: '[REDACTED:aws-secret-key]' },
+  // NOTE: AWS secret access keys are 40 chars of base64-ish, but a tight
+  // regex is impossible without false positives on git SHAs (40 hex),
+  // JWTs, base64-encoded blobs. A blanket /\b[A-Za-z0-9/+=]{40}\b/g
+  // would redact every `git log` / `git show` line in a code-author
+  // transcript, breaking debug-ability. Operators who need this should
+  // ship an org-specific Redactor with context-aware matching (e.g.,
+  // scan only AWS-CLI tool output, or look for `aws_secret_access_key=`
+  // assignment context). Intentionally NOT included in defaults.
   // GitHub Personal Access Tokens: ghp_/ghu_/ghr_ + 36 chars.
   { name: 'github-pat', pattern: /\bgh[pur]_[A-Za-z0-9]{36}\b/g, replacement: '[REDACTED:github-pat]' },
   // GitHub App installation tokens: ghs_ + 36+ chars.

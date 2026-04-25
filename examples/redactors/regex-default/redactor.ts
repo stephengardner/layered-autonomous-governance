@@ -26,7 +26,19 @@ import { DEFAULT_PATTERNS, type RedactionPattern } from './patterns.js';
 export class RegexRedactor implements Redactor {
   constructor(
     private readonly patterns: ReadonlyArray<RedactionPattern> = DEFAULT_PATTERNS,
-  ) {}
+  ) {
+    // Without /g, String.replace replaces only the first match. A
+    // multi-occurrence secret in the same payload would silently leak
+    // every occurrence after the first. Fail loud at construction
+    // rather than fail quiet at redact-time.
+    for (const p of this.patterns) {
+      if (!p.pattern.flags.includes('g')) {
+        throw new Error(
+          `RegexRedactor: pattern '${p.name}' is missing the global flag (/g); multi-occurrence secrets would leak`,
+        );
+      }
+    }
+  }
 
   redact(content: string, _context: RedactContext): string {
     if (typeof content !== 'string') {
