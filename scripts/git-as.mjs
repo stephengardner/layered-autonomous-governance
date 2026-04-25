@@ -256,39 +256,65 @@ async function main() {
   // not flip the push exit code  --  the push itself succeeded; setting
   // an upstream is operator-convenience, not correctness.
   if (exitCode === 0 && postPushUpstream !== null) {
+    // Propagate `-C <dir>` from gitArgs to the post-push git calls so
+    // they target the same working tree the push ran against. Without
+    // this, `git-as lag-ceo -C /other/repo push -u origin foo` would
+    // configure the upstream on whatever process.cwd() is, not the
+    // intended repo. Bash-quoted multi-token `-C` values are passed
+    // as a single argv element, so each `-C` consumes the next argv
+    // element verbatim.
+    const cFlags = [];
+    for (let i = 0; i < gitArgs.length; i++) {
+      if (gitArgs[i] === '-C' && typeof gitArgs[i + 1] === 'string') {
+        cFlags.push('-C', gitArgs[i + 1]);
+        i++;
+      }
+    }
     let branchName = postPushUpstream.branchHint;
     if (branchName === null) {
       try {
         const r = await execa(
           'git',
-          ['rev-parse', '--abbrev-ref', 'HEAD'],
+          [...cFlags, 'rev-parse', '--abbrev-ref', 'HEAD'],
           { reject: false },
         );
         const stdout = typeof r.stdout === 'string' ? r.stdout.trim() : '';
-        branchName = stdout.length > 0 ? stdout : null;
+        // Detached HEAD prints the literal string `HEAD`; treat that
+        // as unresolved rather than writing meaningless
+        // `branch.HEAD.remote` config.
+        branchName = stdout.length > 0 && stdout !== 'HEAD' ? stdout : null;
       } catch {
         branchName = null;
       }
     }
     if (branchName !== null) {
+      // Destination side of the refspec, when one was provided. For
+      // `push -u origin feat/x:release-x` native git records
+      // `branch.feat/x.merge = refs/heads/release-x`; preserve that
+      // semantics by using `postPushUpstream.mergeRef` when set.
+      // Otherwise fall back to `refs/heads/<branchName>` (the common
+      // case, equivalent to `push -u origin feat/x`).
+      const mergeRef = postPushUpstream.mergeRef !== null && postPushUpstream.mergeRef !== undefined
+        ? postPushUpstream.mergeRef
+        : `refs/heads/${branchName}`;
       await execa(
         'git',
-        ['config', `branch.${branchName}.remote`, postPushUpstream.remoteName],
+        [...cFlags, 'config', `branch.${branchName}.remote`, postPushUpstream.remoteName],
         { reject: false, stdio: 'ignore' },
       );
       await execa(
         'git',
-        ['config', `branch.${branchName}.merge`, `refs/heads/${branchName}`],
+        [...cFlags, 'config', `branch.${branchName}.merge`, mergeRef],
         { reject: false, stdio: 'ignore' },
       );
       console.error(
         `[git-as] -u stripped from push to avoid token-URL leak; `
-        + `set upstream to '${postPushUpstream.remoteName}/${branchName}' via 'git config'`,
+        + `set upstream to '${postPushUpstream.remoteName}/${branchName}' (merge=${mergeRef}) via 'git config'`,
       );
     } else {
       console.error(
         `[git-as] -u stripped from push to avoid token-URL leak; `
-        + `could not resolve current branch  --  operator must set upstream manually`,
+        + `could not resolve current branch (detached HEAD or rev-parse failed)  --  operator must set upstream manually`,
       );
     }
   }

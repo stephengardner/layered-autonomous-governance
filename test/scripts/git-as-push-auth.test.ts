@@ -337,6 +337,39 @@ describe('extractSetUpstreamPlan', () => {
     expect(plan!.branchHint).toBe('my-branch');
   });
 
+  it('strips leading + from force-refspec branchHint', () => {
+    const plan = extractSetUpstreamPlan(['push', '-u', 'origin', '+feat/x']);
+    expect(plan).not.toBe(null);
+    expect(plan!.branchHint).toBe('feat/x');
+  });
+
+  it('strips leading + from force-refspec src side and captures dst as mergeRef', () => {
+    const plan = extractSetUpstreamPlan(['push', '-u', 'origin', '+feat/x:release-x']);
+    expect(plan).not.toBe(null);
+    expect(plan!.branchHint).toBe('feat/x');
+    expect(plan!.mergeRef).toBe('refs/heads/release-x');
+  });
+
+  it('captures dst side of src:dst refspec as mergeRef', () => {
+    const plan = extractSetUpstreamPlan(['push', '-u', 'origin', 'feat/x:release-x']);
+    expect(plan!.mergeRef).toBe('refs/heads/release-x');
+  });
+
+  it('preserves refs/-prefixed dst as-is', () => {
+    const plan = extractSetUpstreamPlan(['push', '-u', 'origin', 'feat/x:refs/heads/release-x']);
+    expect(plan!.mergeRef).toBe('refs/heads/release-x');
+  });
+
+  it('mergeRef is null when no : in refspec', () => {
+    const plan = extractSetUpstreamPlan(['push', '-u', 'origin', 'feat/x']);
+    expect(plan!.mergeRef).toBe(null);
+  });
+
+  it('refspec of just `+` (no source name) yields branchHint=null', () => {
+    const plan = extractSetUpstreamPlan(['push', '-u', 'origin', '+']);
+    expect(plan!.branchHint).toBe(null);
+  });
+
   it('non-array input returns null', () => {
     // @ts-expect-error -- exercising the runtime guard
     expect(extractSetUpstreamPlan(null)).toBe(null);

@@ -157,13 +157,33 @@ export function extractSetUpstreamPlan(gitArgs) {
   const remoteInfoAfter = findRemoteArg(stripped);
   if (remoteInfoAfter === null) return null;
   const refspec = stripped[remoteInfoAfter.remoteIndex + 1] ?? null;
-  const branchHint = typeof refspec === 'string' && refspec.length > 0
-    ? (refspec.split(':')[0] ?? null)
-    : null;
+  // Source side of the refspec (before `:`). Strip a leading `+` so a
+  // force-refspec like `+feat/x:release-x` yields `feat/x` (not
+  // `+feat/x`, which would interpolate into an invalid config key
+  // `branch.+feat/x.remote`).
+  let branchHint = null;
+  let mergeRef = null;
+  if (typeof refspec === 'string' && refspec.length > 0) {
+    const colonIdx = refspec.indexOf(':');
+    const rawSrc = colonIdx >= 0 ? refspec.slice(0, colonIdx) : refspec;
+    const rawDst = colonIdx >= 0 ? refspec.slice(colonIdx + 1) : null;
+    const srcStripped = rawSrc.startsWith('+') ? rawSrc.slice(1) : rawSrc;
+    branchHint = srcStripped.length > 0 ? srcStripped : null;
+    // Destination side: if the refspec was `src:dst`, capture `dst`
+    // so the wrapper can write `branch.<src>.merge = refs/heads/<dst>`
+    // -- matching what native `-u` would do. If `dst` already starts
+    // with `refs/heads/` use it verbatim; otherwise wrap it. If no
+    // `:` was present, leave mergeRef null and the wrapper falls
+    // back to `refs/heads/<branchHint>`.
+    if (rawDst !== null && rawDst.length > 0) {
+      mergeRef = rawDst.startsWith('refs/') ? rawDst : `refs/heads/${rawDst}`;
+    }
+  }
   return {
     strippedArgs: stripped,
     remoteName: remoteInfoAfter.remote,
     branchHint,
+    mergeRef,
   };
 }
 
