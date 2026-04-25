@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { execa } from 'execa';
 import { decideCrFileLimit, CR_FILE_LIMIT_ENV } from './lib/cr-file-limit.mjs';
+import { shouldWriteOperatorActionAtom } from './lib/gh-classify-write.mjs';
 import {
   createCredentialsStore,
 } from '../dist/actors/provisioning/index.js';
@@ -142,18 +143,23 @@ async function main() {
     process.exit(1);
   }
 
-  // Atomize the operator action before exec. Every bot-identity-
-  // mediated GitHub action produces an observation atom so the
-  // provenance chain `operator -> agent -> bot -> GitHub op` has a
-  // durable record. Without this, merges + comments + PR opens flow
-  // through the bot identity with no atom trail, which is the
-  // audit-gap closure described in `dev-atomize-operator-actions`
-  // (canon). Redacted argv strips known secret-carrying flags. Best
-  // effort: if the write fails we log and continue so an AtomStore
-  // hiccup never blocks an operator action. Env override
-  // LAG_SKIP_OPERATOR_ACTION_ATOM=1 disables the write for tests +
-  // emergency bypass.
-  const actionAtomId = await writeOperatorActionAtom(role, ghArgs);
+  // Atomize the operator action before exec, gated on classifier:
+  // every bot-identity-mediated GitHub WRITE produces an observation
+  // atom so the provenance chain `operator -> agent -> bot -> GitHub
+  // op` has a durable record. Reads (gh pr view, status polls, repo
+  // lookups) skip the atom write because their audit value is zero
+  // (no governance-bearing mutation) and at session scale they
+  // accumulate thousands of write-only-then-forgotten atoms that
+  // overwhelm the file-host and drown out load-bearing atoms in
+  // timeline projections. Default-deny: argv shapes the classifier
+  // does not understand are treated as reads; opt back into legacy
+  // audit-everything via LAG_OP_ACTION_ATOMIZE=all when audit
+  // breadth matters more than atom-store hygiene.
+  // LAG_SKIP_OPERATOR_ACTION_ATOM=1 still disables the write entirely
+  // (existing escape hatch).
+  const actionAtomId = shouldWriteOperatorActionAtom(ghArgs)
+    ? await writeOperatorActionAtom(role, ghArgs)
+    : null;
   if (actionAtomId !== null) {
     // stderr, not stdout: callers frequently pipe gh output into JSON
     // parsers (`gh api ... | jq`, or passing into a Node consumer),
