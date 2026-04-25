@@ -113,4 +113,56 @@ describe('spawnClaudeCli', () => {
     });
     expect(calls[0]!.bin).toBe('/opt/claude');
   });
+
+  it('argv includes --resume <uuid> when resumeSessionId is set', async () => {
+    let captured: string[] = [];
+    const stub = (async (_b: string, args: string[]) => {
+      captured = args;
+      return { stdout: '', stderr: '', exitCode: 0 } as never;
+    }) as never;
+    await spawnClaudeCli({
+      prompt: 'h',
+      workspaceDir: '/tmp/x',
+      budget: { max_turns: 10, max_wall_clock_ms: 60_000, max_usd: 1 },
+      disallowedTools: [],
+      execImpl: stub,
+      resumeSessionId: 'abc-uuid-123',
+    });
+    const idx = captured.indexOf('--resume');
+    expect(idx).toBeGreaterThan(-1);
+    expect(captured[idx + 1]).toBe('abc-uuid-123');
+  });
+
+  it('argv omits --resume when resumeSessionId is undefined', async () => {
+    let captured: string[] = [];
+    const stub = (async (_b: string, args: string[]) => {
+      captured = args;
+      return { stdout: '', stderr: '', exitCode: 0 } as never;
+    }) as never;
+    await spawnClaudeCli({
+      prompt: 'h',
+      workspaceDir: '/tmp/x',
+      budget: { max_turns: 10, max_wall_clock_ms: 60_000, max_usd: 1 },
+      disallowedTools: [],
+      execImpl: stub,
+    });
+    expect(captured).not.toContain('--resume');
+  });
+
+  it('argv omits --resume when resumeSessionId is empty string', async () => {
+    let captured: string[] = [];
+    const stub = (async (_b: string, args: string[]) => {
+      captured = args;
+      return { stdout: '', stderr: '', exitCode: 0 } as never;
+    }) as never;
+    await spawnClaudeCli({
+      prompt: 'h',
+      workspaceDir: '/tmp/x',
+      budget: { max_turns: 10, max_wall_clock_ms: 60_000, max_usd: 1 },
+      disallowedTools: [],
+      execImpl: stub,
+      resumeSessionId: '',
+    });
+    expect(captured).not.toContain('--resume');
+  });
 });

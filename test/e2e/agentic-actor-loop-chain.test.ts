@@ -44,6 +44,7 @@ function inMemoryBlobStore(): BlobStore {
     },
     get: async (ref) => store.get(ref as string)!,
     has: async (ref) => store.has(ref as string),
+    describeStorage: () => ({ kind: 'remote' as const, target: 'in-memory:test' }),
   };
 }
 

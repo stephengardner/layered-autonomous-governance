@@ -24,6 +24,7 @@ function inMemBlob(): BlobStore {
     },
     get: async (r) => m.get(r as string)!,
     has: async (r) => m.has(r as string),
+    describeStorage: () => ({ kind: 'remote' as const, target: 'in-memory:test' }),
   };
 }
 
@@ -271,6 +272,7 @@ describe('ClaudeCodeAgentLoopAdapter -- blob threshold', () => {
       },
       get: async () => Buffer.alloc(0),
       has: async () => true,
+      describeStorage: () => ({ kind: 'remote' as const, target: 'in-memory:test' }),
     };
     const longText = 'x'.repeat(8192);
     const stdoutLines = [
@@ -295,6 +297,7 @@ describe('ClaudeCodeAgentLoopAdapter -- blob threshold', () => {
       put: async () => { throw new Error('disk full'); },
       get: async () => Buffer.alloc(0),
       has: async () => false,
+      describeStorage: () => ({ kind: 'remote' as const, target: 'in-memory:test' }),
     };
     const longText = 'x'.repeat(8192);
     const stdoutLines = [
@@ -347,5 +350,95 @@ describe('ClaudeCodeAgentLoopAdapter -- signal handling', () => {
     const result = await adapter.run(mkInput(host, ac.signal));
     expect(result.kind).toBe('aborted');
     expect(result.failure?.kind).toBe('catastrophic');
+  });
+});
+
+// Helper: stream lines that include a `system` init event carrying a
+// specific session UUID (the value the adapter must persist into
+// `metadata.agent_session.extra.resumable_session_id`).
+function makeStubExecaThatYieldsSessionInitWithUuid(uuid: string) {
+  const stdoutLines = [
+    JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: uuid }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
+    JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
+  ];
+  return makeStubExeca(stdoutLines);
+}
+
+describe('ClaudeCodeAgentLoopAdapter -- resumable_session_id persistence', () => {
+  it('writes extra.resumable_session_id on the session atom on successful completion', async () => {
+    const host = createMemoryHost();
+    const adapter = new ClaudeCodeAgentLoopAdapter({
+      execImpl: makeStubExecaThatYieldsSessionInitWithUuid('test-uuid-001'),
+    });
+    await adapter.run(mkInput(host));
+    const sessionAtoms = (await host.atoms.query({ type: ['agent-session'] }, 100)).atoms;
+    expect(sessionAtoms.length).toBe(1);
+    const meta = sessionAtoms[0]!.metadata as Record<string, unknown>;
+    const agentSession = meta['agent_session'] as Record<string, unknown>;
+    const extra = agentSession['extra'] as Record<string, unknown>;
+    expect(extra['resumable_session_id']).toBe('test-uuid-001');
+  });
+
+  it('invokes sessionPersistExtras hook and merges its return into extra', async () => {
+    const host = createMemoryHost();
+    const hookCalls: Array<{ sessionId: string }> = [];
+    const adapter = new ClaudeCodeAgentLoopAdapter({
+      execImpl: makeStubExecaThatYieldsSessionInitWithUuid('test-uuid-002'),
+      sessionPersistExtras: async (input) => {
+        hookCalls.push({ sessionId: input.sessionId });
+        return { custom_field: 'hello', another: 42 };
+      },
+    });
+    await adapter.run(mkInput(host));
+    expect(hookCalls).toEqual([{ sessionId: 'test-uuid-002' }]);
+    const sessionAtoms = (await host.atoms.query({ type: ['agent-session'] }, 1)).atoms;
+    const meta = sessionAtoms[0]!.metadata as Record<string, unknown>;
+    const agentSession = meta['agent_session'] as Record<string, unknown>;
+    const extra = agentSession['extra'] as Record<string, unknown>;
+    expect(extra).toMatchObject({
+      resumable_session_id: 'test-uuid-002',
+      custom_field: 'hello',
+      another: 42,
+    });
+  });
+
+  it('hook return cannot overwrite framework-managed resumable_session_id', async () => {
+    // Regression pin for the merge-precedence contract: a buggy or
+    // hostile sessionPersistExtras returning a different
+    // resumable_session_id MUST NOT clobber the adapter-captured CLI
+    // UUID. If this test ever flips, downstream `claude --resume <uuid>`
+    // calls would attach to the wrong CLI session.
+    const host = createMemoryHost();
+    const adapter = new ClaudeCodeAgentLoopAdapter({
+      execImpl: makeStubExecaThatYieldsSessionInitWithUuid('cli-uuid-real'),
+      sessionPersistExtras: async () => ({
+        resumable_session_id: 'attacker-controlled',
+        custom_field: 'kept',
+      }),
+    });
+    await adapter.run(mkInput(host));
+    const sessionAtoms = (await host.atoms.query({ type: ['agent-session'] }, 1)).atoms;
+    const meta = sessionAtoms[0]!.metadata as Record<string, unknown>;
+    const agentSession = meta['agent_session'] as Record<string, unknown>;
+    const extra = agentSession['extra'] as Record<string, unknown>;
+    expect(extra['resumable_session_id']).toBe('cli-uuid-real');
+    expect(extra['custom_field']).toBe('kept');
+  });
+
+  it('hook throw does not fail the session; failure record on session is unchanged', async () => {
+    const host = createMemoryHost();
+    const adapter = new ClaudeCodeAgentLoopAdapter({
+      execImpl: makeStubExecaThatYieldsSessionInitWithUuid('test-uuid-003'),
+      sessionPersistExtras: async () => { throw new Error('hook crashed'); },
+    });
+    const result = await adapter.run(mkInput(host));
+    expect(result.kind).toBe('completed');
+    const sessionAtoms = (await host.atoms.query({ type: ['agent-session'] }, 1)).atoms;
+    const meta = sessionAtoms[0]!.metadata as Record<string, unknown>;
+    const agentSession = meta['agent_session'] as Record<string, unknown>;
+    expect(agentSession['failure']).toBeUndefined();
+    const extra = agentSession['extra'] as Record<string, unknown>;
+    expect(extra['resumable_session_id']).toBe('test-uuid-003');
   });
 });

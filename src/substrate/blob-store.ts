@@ -32,6 +32,28 @@ import type { BlobRef } from './types.js';
 
 export type { BlobRef } from './types.js';
 
+/**
+ * Describes where this BlobStore puts data. Used by callers that need to
+ * gate data flow on storage destination (e.g. refusing to ship sensitive
+ * content into a git-tracked tree). The descriptor is part of the public
+ * contract a security-conscious caller can rely on for inspection.
+ *
+ * - `local-file`: the store writes to a single rootPath on the local
+ *   filesystem. `rootPath` is absolute; callers may walk up looking for
+ *   `.git/` to detect git-tracked destinations.
+ * - `remote`: the store writes to a networked target. `target` is a
+ *   free-form, operator-readable identifier (e.g. `s3://bucket/prefix`,
+ *   `postgres://...`). Callers that gate on storage trust must apply
+ *   their own destination-trust review for this case; the framework
+ *   does NOT inspect remote targets.
+ *
+ * The discriminated-union shape ensures exhaustiveness checks at consumer
+ * sites; future variants are additive only.
+ */
+export type BlobStorageDescriptor =
+  | { readonly kind: 'local-file'; readonly rootPath: string }
+  | { readonly kind: 'remote'; readonly target: string };
+
 export interface BlobStore {
   /**
    * Persist `content`. Returns a content-addressed `BlobRef`.
@@ -46,6 +68,12 @@ export interface BlobStore {
 
   /** Existence check. Returns false on unknown ref (does not throw). */
   has(ref: BlobRef): Promise<boolean>;
+
+  /**
+   * Describe where this blob store puts data. See `BlobStorageDescriptor`.
+   * MUST return a deterministic descriptor; callers may cache the result.
+   */
+  describeStorage(): BlobStorageDescriptor;
 }
 
 const SHA256_PREFIX = 'sha256:';
