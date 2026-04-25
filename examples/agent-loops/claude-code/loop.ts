@@ -95,6 +95,16 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       let currentTurnIndex = 0;
       let pendingFirstTurnOpened = false;
 
+      // Tool-use correlation maps. In-memory only, never persisted.
+      // The (turn_id, index) pair is the only safe correlation under
+      // parallel tool_use; "walk backwards looking for last empty
+      // result" would write the wrong tool's result into the wrong
+      // entry. tool_use_id -> turn atom id and tool_use_id -> index
+      // within that turn's tool_calls array, captured at tool_use time.
+      const toolUseToTurn = new Map<string, AtomId>();
+      const toolUseToCallIndex = new Map<string, number>();
+      const toolUseStartMs = new Map<string, number>();
+
       const openPlaceholderTurn = async (turnIndex: number, llmInputText: string): Promise<AtomId> => {
         const turnId = `agent-turn-${randomBytes(6).toString('hex')}` as AtomId;
         let redactedInput: string;
@@ -161,8 +171,86 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
             });
           } else if (ev.kind === 'result') {
             if (typeof ev.costUsd === 'number') costUsd = ev.costUsd;
+          } else if (ev.kind === 'tool-use') {
+            if (currentTurnAtomId === null) {
+              // CLI emitted tool_use before any system event; open turn 0 lazily.
+              currentTurnAtomId = await openPlaceholderTurn(currentTurnIndex, prompt);
+              pendingFirstTurnOpened = true;
+            }
+            const argsStr = JSON.stringify(ev.input);
+            let redactedArgs: string;
+            try {
+              redactedArgs = input.redactor.redact(argsStr, { kind: 'tool-args', principal: input.principal });
+            } catch (e) {
+              throw Object.assign(new Error('redactor crashed on tool_use args'), { name: 'RedactorError', cause: e });
+            }
+            const turnAtom = await input.host.atoms.get(currentTurnAtomId);
+            if (turnAtom !== null) {
+              const meta = turnAtom.metadata as Record<string, unknown>;
+              const turnMeta = meta['agent_turn'] as AgentTurnMeta;
+              const newIndex = turnMeta.tool_calls.length;
+              const updated: AgentTurnMeta = {
+                ...turnMeta,
+                tool_calls: [...turnMeta.tool_calls, {
+                  tool: ev.toolName,
+                  args: { inline: redactedArgs },
+                  result: { inline: '' },
+                  latency_ms: 0,
+                  outcome: 'success',
+                }],
+              };
+              await input.host.atoms.update(currentTurnAtomId, { metadata: { agent_turn: updated } });
+              toolUseToTurn.set(ev.toolUseId, currentTurnAtomId);
+              toolUseToCallIndex.set(ev.toolUseId, newIndex);
+              toolUseStartMs.set(ev.toolUseId, Date.now());
+            }
+          } else if (ev.kind === 'tool-result') {
+            const targetTurnId = toolUseToTurn.get(ev.toolUseId);
+            const targetCallIndex = toolUseToCallIndex.get(ev.toolUseId);
+            if (targetTurnId === undefined || targetCallIndex === undefined) {
+              // Unknown tool_use_id (corruption / version skew); log + skip, never throw.
+              continue;
+            }
+            let redactedResult: string;
+            try {
+              redactedResult = input.redactor.redact(ev.content, { kind: 'tool-result', principal: input.principal });
+            } catch (e) {
+              throw Object.assign(new Error('redactor crashed on tool_result'), { name: 'RedactorError', cause: e });
+            }
+            const targetAtom = await input.host.atoms.get(targetTurnId);
+            if (targetAtom !== null) {
+              const meta = targetAtom.metadata as Record<string, unknown>;
+              const turnMeta = meta['agent_turn'] as AgentTurnMeta;
+              const startedToolMs = toolUseStartMs.get(ev.toolUseId) ?? Date.now();
+              const policyDenied = ev.isError && /permission denied|tool not allowed/i.test(ev.content);
+              const outcome: 'success' | 'tool-error' | 'policy-refused' = ev.isError
+                ? (policyDenied ? 'policy-refused' : 'tool-error')
+                : 'success';
+              // Replace the SPECIFIC tool_calls[targetCallIndex] entry. Safe
+              // under parallel tool_use because the index was recorded at
+              // tool_use time.
+              const newCalls = turnMeta.tool_calls.slice();
+              const existing = newCalls[targetCallIndex];
+              if (existing !== undefined) {
+                newCalls[targetCallIndex] = {
+                  tool: existing.tool,
+                  args: existing.args,
+                  result: { inline: redactedResult },
+                  latency_ms: Date.now() - startedToolMs,
+                  outcome,
+                };
+              }
+              const updated: AgentTurnMeta = { ...turnMeta, tool_calls: newCalls };
+              await input.host.atoms.update(targetTurnId, { metadata: { agent_turn: updated } });
+            }
+            toolUseToTurn.delete(ev.toolUseId);
+            toolUseToCallIndex.delete(ev.toolUseId);
+            toolUseStartMs.delete(ev.toolUseId);
+            // Open the NEXT placeholder turn -- the CLI is feeding tool
+            // results back to the LLM, which triggers a new LLM call.
+            currentTurnIndex += 1;
+            currentTurnAtomId = await openPlaceholderTurn(currentTurnIndex, '<tool-results-summary>');
           }
-          // tool-use / tool-result handled in Task 7
           // parse-error: log + skip (no-op)
         }
       }

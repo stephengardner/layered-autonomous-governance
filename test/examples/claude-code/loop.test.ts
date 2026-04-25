@@ -145,3 +145,90 @@ describe('ClaudeCodeAgentLoopAdapter -- happy path lifecycle', () => {
     expect(result.failure?.kind).toBe('catastrophic');
   });
 });
+
+describe('ClaudeCodeAgentLoopAdapter -- multi-turn + tool_calls', () => {
+  it('opens turn N+1 placeholder on tool_result, closes on next assistant-text', async () => {
+    const host = createMemoryHost();
+    const stdoutLines = [
+      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'ls' } }] } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'a\nb', is_error: false }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'two files' }] } }),
+      JSON.stringify({ type: 'result', cost_usd: 0.02, is_error: false }),
+    ];
+    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
+    await adapter.run(mkInput(host));
+    const turns = (await host.atoms.query({ type: ['agent-turn'] }, 100)).atoms;
+    expect(turns).toHaveLength(2);
+    const idx = (a: typeof turns[number]) =>
+      ((a.metadata as Record<string, unknown>)['agent_turn'] as Record<string, unknown>)['turn_index'] as number;
+    expect(turns.map(idx).sort()).toEqual([0, 1]);
+  });
+
+  it('records tool_calls with canonical AgentTurnMeta shape (tool, args, result, outcome)', async () => {
+    const host = createMemoryHost();
+    const stdoutLines = [
+      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'ls' } }] } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'a\nb', is_error: false }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
+      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
+    ];
+    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
+    await adapter.run(mkInput(host));
+    const turns = (await host.atoms.query({ type: ['agent-turn'] }, 100)).atoms;
+    const turn0 = turns.find(
+      (a) => ((a.metadata as Record<string, unknown>)['agent_turn'] as Record<string, unknown>)['turn_index'] === 0
+    )!;
+    const meta = (turn0.metadata as Record<string, unknown>)['agent_turn'] as Record<string, unknown>;
+    const toolCalls = meta['tool_calls'] as ReadonlyArray<Record<string, unknown>>;
+    expect(toolCalls).toHaveLength(1);
+    const tc = toolCalls[0]!;
+    expect(tc['tool']).toBe('Bash');
+    expect(tc).toHaveProperty('args');
+    expect(tc).toHaveProperty('result');
+    expect(tc).toHaveProperty('outcome');
+    expect(tc).toHaveProperty('latency_ms');
+    expect(tc['outcome']).toBe('success');
+  });
+
+  it('classifies tool_result with is_error AND "Permission denied" content as policy-refused', async () => {
+    const host = createMemoryHost();
+    const stdoutLines = [
+      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'rm -rf /' } }] } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'Permission denied: tool not allowed', is_error: true }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'noted' }] } }),
+      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
+    ];
+    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
+    await adapter.run(mkInput(host));
+    const turns = (await host.atoms.query({ type: ['agent-turn'] }, 100)).atoms;
+    const turn0 = turns.find(
+      (a) => ((a.metadata as Record<string, unknown>)['agent_turn'] as Record<string, unknown>)['turn_index'] === 0
+    )!;
+    const meta = (turn0.metadata as Record<string, unknown>)['agent_turn'] as Record<string, unknown>;
+    const tc = (meta['tool_calls'] as ReadonlyArray<Record<string, unknown>>)[0]!;
+    expect(tc['outcome']).toBe('policy-refused');
+  });
+
+  it('classifies tool_result with is_error AND no policy phrase as tool-error', async () => {
+    const host = createMemoryHost();
+    const stdoutLines = [
+      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'cat /nope' } }] } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'ENOENT', is_error: true }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'noted' }] } }),
+      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
+    ];
+    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
+    await adapter.run(mkInput(host));
+    const turns = (await host.atoms.query({ type: ['agent-turn'] }, 100)).atoms;
+    const turn0 = turns.find(
+      (a) => ((a.metadata as Record<string, unknown>)['agent_turn'] as Record<string, unknown>)['turn_index'] === 0
+    )!;
+    const meta = (turn0.metadata as Record<string, unknown>)['agent_turn'] as Record<string, unknown>;
+    const tc = (meta['tool_calls'] as ReadonlyArray<Record<string, unknown>>)[0]!;
+    expect(tc['outcome']).toBe('tool-error');
+  });
+});
