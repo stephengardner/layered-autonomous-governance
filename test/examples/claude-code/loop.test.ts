@@ -24,6 +24,7 @@ function inMemBlob(): BlobStore {
     },
     get: async (r) => m.get(r as string)!,
     has: async (r) => m.has(r as string),
+    describeStorage: () => ({ kind: 'remote' as const, target: 'in-memory:test' }),
   };
 }
 
@@ -271,6 +272,7 @@ describe('ClaudeCodeAgentLoopAdapter -- blob threshold', () => {
       },
       get: async () => Buffer.alloc(0),
       has: async () => true,
+      describeStorage: () => ({ kind: 'remote' as const, target: 'in-memory:test' }),
     };
     const longText = 'x'.repeat(8192);
     const stdoutLines = [
@@ -295,6 +297,7 @@ describe('ClaudeCodeAgentLoopAdapter -- blob threshold', () => {
       put: async () => { throw new Error('disk full'); },
       get: async () => Buffer.alloc(0),
       has: async () => false,
+      describeStorage: () => ({ kind: 'remote' as const, target: 'in-memory:test' }),
     };
     const longText = 'x'.repeat(8192);
     const stdoutLines = [

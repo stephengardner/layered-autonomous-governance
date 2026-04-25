@@ -34,19 +34,33 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, rename, stat, readFile, writeFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   blobRefFromHash,
   parseBlobRef,
   type BlobStore,
   type BlobRef,
+  type BlobStorageDescriptor,
 } from '../../../src/substrate/blob-store.js';
 
 export class FileBlobStore implements BlobStore {
+  /**
+   * Absolute, normalized path computed once at construction. Returned
+   * verbatim from `describeStorage()`; consumers (e.g. destination
+   * guards walking up looking for `.git/`) require an absolute path
+   * that does not change between calls.
+   */
+  private readonly resolvedRootPath: string;
+
   constructor(private readonly rootDir: string) {
     if (typeof rootDir !== 'string' || rootDir.length === 0) {
       throw new Error('FileBlobStore: rootDir must be a non-empty string');
     }
+    this.resolvedRootPath = resolve(rootDir);
+  }
+
+  describeStorage(): BlobStorageDescriptor {
+    return { kind: 'local-file', rootPath: this.resolvedRootPath };
   }
 
   async put(content: Buffer | string): Promise<BlobRef> {
