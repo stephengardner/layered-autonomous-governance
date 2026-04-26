@@ -1,4 +1,8 @@
 import { test, expect } from '@playwright/test';
+import {
+  bucketForPlanState,
+  PLAN_FILTER_STORAGE_KEY,
+} from '../../src/features/plans-viewer/planStateFilter';
 
 /**
  * Plans-view bucket-filter e2e.
@@ -20,10 +24,15 @@ import { test, expect } from '@playwright/test';
  *      so the operator never lands on a "Plan not found" surface
  *      because of bucket mismatch.
  *
- * Discovery is dynamic against /api/plans.list — we read the actual
+ * Discovery is dynamic against /api/plans.list - we read the actual
  * atom set so the test is meaningful against whatever data the
  * backend has, and skips with a clear reason if the dataset can't
  * exercise the assertion.
+ *
+ * Imports `bucketForPlanState` and `PLAN_FILTER_STORAGE_KEY` from src
+ * rather than re-implementing them here; a substrate vocabulary
+ * change (new plan_state, renamed storage key) flows through both
+ * surfaces in lockstep instead of silently disagreeing with the spec.
  */
 
 interface PlanRow {
@@ -31,16 +40,11 @@ interface PlanRow {
   readonly plan_state?: string | null;
 }
 
-const ACTIVE_STATES = new Set(['proposed', 'approved', 'executing', 'draft', 'pending']);
-const FAILED_STATES = new Set(['failed', 'abandoned', 'rejected']);
-
-function bucketFor(state: string | null | undefined): 'active' | 'succeeded' | 'failed' {
-  if (typeof state !== 'string' || state.length === 0) return 'active';
-  if (state === 'succeeded') return 'succeeded';
-  if (FAILED_STATES.has(state)) return 'failed';
-  if (ACTIVE_STATES.has(state)) return 'active';
-  return 'active';
-}
+// Storage prefix that the LocalStorageService applies. Hardcoded
+// because it lives inside the storage.service module's closure and
+// is not exported; one rename here is the price of keeping the
+// service-internal prefix internal.
+const STORAGE_KEY = `lag-console.${PLAN_FILTER_STORAGE_KEY}`;
 
 test.describe('plans bucket filter', () => {
   test('default Active hides failed/succeeded; switching chips re-renders + persists', async ({
@@ -53,7 +57,7 @@ test.describe('plans bucket filter', () => {
     const plans: ReadonlyArray<PlanRow> = plansBody?.data ?? plansBody ?? [];
 
     const counts = { active: 0, succeeded: 0, failed: 0, all: plans.length };
-    for (const p of plans) counts[bucketFor(p.plan_state)] += 1;
+    for (const p of plans) counts[bucketForPlanState(p.plan_state)] += 1;
 
     test.skip(
       counts.active === 0 && counts.succeeded === 0 && counts.failed === 0,
@@ -66,7 +70,7 @@ test.describe('plans bucket filter', () => {
      * leak state from a prior dev session.
      */
     await page.goto('/plans');
-    await page.evaluate(() => localStorage.removeItem('lag-console.plans-filter-bucket'));
+    await page.evaluate((key) => localStorage.removeItem(key), STORAGE_KEY);
     await page.reload();
 
     const chips = page.getByTestId('plans-filter-chips');
@@ -145,14 +149,14 @@ test.describe('plans bucket filter', () => {
      * Active filter, navigating directly to /plans/<id> on this plan
      * should still render the card, not "Plan not found."
      */
-    const target = plans.find((p) => bucketFor(p.plan_state) !== 'active');
+    const target = plans.find((p) => bucketForPlanState(p.plan_state) !== 'active');
     test.skip(
       !target,
       'no closed-bucket plan in atom store; cannot verify focus-mode bypass',
     );
 
     await page.goto('/plans');
-    await page.evaluate(() => localStorage.removeItem('lag-console.plans-filter-bucket'));
+    await page.evaluate((key) => localStorage.removeItem(key), STORAGE_KEY);
 
     await page.goto(`/plans/${target!.id}`);
     const card = page.getByTestId('plan-card').first();

@@ -125,7 +125,7 @@ export function PlansView() {
       {query.isError && (
         <ErrorState title="Could not load plans" message={(query.error as Error).message} testId="plans-error" />
       )}
-      {query.isSuccess && allPlans.length === 0 && (
+      {query.isSuccess && (allPlans.length === 0 || (Boolean(focusId) && plans.length === 0)) && (
         focusId ? (
           <EmptyState
             title="Plan not found"
@@ -145,7 +145,7 @@ export function PlansView() {
           />
         )
       )}
-      {query.isSuccess && allPlans.length > 0 && (
+      {query.isSuccess && allPlans.length > 0 && !(Boolean(focusId) && plans.length === 0) && (
         <>
           {focusId && (
             <FocusBanner label="Focused on plan" id={focusId} onClear={() => setRoute('plans')} />
