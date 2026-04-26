@@ -91,6 +91,20 @@
      */
     --depth-step: 0.875rem;         /* 14px */
     --depth-step-compact: 0.625rem; /* 10px */
+
+    /*
+     * Stroke widths. These are the only legitimate raw-px values in
+     * the codebase: physical pixel rendering on border / outline /
+     * timeline-rail strokes is what the design calls for, and rem
+     * units would alias differently across user-agent zoom levels.
+     * Keeping them as tokens (vs literal px in component CSS) keeps
+     * the canon `dev-web-no-hardcoded-px` rule honest and lets a
+     * theme dial up stroke weight wholesale (e.g. high-contrast).
+     */
+    --stroke-hairline: 1px;   /* default borders, dashed underlines */
+    --stroke-emphasis: 1.5px; /* timeline node icon ring */
+    --stroke-rail: 2px;       /* timeline vertical rail, focus outlines */
+    --hover-lift: 1px;        /* magnitude of translateY on row hover */
   }
 
   /* ===== DARK THEME (default) ===== */
