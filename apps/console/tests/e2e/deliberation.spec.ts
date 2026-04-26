@@ -10,8 +10,9 @@ import { test, expect } from '@playwright/test';
  *     is active.
  *   - Clicking a card navigates to /deliberation/<plan-id> and
  *     renders the detail trail.
- *   - The detail view renders the "Alternatives considered",
- *     "Principles applied", and "Citations" sections.
+ *   - The detail view renders the "Alternatives considered" and
+ *     "Citations" sections (assertion picks a data-aware target with
+ *     both counts > 0; principles are exercised by unit tests).
  *
  * The test relies on at least one plan atom in `.lag/atoms/` carrying
  * either `metadata.alternatives_rejected`, `metadata.principles_applied`,
@@ -59,9 +60,35 @@ test.describe('deliberation trail', () => {
       'no plans with deliberation metadata in atom store; cannot exercise detail view',
     );
 
-    const planId = await firstCard.getAttribute('data-plan-id');
-    expect(planId, 'first card should carry a plan id').toBeTruthy();
-    await firstCard.click();
+    // listDeliberations keeps a plan if it has ANY of alternatives /
+    // citations / principles, so the recency-first card may carry just
+    // one of those. The detail asserts below need both alternatives AND
+    // citations rendered, so pick a data-aware target: the first card
+    // whose data-* counts say it carries both. If none match (atom store
+    // has plans with only one signal each), skip rather than fail with
+    // a misleading "section missing" diff.
+    const allCards = page.locator('[data-testid="deliberation-card"]');
+    const cardCount = await allCards.count();
+    let target: ReturnType<typeof page.locator> | null = null;
+    for (let i = 0; i < cardCount; i++) {
+      const c = allCards.nth(i);
+      const altRaw = await c.getAttribute('data-alternatives-count');
+      const citRaw = await c.getAttribute('data-citations-count');
+      const alt = Number.parseInt(altRaw ?? '0', 10);
+      const cit = Number.parseInt(citRaw ?? '0', 10);
+      if (alt > 0 && cit > 0) {
+        target = c;
+        break;
+      }
+    }
+    test.skip(
+      target === null,
+      'no plan carries both alternatives and citations; detail-section assertion needs both',
+    );
+
+    const planId = await target!.getAttribute('data-plan-id');
+    expect(planId, 'target card should carry a plan id').toBeTruthy();
+    await target!.click();
 
     const escaped = encodeURIComponent(planId!).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     await expect(page).toHaveURL(new RegExp(`/deliberation/${escaped}$`));

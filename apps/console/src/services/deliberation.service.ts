@@ -136,7 +136,19 @@ function citationsOf(atom: PlanLikeAtom): ReadonlyArray<DeliberationCitation> {
 
 function principlesOf(atom: PlanLikeAtom): ReadonlyArray<string> {
   const raw = readMeta(atom).principles_applied ?? [];
-  return raw.filter((s): s is string => typeof s === 'string' && s.length > 0);
+  // Dedupe while preserving order: a planner sometimes lists the same
+  // principle/intent twice (once as the entry it applied, once as a
+  // tail-anchor). The View renders these with `key={p}` so a duplicate
+  // would trip React's unique-key invariant and may drop list items
+  // on re-render. Dedupe at the service boundary mirrors citationsOf.
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of raw) {
+    if (typeof s !== 'string' || s.length === 0 || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
 }
 
 function whatBreaksOf(atom: PlanLikeAtom): string | null {

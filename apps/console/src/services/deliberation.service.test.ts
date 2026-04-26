@@ -59,6 +59,21 @@ describe('deliberation.service helpers', () => {
     expect(out).toEqual(['inv-x', 'dev-y', 'pol-z']);
   });
 
+  // Regression: a planner sometimes lists the same principle twice
+  // (e.g. once as the entry it applied, once as a tail-anchor). The
+  // View renders these with `key={p}` so a duplicate would trip
+  // React's unique-key invariant. Mirror the citationsOf dedupe.
+  it('principlesOf dedupes while preserving first-seen order', () => {
+    const atom = {
+      ...baseAtom,
+      metadata: {
+        principles_applied: ['inv-x', 'dev-y', 'inv-x', 'pol-z', 'dev-y'],
+      },
+    };
+    const out = _internal.principlesOf(atom as unknown as Parameters<typeof _internal.principlesOf>[0]);
+    expect(out).toEqual(['inv-x', 'dev-y', 'pol-z']);
+  });
+
   it('whatBreaksOf accepts both spelling variants', () => {
     const a = _internal.whatBreaksOf({ ...baseAtom, metadata: { what_breaks_if_revisit: 'A' } } as unknown as Parameters<typeof _internal.whatBreaksOf>[0]);
     expect(a).toBe('A');

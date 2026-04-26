@@ -126,6 +126,9 @@ function DeliberationCard({ item, index }: { item: DeliberationSummary; index: n
         href={routeHref('deliberation', item.plan_id)}
         data-testid="deliberation-card"
         data-plan-id={item.plan_id}
+        data-alternatives-count={item.alternatives_count}
+        data-citations-count={item.citations_count}
+        data-principles-count={item.principles_count}
         onClick={(e) => {
           if (e.defaultPrevented || e.button !== 0) return;
           if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -287,24 +290,27 @@ function DeliberationTrail({ data }: { data: DeliberationDetail }) {
         empty="No principles cited for this plan."
       >
         <ul className={styles.chipList}>
-          {principles_applied.map((p) => (
-            <li key={p}>
-              <a
-                className={styles.canonChip}
-                href={routeHref(routeForAtomId(p), p)}
-                data-testid="deliberation-principle"
-                data-atom-id={p}
-                onClick={(e) => {
-                  if (e.defaultPrevented || e.button !== 0) return;
-                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-                  e.preventDefault();
-                  setRoute(routeForAtomId(p), p);
-                }}
-              >
-                {p}
-              </a>
-            </li>
-          ))}
+          {principles_applied.map((p) => {
+            const r = routeForAtomId(p);
+            return (
+              <li key={p}>
+                <a
+                  className={styles.canonChip}
+                  href={routeHref(r, p)}
+                  data-testid="deliberation-principle"
+                  data-atom-id={p}
+                  onClick={(e) => {
+                    if (e.defaultPrevented || e.button !== 0) return;
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                    e.preventDefault();
+                    setRoute(r, p);
+                  }}
+                >
+                  {p}
+                </a>
+              </li>
+            );
+          })}
         </ul>
       </Section>
 
