@@ -213,7 +213,7 @@ test.describe('control panel mobile top section', () => {
     expect(padding.left).toBeLessThanOrEqual(14);
   });
 
-  test('chromium project still uses the desktop hero grid', async ({ page }, testInfo) => {
+  test('non-mobile projects still use the desktop hero grid', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === 'mobile', 'desktop-only assertion');
     await page.goto('/control');
 
