@@ -1017,13 +1017,17 @@ async function handlePlanLifecycle(planId: string): Promise<PlanLifecycle> {
   // Find the `*-invoked-<plan-id>-...` observation atom whose metadata
   // points at this plan via plan_id. Every executor (code-author,
   // pr-fix, etc.) writes one of these on dispatch.
+  // Latest dispatch wins, mirroring the pr-observation and
+  // plan-merge-settled loops below: when a plan is re-dispatched, the
+  // most recent invocation carries the live pr_number / commit_sha /
+  // model_used. Picking the earliest would silently surface stale data.
   let invokedObservation: Atom | null = null;
   for (const a of all) {
     if (a.type !== 'observation') continue;
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     if (m['kind'] !== 'code-author-invoked' && !String(m['kind'] ?? '').endsWith('-invoked')) continue;
     if (m['plan_id'] !== planId) continue;
-    if (!invokedObservation || (a.created_at ?? '') < (invokedObservation.created_at ?? '')) {
+    if (!invokedObservation || (a.created_at ?? '') > (invokedObservation.created_at ?? '')) {
       invokedObservation = a;
     }
   }
@@ -1164,7 +1168,12 @@ async function handlePlanLifecycle(planId: string): Promise<PlanLifecycle> {
         ? `PR observed (${observationBlock.pr_state})`
         : 'PR observed',
       at: observationBlock.observed_at,
-      by: 'pr-landing-agent',
+      // Read the signing principal from the atom rather than hardcoding
+      // a role name. The pr-observation atom is signed by whichever
+      // actor produced it (pr-landing-agent today, but BYO adapters
+      // can sign as anything else). Pinning a literal here lies to
+      // the operator about provenance.
+      by: latestPrObservation?.principal_id ?? 'unknown',
       atom_id: observationBlock.atom_id,
     });
   }
@@ -1173,7 +1182,10 @@ async function handlePlanLifecycle(planId: string): Promise<PlanLifecycle> {
       phase: settledBlock.pr_state === 'MERGED' ? 'merge' : 'settled',
       label: `Plan settled${settledBlock.target_plan_state ? ` → ${settledBlock.target_plan_state}` : ''}`,
       at: settledBlock.settled_at,
-      by: 'pr-landing-agent',
+      // Same: the plan-merge-settled atom is signed by the reconciler
+      // (currently `inbox-runtime`), NOT by pr-landing-agent. Read
+      // the principal from the atom to keep attribution honest.
+      by: settledAtom?.principal_id ?? 'unknown',
       atom_id: settledBlock.atom_id,
     });
   }

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import {
@@ -341,7 +341,7 @@ function PlanLifecycleTimeline({ data }: { data: PlanLifecycle }) {
   );
 }
 
-function SummaryCell({ label, value }: { label: string; value: React.ReactNode }) {
+function SummaryCell({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className={styles.summaryCell}>
       <span className={styles.summaryLabel}>{label}</span>

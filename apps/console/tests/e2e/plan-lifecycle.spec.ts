@@ -79,20 +79,39 @@ test.describe('plan lifecycle', () => {
     }
   });
 
-  test('focused timeline lists every chain phase for a merged plan', async ({ page }) => {
+  test('focused timeline lists every chain phase for a merged plan', async ({ page, request }) => {
     /*
-     * Pick the canonical merged-plan fixture (PR #180). It carries
-     * all six chain phases: operator-intent, plan-proposed,
-     * approval, dispatch, observation, settled. If THIS plan has
-     * fewer phases than expected, the lifecycle wiring regressed.
+     * Pick a merged-plan fixture dynamically rather than pinning a
+     * specific atom id. The previous version baked in a slug from
+     * this org's topology (`cod-cto-actor`) and a specific historical
+     * PR, which made the test brittle to atom-store rotation and
+     * unrunnable for any consumer with different fixtures. The
+     * autonomous-loop chain is invariant — operator-intent → plan
+     * → approval → dispatch → observation → settled — so we discover
+     * any plan that reached `succeeded` and assert the chain shape
+     * against it. If no such plan exists, skip with a clear reason
+     * (this test asserts a property of completed lifecycles; it
+     * cannot be exercised against an empty store).
      */
-    const planId = 'plan-ship-docs-actors-six-page-set-as-one-cod-cto-actor-20260426043534';
+    const plansResponse = await request.post('/api/plans.list');
+    expect(plansResponse.ok(), 'plans.list endpoint should return 200').toBe(true);
+    const plansBody = await plansResponse.json();
+    const plans: ReadonlyArray<{ id: string; plan_state?: string }> =
+      plansBody?.data ?? plansBody ?? [];
+    const merged = plans.find((p) => p.plan_state === 'succeeded');
+    test.skip(
+      !merged,
+      'no merged plan in atom store; this test requires a completed lifecycle to assert against',
+    );
+    const planId = merged!.id;
     await page.goto(`/plan-lifecycle/${planId}`);
 
     const timeline = page.getByTestId('plan-lifecycle-timeline');
     await expect(timeline).toBeVisible({ timeout: 10_000 });
 
-    // Each of the six phases should produce at least one transition.
+    // Each of the five visible phase markers should produce at least
+    // one transition for a fully-settled plan. (`settled` itself maps
+    // to `merge` when pr_state === 'MERGED', so we test for `merge`.)
     const expectedPhases = ['deliberation', 'approval', 'dispatch', 'observation', 'merge'];
     for (const phase of expectedPhases) {
       const found = page.locator(`[data-testid="plan-lifecycle-transition"][data-phase="${phase}"]`);
