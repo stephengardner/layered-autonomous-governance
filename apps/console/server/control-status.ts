@@ -14,16 +14,21 @@
  * shell, with full env), so the UI shows the manual command and lets
  * the operator decide.
  *
- * Path-traversal hardening: callers resolve the sentinel path INSIDE
- * the .lag directory and pass an absolute path here. `resolveSentinelInside`
- * verifies the resolved target stays inside the parent and rejects
- * symlinks pointing out of tree. The string `.lag/STOP` is a constant
- * that travels with the response so the operator can copy it verbatim
- * for the manual `touch` command.
+ * Path-traversal hardening (two layers):
+ *   1. `resolveSentinelInside` is a string-level check: it normalizes
+ *      `..` segments via `path.resolve` and rejects any result that
+ *      escapes the `.lag` root. Pure (no I/O), deterministic.
+ *   2. `readSentinelState` uses `lstat` (not `stat`) so a symlink at
+ *      `.lag/STOP -> /etc/passwd` is detected and rejected. Without
+ *      the lstat reject, layer 1 would let the symlink through (it is
+ *      a string-only check) and `stat` would dereference it, surfacing
+ *      the target's mtime as a halt timestamp.
+ * The string `.lag/STOP` is a constant that travels with the response
+ * so the operator can copy it verbatim for the manual `touch` command.
  */
 
-import { stat } from 'node:fs/promises';
-import { resolve, relative } from 'node:path';
+import { lstat } from 'node:fs/promises';
+import { resolve, relative, sep, isAbsolute } from 'node:path';
 
 /*
  * Tier semantics, mapped from the existing kill-switch state file:
@@ -82,14 +87,27 @@ export function tierFromKillSwitch(tier: 'off' | 'soft' | 'medium' | 'hard'): Co
 
 /*
  * Resolve the absolute on-disk sentinel path and verify it lives
- * inside the .lag directory. A symlink in `.lag/STOP` pointing at
- * `../../etc/passwd` would otherwise let `fs.stat` cross the trust
- * boundary; rejecting any resolved path that doesn't have `lagDir` as
- * a prefix closes that hole. Pure: returns the safe path or `null`,
- * never throws on traversal -- callers treat null as "no sentinel
- * present" to keep the failure mode loud-but-safe.
+ * inside the .lag directory. Two layers of defense:
+ *   - String-level: `path.resolve` collapses `..` segments, then we
+ *     check that the result still lives inside `lagDir` by inspecting
+ *     the relative path. A `..` segment that escapes the root, or an
+ *     absolute path coming back from `relative` (Windows: different
+ *     drive letters), is rejected.
+ *   - Filesystem-level: `readSentinelState` uses `lstat` (not `stat`)
+ *     and rejects symlinks outright. `path.resolve` never touches the
+ *     filesystem, so a symlink at `<lagDir>/STOP` pointing at
+ *     `/etc/passwd` would pass the string check; the lstat reject is
+ *     what closes that hole.
  *
- * Why we do not just use `fs.access`: stat gives us the mtime, which
+ * The containment check uses an exact path-segment match (`rel === '..'`
+ * or `rel.startsWith('..' + sep)`) so legitimate filenames containing
+ * a `..` substring (e.g., `STOP..bak`) are not falsely rejected. The
+ * default `relativePath` is the literal `'STOP'` so this path is dead
+ * code today, but `relativePath` is a parameter and any future caller
+ * composing this helper for another sentinel name should not inherit
+ * a filename quirk.
+ *
+ * Why we do not just use `fs.access`: lstat gives us the mtime, which
  * we surface as `engaged_at` so the operator can see exactly when the
  * sentinel landed. access only answers yes/no.
  */
@@ -97,35 +115,55 @@ export function resolveSentinelInside(lagDir: string, relativePath = 'STOP'): st
   const root = resolve(lagDir);
   const target = resolve(root, relativePath);
   const rel = relative(root, target);
-  if (rel.startsWith('..') || rel === '' || rel.includes('..')) {
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     return null;
   }
   return target;
 }
 
 /*
- * Read the sentinel state from disk. Three outcomes:
+ * Read the sentinel state from disk. Four outcomes:
  *
- *   - file present + readable    -> engaged: true, engaged_at: mtime ISO
+ *   - regular file present       -> engaged: true, engaged_at: mtime ISO
  *   - file absent                -> engaged: false, engaged_at: null
  *   - resolution rejected (path traversal) -> engaged: false (fail safe);
  *                                              caller still sees the
  *                                              display path so the
  *                                              operator can investigate
+ *   - symlink, directory, or any non-regular entry -> engaged: false;
+ *                                              the kill-switch contract
+ *                                              is "operator created a
+ *                                              regular file via touch",
+ *                                              and a symlink would let
+ *                                              an attacker who can write
+ *                                              inside .lag point the
+ *                                              sentinel at a target
+ *                                              outside the trust
+ *                                              boundary and surface that
+ *                                              target's mtime.
  *
- * fs.stat MAY throw for reasons other than ENOENT (EACCES, EBUSY,
- * symlink loops). We treat any throw as "not engaged" because the
- * kill-switch invariant says: an absent sentinel means autonomy is
- * not halted. A torn read MUST NOT be silently interpreted as engaged
- * either -- that would surprise the operator with a halt that didn't
- * happen.
+ * Why lstat (not stat): stat follows symlinks. A symlink at
+ * `<lagDir>/STOP -> /etc/passwd` would pass `resolveSentinelInside`
+ * (a pure string check) and stat would then return the target's
+ * metadata. lstat returns the link itself, and `info.isSymbolicLink()`
+ * lets us reject it before the operator sees a halt sourced from
+ * outside the .lag dir.
+ *
+ * fs.lstat MAY throw for reasons other than ENOENT (EACCES, EBUSY).
+ * We treat any throw as "not engaged" because the kill-switch
+ * invariant says: an absent sentinel means autonomy is not halted. A
+ * torn read MUST NOT be silently interpreted as engaged either --
+ * that would surprise the operator with a halt that didn't happen.
  */
 export async function readSentinelState(absolutePath: string | null): Promise<ControlKillSwitchSnapshot> {
   if (!absolutePath) {
     return { engaged: false, sentinel_path: SENTINEL_DISPLAY_PATH, engaged_at: null };
   }
   try {
-    const info = await stat(absolutePath);
+    const info = await lstat(absolutePath);
+    if (info.isSymbolicLink() || !info.isFile()) {
+      return { engaged: false, sentinel_path: SENTINEL_DISPLAY_PATH, engaged_at: null };
+    }
     return {
       engaged: true,
       sentinel_path: SENTINEL_DISPLAY_PATH,
@@ -137,24 +175,56 @@ export async function readSentinelState(absolutePath: string | null): Promise<Co
 }
 
 /*
+ * Operator-principal candidate shape. Mirrors the load-bearing fields
+ * of the server's `Principal` interface so the helper can be tested
+ * without dragging the rest of the type in. `role` is part of the
+ * signature on purpose: the org convention is that the operator root
+ * carries `role: 'apex'` (set by the bootstrap canon), and consumers
+ * that compute `actors_governed = principals - apex` rely on that
+ * invariant. Surfacing `role` here makes the coupling explicit
+ * instead of hiding it behind an undocumented prop access.
+ */
+export interface OperatorPrincipalCandidate {
+  readonly id: string;
+  readonly role?: string;
+  readonly signed_by?: string | null;
+  readonly active?: boolean;
+}
+
+/*
  * Pick the operator principal id from a list. Convention in this org:
- *   - the apex (root) principal is the operator -- signed_by is null
- *     and active is true
- *   - if multiple roots exist (rare but legal), pick the first by id
- *     for determinism
+ *   - the apex (root) principal is the operator -- `signed_by` is
+ *     null and `role === 'apex'` (set by the bootstrap canon).
+ *   - if any root carries `role: 'apex'`, prefer those over roots
+ *     with no role. This makes the apex invariant explicit rather
+ *     than implicit, and matches the `actors_governed` count that
+ *     filters out apex elsewhere.
+ *   - if multiple apex roots exist (rare but legal), pick the first
+ *     by id for determinism.
+ *   - if no apex root exists but a role-less root does (older
+ *     fixture predating the role convention), fall back to that --
+ *     this preserves back-compat with v0 fixtures.
  *   - if no roots exist (fresh repo), fall back to the literal string
- *     'unknown' so the UI surfaces the gap rather than crashing
+ *     'unknown' so the UI surfaces the gap rather than crashing.
  *
  * Pure: no I/O, deterministic, easy to test.
  */
 export function pickOperatorPrincipalId(
-  principals: ReadonlyArray<{ id: string; signed_by?: string | null; active?: boolean }>,
+  principals: ReadonlyArray<OperatorPrincipalCandidate>,
 ): string {
-  const roots = principals
-    .filter((p) => (p.signed_by === null || p.signed_by === undefined) && p.active !== false)
+  const roots = principals.filter(
+    (p) => (p.signed_by === null || p.signed_by === undefined) && p.active !== false,
+  );
+  const apexRoots = roots
+    .filter((p) => p.role === 'apex')
     .map((p) => p.id)
     .sort((a, b) => a.localeCompare(b));
-  return roots[0] ?? 'unknown';
+  if (apexRoots.length > 0) return apexRoots[0]!;
+  const rolelessRoots = roots
+    .filter((p) => p.role === undefined)
+    .map((p) => p.id)
+    .sort((a, b) => a.localeCompare(b));
+  return rolelessRoots[0] ?? 'unknown';
 }
 
 /*

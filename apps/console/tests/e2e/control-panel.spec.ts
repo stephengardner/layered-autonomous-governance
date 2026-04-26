@@ -89,19 +89,49 @@ test.describe('operator control panel', () => {
   });
 
   test('engage button opens the confirmation dialog with the manual touch command', async ({ page }) => {
+    /*
+     * Read-only-contract negative assertion is the load-bearing point
+     * of this test: the dialog MUST NOT offer a button that writes the
+     * sentinel. A short-circuit on `engageButton.isDisabled()` would
+     * silently skip the assertion whenever the dogfood fixture has
+     * .lag/STOP present, so we stub the backend response to force
+     * `kill_switch.engaged: false` regardless of fixture state. This
+     * is lighter than mutating .lag/STOP on disk (no afterEach
+     * cleanup) and isolates the test from concurrent operator
+     * activity in the dogfood worktree.
+     *
+     * The transport envelope is `{ ok: true, data: T }` (see
+     * apps/console/src/services/transport/http.ts); the stubbed body
+     * mirrors the live ControlStatus shape so the React view renders
+     * the not-engaged path with all four metric tiles populated.
+     */
+    await page.route('**/api/control.status', async (route) => {
+      const body = {
+        ok: true,
+        data: {
+          kill_switch: {
+            engaged: false,
+            sentinel_path: '.lag/STOP',
+            engaged_at: null,
+          },
+          autonomy_tier: 'soft',
+          actors_governed: 7,
+          policies_active: 12,
+          last_canon_apply: '2026-04-26T00:00:00.000Z',
+          operator_principal_id: 'apex-operator',
+        },
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+
     await page.goto('/control');
     const engageButton = page.getByTestId('control-engage-button');
     await expect(engageButton).toBeVisible({ timeout: 10_000 });
-    /*
-     * Skip the rest of the assertions when the kill switch is already
-     * engaged in the fixture -- the button is disabled by design in
-     * that state (the dialog gives no new affordance), and clicking
-     * a disabled button is a no-op. This keeps the test green
-     * regardless of fixture sentinel state.
-     */
-    if (await engageButton.isDisabled()) {
-      return;
-    }
+    await expect(engageButton).toBeEnabled();
     await engageButton.click();
     const dialog = page.getByTestId('control-engage-dialog');
     await expect(dialog).toBeVisible();
@@ -122,6 +152,18 @@ test.describe('operator control panel', () => {
      */
     const dialogButtons = dialog.locator('button');
     await expect(dialogButtons).toHaveCount(1);
+    /*
+     * a11y: Escape dismisses the dialog; scrim click dismisses too.
+     * Operator-critical surfaces follow the standard modal contract.
+     */
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await engageButton.click();
+    await expect(dialog).toBeVisible();
+    await page.getByTestId('control-engage-dialog-scrim').click({ position: { x: 5, y: 5 } });
+    await expect(dialog).toBeHidden();
+    await engageButton.click();
+    await expect(dialog).toBeVisible();
     await page.getByTestId('control-engage-dialog-close').click();
     await expect(dialog).toBeHidden();
   });

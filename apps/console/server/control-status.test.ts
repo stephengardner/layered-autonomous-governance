@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { platform } from 'node:os';
 import {
   countActivePolicies,
   pickLastCanonApply,
@@ -52,6 +53,19 @@ describe('resolveSentinelInside', () => {
     expect(resolveSentinelInside(lagDir, '../STOP')).toBeNull();
     expect(resolveSentinelInside(lagDir, '../../etc/passwd')).toBeNull();
     expect(resolveSentinelInside(lagDir, 'sub/../../escape')).toBeNull();
+  });
+
+  it('does not over-reject filenames that contain a ".." substring', () => {
+    /*
+     * Regression guard: an earlier check used `rel.includes('..')`,
+     * which rejected legitimate filenames like `STOP..bak` whose
+     * relative path contains `..` as a substring without being a
+     * traversal segment. The contract is: only `..` as a complete
+     * path component is a traversal.
+     */
+    const lagDir = '/tmp/lag-fixture';
+    expect(resolveSentinelInside(lagDir, 'STOP..bak')).not.toBeNull();
+    expect(resolveSentinelInside(lagDir, 'my..config')).not.toBeNull();
   });
 });
 
@@ -114,6 +128,42 @@ describe('readSentinelState', () => {
      */
     expect(state.engaged_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
   });
+
+  it('rejects a symlink as the sentinel even when the target exists', async () => {
+    /*
+     * Threat model: an actor that can write inside .lag (lower trust
+     * than the operator) plants a symlink at .lag/STOP -> /etc/passwd.
+     * `path.resolve` is a pure string op, so resolveSentinelInside
+     * returns the in-tree path; without an lstat reject, fs.stat would
+     * follow the symlink and surface /etc/passwd's mtime as the halt
+     * timestamp. The contract is: STOP is a regular file the operator
+     * created via `touch`, anything else is "no sentinel".
+     *
+     * Skipped on Windows where symlink creation requires elevated
+     * privileges in CI; the underlying lstat check fires identically
+     * on Windows when the privilege is granted.
+     */
+    if (platform() === 'win32') return;
+    const target = join(lagDir, 'real-target');
+    await writeFile(target, 'pretend this is /etc/passwd', 'utf8');
+    await symlink(target, sentinelPath);
+    const state = await readSentinelState(sentinelPath);
+    expect(state.engaged).toBe(false);
+    expect(state.engaged_at).toBeNull();
+  });
+
+  it('rejects a directory as the sentinel', async () => {
+    /*
+     * Defense in depth: lstat against a directory returns isFile() ==
+     * false. A directory-shaped sentinel is not what the operator
+     * created via `touch`, so we treat it as "no sentinel" rather
+     * than surfacing a directory mtime as a halt timestamp.
+     */
+    await mkdir(sentinelPath, { recursive: true });
+    const state = await readSentinelState(sentinelPath);
+    expect(state.engaged).toBe(false);
+    expect(state.engaged_at).toBeNull();
+  });
 });
 
 describe('pickOperatorPrincipalId', () => {
@@ -146,6 +196,29 @@ describe('pickOperatorPrincipalId', () => {
       { id: 'cto-actor', signed_by: 'apex-agent', active: true },
     ]);
     expect(got).toBe('unknown');
+  });
+
+  it('prefers a root with role:apex over a role-less root', () => {
+    /*
+     * Invariant guard: the org bootstrap canon assigns role:apex to
+     * the operator root. `actors_governed` elsewhere is
+     * `principals - apex`, so the operator-id picker MUST line up
+     * with that filter. Putting both kinds of root in the input and
+     * asserting the apex one wins makes the coupling explicit.
+     */
+    const got = pickOperatorPrincipalId([
+      { id: 'legacy-root', signed_by: null, active: true },
+      { id: 'apex-root', signed_by: null, active: true, role: 'apex' },
+    ]);
+    expect(got).toBe('apex-root');
+  });
+
+  it('returns the first apex root by id when multiple apex roots exist', () => {
+    const got = pickOperatorPrincipalId([
+      { id: 'zeta-apex', signed_by: null, active: true, role: 'apex' },
+      { id: 'alpha-apex', signed_by: null, active: true, role: 'apex' },
+    ]);
+    expect(got).toBe('alpha-apex');
   });
 });
 

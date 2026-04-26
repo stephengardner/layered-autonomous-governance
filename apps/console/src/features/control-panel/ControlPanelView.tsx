@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { ShieldAlert, ShieldCheck, AlertOctagon, Users, FileCode, Clock, UserCog } from 'lucide-react';
@@ -228,10 +228,54 @@ function EngageDialog({
   readonly engaged: boolean;
   readonly onClose: () => void;
 }) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  /*
+   * Operator-critical surface a11y contract:
+   *   - Escape dismisses the dialog (universal modal expectation; a
+   *     keyboard-only operator must be able to back out without
+   *     hunting for the Close button).
+   *   - Scrim click dismisses (the dialog is informational, not a
+   *     destructive confirm; the read-only contract guarantees no
+   *     write happens regardless).
+   *   - Focus lands on the Close button when the dialog opens so
+   *     keyboard users do not have to tab from the page behind it.
+   *
+   * NOT implemented here: a strict focus trap. The dialog has a single
+   * focusable element (Close) plus the document body, so Tab cycling
+   * is naturally bounded. If we later add fields or extra actions we
+   * should swap to a shared Dialog primitive (Radix/shadcn) so we
+   * inherit a real trap.
+   */
+  useEffect(() => {
+    if (!open) return;
+    closeButtonRef.current?.focus();
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [open, onClose]);
+
   if (!open) return null;
   return (
-    <div className={styles.dialogScrim} role="dialog" aria-modal="true" aria-labelledby="engage-dialog-title" data-testid="control-engage-dialog">
-      <div className={styles.dialog}>
+    <div
+      className={styles.dialogScrim}
+      role="presentation"
+      data-testid="control-engage-dialog-scrim"
+      onClick={onClose}
+    >
+      <div
+        className={styles.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="engage-dialog-title"
+        data-testid="control-engage-dialog"
+        onClick={(event) => event.stopPropagation()}
+      >
         <h3 id="engage-dialog-title" className={styles.dialogTitle}>
           Engage the kill switch from your shell
         </h3>
@@ -251,6 +295,7 @@ function EngageDialog({
         <div className={styles.dialogActions}>
           <button
             type="button"
+            ref={closeButtonRef}
             className={styles.dialogClose}
             data-testid="control-engage-dialog-close"
             onClick={onClose}
