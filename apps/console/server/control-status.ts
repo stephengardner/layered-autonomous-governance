@@ -413,7 +413,20 @@ export function pickRecentKillSwitchTransitions(
   atoms: ReadonlyArray<AtomCandidate>,
 ): KillSwitchTransitionSummary[] {
   const out: KillSwitchTransitionSummary[] = [];
-  if (currentState && currentState.tier && currentState.since) {
+  /*
+   * Validate the live-state tier symmetrically with the per-transition atom
+   * branch below: `readKillSwitchState()` parses `.lag/kill-switch/state.json`,
+   * which can be hand-edited or carry a tier value from a future writer that
+   * this build does not recognize. Fail-closed at the picker boundary so the
+   * tier badge never receives an unexpected value.
+   */
+  const VALID_TIERS = ['off', 'soft', 'medium', 'hard'] as const;
+  if (
+    currentState
+    && currentState.tier
+    && currentState.since
+    && (VALID_TIERS as readonly string[]).includes(currentState.tier)
+  ) {
     out.push({
       tier: currentState.tier,
       at: currentState.since,
@@ -464,6 +477,19 @@ export function pickActiveElevations(
   for (const a of atoms) {
     if (a.superseded_by && a.superseded_by.length > 0) continue;
     if (a.taint && a.taint !== 'clean') continue;
+    /*
+     * Symmetric id-prefix / type guard: the other three pickers in this
+     * file (`pickRecentKillSwitchTransitions`, `pickRecentOperatorActions`,
+     * `pickRecentEscalations`) gate on id-prefix or type. Match that
+     * pattern for elevations so a stray atom carrying `metadata.elevation`
+     * but not authored as a policy atom (test fixture, hand-written
+     * scratch atom, future writer using a different convention) cannot
+     * leak into the panel. Canonical operator-elevation atoms use the
+     * `pol-` prefix and `type === 'policy'` (or omit type entirely).
+     */
+    const idMatch = a.id.startsWith('pol-');
+    const typeMatch = a.type === undefined || a.type === 'policy';
+    if (!idMatch || !typeMatch) continue;
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
     const elevation = meta.elevation as Record<string, unknown> | undefined;
     if (!elevation || typeof elevation !== 'object') continue;

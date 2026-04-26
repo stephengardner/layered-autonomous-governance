@@ -373,6 +373,21 @@ describe('pickRecentKillSwitchTransitions', () => {
     expect(got[1]!.atom_id).toBe('kill-switch-transition-2026-04-25T08:00:00Z');
   });
 
+  it('skips a live-state row whose tier is not in the canonical 4-tier set', () => {
+    /*
+     * Defensive validation: state.json is a hand-editable file. A future
+     * writer that adds a 5th tier or a partial-write that lands a bogus
+     * value must not leak into the panel. The picker validates the live
+     * tier symmetrically with the per-transition atom branch.
+     */
+    const got = pickRecentKillSwitchTransitions(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { tier: 'unknown' as any, since: '2026-04-26T11:00:00Z', transitioned_by: 'lag-ceo', reason: null },
+      [],
+    );
+    expect(got).toEqual([]);
+  });
+
   it('skips superseded and tainted transition atoms', () => {
     const got = pickRecentKillSwitchTransitions(null, [
       {
@@ -482,6 +497,43 @@ describe('pickActiveElevations', () => {
     }));
     const got = pickActiveElevations(atoms, NOW_MS);
     expect(got.length).toBe(MAX_LIST_ITEMS);
+  });
+
+  it('skips atoms without the pol- id-prefix or with a non-policy type', () => {
+    /*
+     * Symmetric id-prefix / type guard mirroring the other pickers in this
+     * file. A stray atom carrying `metadata.elevation` (test fixture, hand-
+     * authored scratch atom, future writer using a different convention)
+     * must not leak into the panel because the surface trusts the canonical
+     * `pol-` prefix + `type === 'policy' | undefined` shape.
+     */
+    const got = pickActiveElevations(
+      [
+        {
+          // Wrong prefix.
+          id: 'observation-fake-elevation',
+          metadata: { elevation: { expires_at: '2026-04-26T18:00:00Z' } },
+        },
+        {
+          // Right prefix, wrong type.
+          id: 'pol-but-not-a-policy',
+          type: 'observation',
+          metadata: { elevation: { expires_at: '2026-04-26T18:00:00Z' } },
+        },
+        {
+          // Canonical shape: kept.
+          id: 'pol-keeper',
+          type: 'policy',
+          metadata: {
+            elevation: { expires_at: '2026-04-26T18:00:00Z' },
+            policy: { tool: 'plan-approve', principal: 'cto-actor' },
+          },
+        },
+      ],
+      Date.parse('2026-04-26T12:00:00Z'),
+    );
+    expect(got.length).toBe(1);
+    expect(got[0]!.atom_id).toBe('pol-keeper');
   });
 });
 
