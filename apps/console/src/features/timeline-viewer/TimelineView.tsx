@@ -44,8 +44,13 @@ export function TimelineView() {
     queryFn: ({ signal }) => listCanonAtoms({}, signal),
   });
   const activitiesQ = useQuery({
-    queryKey: ['activities', 500],
-    queryFn: ({ signal }) => listActivities({ limit: 500 }, signal),
+    // Shared cache with ActivitiesView (same queryKey + limit) so the
+    // ~12-week heatmap render and the 14-day timeline render hit one
+    // backend pull. TimelineView filters down to the last 14 days in
+    // the useMemo below (the wider 20k window pays for ActivitiesView's
+    // heatmap; here it's free under the cache).
+    queryKey: ['activities', 20000],
+    queryFn: ({ signal }) => listActivities({ limit: 20000 }, signal),
   });
   const principalsQ = useQuery({
     queryKey: ['principals'],
