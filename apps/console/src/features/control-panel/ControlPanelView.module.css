@@ -434,23 +434,6 @@
   }
 }
 
-/*
- * Metric tile mobile padding. The 4-tile-per-row default at desktop
- * uses generous --space-5 padding (16px) which crowds the icon +
- * label + value when the same tile renders 2-up at iPhone width
- * (~165px columns). Drop to --space-4 (12px) so the operator can
- * still scan the values without horizontal cramping.
- */
-@media (max-width: 48rem) {
-  .tile {
-    padding: var(--space-4) var(--space-4);
-    gap: var(--space-2);
-  }
-  .tileValue {
-    font-size: var(--font-size-lg);
-  }
-}
-
 .tile {
   display: flex;
   flex-direction: column;
@@ -714,6 +697,25 @@
     width: 100%;
     text-align: left;
     justify-content: flex-start;
+  }
+}
+
+/*
+ * Metric tile mobile padding. The 4-tile-per-row default at desktop
+ * uses generous --space-5 padding (16px) which crowds the icon +
+ * label + value when the same tile renders 2-up at iPhone width
+ * (~165px columns). Drop to --space-4 (12px) so the operator can
+ * still scan the values without horizontal cramping. Declared AFTER
+ * the base .tile/.tileValue rules so the mobile selectors win on
+ * source-order tiebreak (media queries do not add specificity).
+ */
+@media (max-width: 48rem) {
+  .tile {
+    padding: var(--space-4) var(--space-4);
+    gap: var(--space-2);
+  }
+  .tileValue {
+    font-size: var(--font-size-lg);
   }
 }
 

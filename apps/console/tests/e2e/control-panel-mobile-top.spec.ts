@@ -44,6 +44,19 @@ test.describe('control panel mobile top section', () => {
     await expect(page.getByTestId('control-kill-switch-title')).toBeVisible();
 
     /*
+     * Visual debug artifact -- saved to test-results/ via
+     * testInfo.outputPath so the operator can eyeball the layout if
+     * the structural assertions below ever drift. Captured BEFORE the
+     * structural asserts so a failed layout still leaves a debug image
+     * in test-results/ (otherwise the artifact only lands on green,
+     * which is exactly the case where it's least useful).
+     */
+    await page.screenshot({
+      path: testInfo.outputPath('control-panel-mobile-top.png'),
+      fullPage: true,
+    });
+
+    /*
      * No horizontal scrollbar at any scroll position. Document and
      * body scrollWidth must both equal the viewport width; either
      * exceeding would mean some descendant pushed past 390px and
@@ -133,17 +146,6 @@ test.describe('control panel mobile top section', () => {
     const metricsBox = await page.getByTestId('control-metrics').boundingBox();
     expect(metricsBox).not.toBeNull();
     expect(metricsBox!.x + metricsBox!.width).toBeLessThanOrEqual(overflow.viewport);
-
-    /*
-     * Visual debug artifact -- saved to test-results/ via
-     * testInfo.outputPath so the operator can eyeball the layout if
-     * the structural assertions ever drift. Always written on success
-     * so we have a baseline for a future "looks-the-same" check.
-     */
-    await page.screenshot({
-      path: testInfo.outputPath('control-panel-mobile-top.png'),
-      fullPage: true,
-    });
   });
 
   test('hero stack lays out vertically on mobile (no horizontal squeeze)', async ({ page }, testInfo) => {
@@ -174,6 +176,41 @@ test.describe('control panel mobile top section', () => {
     });
     expect(positions.bodyTop).toBeGreaterThan(positions.iconTop);
     expect(positions.buttonTop).toBeGreaterThan(positions.bodyTop);
+  });
+
+  test('mobile metric tiles use the compact padding override (source-order guard)', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'mobile', 'mobile-only assertion');
+    /*
+     * Pins the source-order tiebreak between the base `.tile` rule and the
+     * `@media (max-width: 48rem) .tile` override. Media queries do not add
+     * specificity; if the override moves above the base rule again the base
+     * `padding: var(--space-5) var(--space-5)` (16px) will win silently and
+     * the 2-up iPhone columns will revert to the cramped variant the PR
+     * fixes. --space-4 is 12px in the token system; the desktop tile is
+     * 16px. Allow a 1px tolerance for sub-pixel rendering on Linux CI.
+     */
+    await page.goto('/control');
+    const tile = page.getByTestId('control-metrics').locator('> *').first();
+    await expect(tile).toBeVisible();
+    const padding = await tile.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        top: parseFloat(cs.paddingTop),
+        right: parseFloat(cs.paddingRight),
+        bottom: parseFloat(cs.paddingBottom),
+        left: parseFloat(cs.paddingLeft),
+        fontSize: parseFloat(getComputedStyle(el.querySelector('p:last-of-type') ?? el).fontSize),
+      };
+    });
+    /*
+     * Mobile padding must be <= 14px on every side (12px target, 1px
+     * tolerance). 16px would mean the base rule won, i.e. the override
+     * is dead source-order.
+     */
+    expect(padding.top).toBeLessThanOrEqual(14);
+    expect(padding.right).toBeLessThanOrEqual(14);
+    expect(padding.bottom).toBeLessThanOrEqual(14);
+    expect(padding.left).toBeLessThanOrEqual(14);
   });
 
   test('chromium project still uses the desktop hero grid', async ({ page }, testInfo) => {
