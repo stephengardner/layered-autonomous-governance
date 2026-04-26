@@ -92,7 +92,20 @@ function parseArgs(argv) {
     else if (a === '--principal') args.principalId = argv[++i];
     else if (a === '--origin') args.origin = argv[++i];
     else if (a === '--observe-only') args.observeOnly = true;
-    else if (a === '--plan-id') args.planId = argv[++i];
+    else if (a === '--plan-id') {
+      // Guard against the last-token / next-flag failure mode CR
+      // flagged: `--plan-id` followed by nothing or by another flag
+      // would silently land `undefined`/`-...` in args.planId, the
+      // spread-guard in mkPrObservationAtom would drop the field,
+      // and the reconciler would skip the plan exactly as if the
+      // linkage was never wired. Mirror the parseInt fail-loud style.
+      const next = argv[++i];
+      if (typeof next !== 'string' || next.length === 0 || next.startsWith('-')) {
+        console.error(`ERROR: --plan-id expects a non-empty plan atom id, got "${next ?? '(missing)'}"`);
+        process.exit(2);
+      }
+      args.planId = next;
+    }
     else if (a === '--help' || a === '-h') {
       console.log(
         'Usage: node scripts/run-pr-landing.mjs --pr <n> [--owner o --repo r] [--live|--dry-run] [--observe-only] [--plan-id id] [--max-iterations n]\n'
