@@ -82,15 +82,26 @@ const PHASE_TONE: Record<PlanLifecyclePhase, string> = {
   failure: 'var(--status-danger)',
 };
 
+/*
+ * Semantic tone for every plan_state the runtime can produce. Mirrors
+ * STATE_TONE in PlansView.tsx exactly; both views render the same
+ * state pill, so the maps must agree. `executing` uses --status-info
+ * (sky-blue) to signal "in flight" distinctly from --accent (which
+ * already paints clickable links and the proposed-state pill).
+ * `failed` and `abandoned` were missing here too and silently fell
+ * through to muted gray; explicit entries fix the operator-flagged
+ * UX bug across both surfaces (2026-04-26).
+ */
 const STATE_TONE: Record<string, string> = {
-  succeeded: 'var(--status-success)',
-  approved: 'var(--status-success)',
-  pending: 'var(--status-warning)',
-  rejected: 'var(--status-danger)',
-  failed: 'var(--status-danger)',
   proposed: 'var(--accent)',
-  executing: 'var(--accent)',
   draft: 'var(--text-tertiary)',
+  pending: 'var(--status-warning)',
+  approved: 'var(--status-success)',
+  rejected: 'var(--status-danger)',
+  executing: 'var(--status-info)',
+  succeeded: 'var(--status-success)',
+  failed: 'var(--status-danger)',
+  abandoned: 'var(--text-tertiary)',
 };
 
 export function PlanLifecycleView() {
@@ -171,6 +182,7 @@ function PlanRow({ plan, index }: { plan: PlanAtom; index: number }) {
         href={routeHref('plan-lifecycle', plan.id)}
         data-testid="plan-lifecycle-row"
         data-plan-id={plan.id}
+        data-plan-state={state}
         onClick={(e) => {
           if (e.defaultPrevented || e.button !== 0) return;
           if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -180,6 +192,8 @@ function PlanRow({ plan, index }: { plan: PlanAtom; index: number }) {
       >
         <span
           className={styles.statePill}
+          data-testid="plan-lifecycle-row-state"
+          data-plan-state={state}
           style={{
             borderColor: STATE_TONE[state] ?? 'var(--border-subtle)',
             color: STATE_TONE[state] ?? 'var(--text-secondary)',
@@ -263,6 +277,7 @@ function PlanLifecycleTimeline({ data }: { data: PlanLifecycle }) {
             color: STATE_TONE[state] ?? 'var(--text-secondary)',
           }}
           data-testid="plan-lifecycle-state"
+          data-plan-state={state}
         >
           {state}
         </span>

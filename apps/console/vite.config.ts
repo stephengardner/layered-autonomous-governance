@@ -8,8 +8,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 // Reserved ports (see docs/ports.md). Dashboard = 9080 for the
 // browser; backend server = 9081. Vite dev proxies /api -> 9081 so
 // the browser sees one origin and we keep CORS simple.
-const DASHBOARD_PORT = 9080;
-const BACKEND_PORT = 9081;
+//
+// LAG_CONSOLE_PORT / LAG_CONSOLE_BACKEND_PORT are honored when set by
+// playwright.config.ts during a parallel-worktree e2e run. Without
+// these, the operator's primary dev server (already on 9080) would
+// fail strictPort and crash the test boot. Defaults are unchanged
+// for the common single-worktree case.
+const DASHBOARD_PORT = Number(process.env['LAG_CONSOLE_PORT'] ?? 9080);
+const BACKEND_PORT = Number(process.env['LAG_CONSOLE_BACKEND_PORT'] ?? 9081);
 
 export default defineConfig({
   plugins: [react()],

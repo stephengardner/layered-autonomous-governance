@@ -7,7 +7,17 @@ const REPO_ROOT = resolve(HERE, '..', '..');
 const SIBLING_MAIN_LAG = resolve(REPO_ROOT, '..', 'memory-governance', '.lag');
 
 const LAG_DIR = process.env.LAG_CONSOLE_LAG_DIR ?? SIBLING_MAIN_LAG;
-const PORT = 9080;
+/*
+ * PORT defaults to 9080 (the dashboard's reserved port). In CI and the
+ * primary worktree this is the only sane value. When a parallel worktree
+ * needs to spin its OWN test server (because port 9080 is held by the
+ * primary checkout's dev process), set LAG_CONSOLE_E2E_PORT and the
+ * Vite test server + the corresponding backend port shift in tandem.
+ * The backend port is always one above the dashboard so the proxy keeps
+ * working without a config edit.
+ */
+const PORT = Number(process.env.LAG_CONSOLE_E2E_PORT ?? 9080);
+const BACKEND_PORT = PORT + 1;
 const BASE_URL = `http://localhost:${PORT}`;
 
 export default defineConfig({
@@ -41,6 +51,15 @@ export default defineConfig({
     timeout: 60_000,
     env: {
       LAG_CONSOLE_LAG_DIR: LAG_DIR,
+      // When a non-default port is requested (parallel worktree), pass
+      // the values through to vite + tsx so both halves bind to the
+      // same shifted ports as Playwright is targeting.
+      LAG_CONSOLE_PORT: String(PORT),
+      LAG_CONSOLE_BACKEND_PORT: String(BACKEND_PORT),
+      // The backend's CORS allowlist defaults to 9080 + 127.0.0.1:9080
+      // (set in server/security.ts). When PORT shifts, the dashboard
+      // origin shifts too; extend the allowlist via the documented env.
+      LAG_CONSOLE_ALLOWED_ORIGINS: `http://localhost:${PORT},http://127.0.0.1:${PORT}`,
     },
   },
 });
