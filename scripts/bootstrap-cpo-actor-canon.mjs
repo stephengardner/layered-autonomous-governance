@@ -174,9 +174,15 @@ function policyAtom(spec) {
  */
 function diffPrincipal(existing, expected) {
   const diffs = [];
-  const scalar = ['name', 'role', 'signed_by', 'active'];
+  // compromised_at is load-bearing: a flipped kill-switch on an
+  // existing principal must not survive a rerun silently. Same for
+  // active, signed_by, role, name. Equality on null tolerates either
+  // null or undefined being recorded as "not compromised".
+  const scalar = ['name', 'role', 'signed_by', 'active', 'compromised_at'];
   for (const k of scalar) {
-    if (existing[k] !== expected[k]) {
+    const a = existing[k] ?? null;
+    const b = expected[k] ?? null;
+    if (a !== b) {
       diffs.push(`${k}: stored=${JSON.stringify(existing[k])} expected=${JSON.stringify(expected[k])}`);
     }
   }
@@ -204,6 +210,19 @@ function diffPolicyAtom(existing, expected) {
   const diffs = [];
   if (existing.type !== expected.type) diffs.push(`type: ${existing.type} -> ${expected.type}`);
   if (existing.layer !== expected.layer) diffs.push(`layer: ${existing.layer} -> ${expected.layer}`);
+  // principal_id is the L3 author claim; provenance.kind + source are
+  // the chain-of-custody. A silent edit on any of these flips the
+  // policy's authority story without leaving an audit trail. Compare
+  // explicitly.
+  if (existing.principal_id !== expected.principal_id) {
+    diffs.push(`principal_id: stored=${JSON.stringify(existing.principal_id)} expected=${JSON.stringify(expected.principal_id)}`);
+  }
+  const ekind = existing.provenance?.kind;
+  const xkind = expected.provenance?.kind;
+  if (ekind !== xkind) diffs.push(`provenance.kind: stored=${JSON.stringify(ekind)} expected=${JSON.stringify(xkind)}`);
+  const esource = JSON.stringify(existing.provenance?.source ?? null);
+  const xsource = JSON.stringify(expected.provenance?.source ?? null);
+  if (esource !== xsource) diffs.push(`provenance.source: stored=${esource} expected=${xsource}`);
   const ep = existing.metadata?.policy ?? {};
   const xp = expected.metadata.policy;
   for (const k of ['subject', 'tool', 'origin', 'principal', 'action', 'priority']) {
