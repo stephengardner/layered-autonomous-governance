@@ -41,12 +41,14 @@ import { canTransition, transitionPlanState } from './state.js';
 
 /**
  * TTL configuration for the reaper, in milliseconds. Both values are
- * positive and `staleAbandonMs >= staleWarnMs` so a plan first crosses
- * the warn line, then the abandon line.
+ * positive integers and `staleAbandonMs > staleWarnMs` (strict) so a
+ * plan first crosses the warn line, then the abandon line; equal
+ * values would merge the two buckets and defeat the warn/abandon
+ * split.
  *
- * Values come from canon `pol-plan-staleness` when the driver script
- * is wired through a Host; the type ships with safe fallbacks for unit
- * tests and standalone scripts that don't load canon.
+ * Values are passed in by the caller (driver script, scheduler hook,
+ * deployment configuration). Defaults below give safe behavior for
+ * unit tests + standalone runs that have not loaded any policy.
  */
 export interface ReaperTtls {
   readonly staleWarnMs: number;
@@ -55,12 +57,12 @@ export interface ReaperTtls {
 
 export const DEFAULT_REAPER_TTLS: ReaperTtls = Object.freeze({
   // 24h: a plan that hasn't been approved or progressed in a day is
-  // unlikely to ship without active operator engagement; surface it as
-  // stale-warning so the operator can decide.
+  // unlikely to ship without active operator engagement; surface it
+  // as stale-warning so the operator can decide.
   staleWarnMs: 24 * 60 * 60 * 1000,
   // 72h: a plan that's been proposed for three days without movement
-  // is reliably abandoned in practice. The TTL is conservative; canon
-  // raises or lowers it via pol-plan-staleness.
+  // is reliably abandoned in practice. The TTL is conservative; the
+  // caller (driver / scheduler / configuration) raises or lowers it.
   staleAbandonMs: 72 * 60 * 60 * 1000,
 });
 
@@ -280,8 +282,14 @@ export async function runReaperSweep(
   ttls: ReaperTtls = DEFAULT_REAPER_TTLS,
 ): Promise<RunReaperSweepResult> {
   // host.clock.now() returns Time (ISO8601 string). Date.parse gives
-  // epoch milliseconds for arithmetic.
-  const nowMs = Date.parse(host.clock.now());
+  // epoch milliseconds for arithmetic. Validate fail-fast so a broken
+  // clock never silently treats every plan as fresh - that would make
+  // the reaper a no-op without surfacing the underlying clock fault.
+  const rawNow = host.clock.now();
+  const nowMs = Date.parse(rawNow);
+  if (!Number.isFinite(nowMs)) {
+    throw new Error(`reaper: host.clock.now() returned non-parseable value: ${rawNow}`);
+  }
   const { atoms, truncated } = await loadAllProposedPlans(host);
   const classifications = classifyPlans(atoms, nowMs, ttls);
   const apply = await applyReap(host, principalId, classifications);

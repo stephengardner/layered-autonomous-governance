@@ -44,18 +44,39 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
 
-const REAPER_PRINCIPAL = 'plan-reaper';
+/*
+ * Principal that the reaper attributes its abandonment transitions to
+ * in the audit log. Defaults to `apex-agent` (already registered in
+ * every LAG instance) because:
+ *   1. The reaper is operator-policy execution: the operator
+ *      authorized the TTL by invoking the script; apex-agent is the
+ *      operator's principal of record.
+ *   2. Picking a bespoke `plan-reaper` id would require seeding a new
+ *      principal entry on every fresh install, which contradicts the
+ *      indie-floor zero-config goal.
+ * Override via --principal or LAG_REAPER_PRINCIPAL when a deployment
+ * registers a dedicated reaper principal and wants the audit chain to
+ * cite it explicitly.
+ */
+const DEFAULT_REAPER_PRINCIPAL = 'apex-agent';
 
 function parseArgs(argv) {
   const args = {
     dryRun: argv.includes('--dry-run'),
     rootDir: undefined,
+    principal: undefined,
   };
   const rootIdx = argv.findIndex((a) => a === '--root');
   if (rootIdx >= 0 && argv[rootIdx + 1]) {
     args.rootDir = argv[rootIdx + 1];
   } else if (process.env.LAG_ROOT) {
     args.rootDir = process.env.LAG_ROOT;
+  }
+  const principalIdx = argv.findIndex((a) => a === '--principal');
+  if (principalIdx >= 0 && argv[principalIdx + 1]) {
+    args.principal = argv[principalIdx + 1];
+  } else if (process.env.LAG_REAPER_PRINCIPAL) {
+    args.principal = process.env.LAG_REAPER_PRINCIPAL;
   }
   return args;
 }
@@ -139,7 +160,8 @@ async function main() {
     return;
   }
 
-  const out = await runReaperSweep(host, REAPER_PRINCIPAL, ttls);
+  const principal = args.principal ?? DEFAULT_REAPER_PRINCIPAL;
+  const out = await runReaperSweep(host, principal, ttls);
   console.log(
     `[plan-reaper] classified: fresh=${out.classifications.fresh.length} warn=${out.classifications.warn.length} abandon=${out.classifications.abandon.length}${out.truncated ? ' (TRUNCATED - more atoms remain; will pick up next run)' : ''}`,
   );
