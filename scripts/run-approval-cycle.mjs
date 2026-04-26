@@ -190,6 +190,12 @@ async function main() {
   //     diff after extended thinking instead of burning the entire
   //     output ceiling on deliberation. Per-invocation options.effort
   //     still wins.
+  // NOTE: This posture is local to this runner. Other ClaudeCliLLM
+  // construction sites (e.g. the bridge adapter, virtual-org examples)
+  // pass through caller-supplied claudeCli opts and do NOT inherit
+  // these defaults; deployments that fork into a custom runner must
+  // re-establish the timeout + effort posture explicitly or accept
+  // the framework's conservative floors.
   const INSTANCE_LLM_DEFAULT_TIMEOUT_MS = 3_600_000;
   const INSTANCE_LLM_DEFAULT_EFFORT = 'max';
   const llm = args.llm === 'claude-cli'

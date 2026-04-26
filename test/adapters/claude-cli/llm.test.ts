@@ -136,7 +136,9 @@ describe('ClaudeCliLLM', () => {
       // latent "works at 1k, breaks at 40k" footgun.
       expect(calls[0]!.args.some((a) => a.includes('"ping":"ping"'))).toBe(false);
     });
+  });
 
+  describe('timeout precedence', () => {
     it('honors ClaudeCliOptions.defaultTimeoutMs when no per-call timeout is set', async () => {
       // Precedence: per-invocation options.timeout_ms > adapter-level
       // defaultTimeoutMs > hardcoded 3-minute floor. This test pins the
@@ -170,7 +172,9 @@ describe('ClaudeCliLLM', () => {
 
       expect((calls[0]!.options as { timeout?: number }).timeout).toBe(67_890);
     });
+  });
 
+  describe('CLI flags (mcp / strict)', () => {
     it('passes --strict-mcp-config so user-level MCP config does not leak in', async () => {
       // Regression guard: without --strict-mcp-config, the CLI MERGES our
       // empty `--mcp-config '{"mcpServers":{}}'` with the user-level
@@ -198,7 +202,9 @@ describe('ClaudeCliLLM', () => {
       expect(mcpConfigIdx).toBeGreaterThanOrEqual(0);
       expect(calls[0]!.args[mcpConfigIdx + 1]).toBe('{"mcpServers":{}}');
     });
+  });
 
+  describe('system-prompt framing', () => {
     it('default classifier framing names the call as a JSON classifier (back-compat)', async () => {
       // Reading the system prompt off the file is brittle in a unit test
       // (the path is mkdtemp-named). Easier: assert the framing branch by
@@ -261,7 +267,9 @@ describe('ClaudeCliLLM', () => {
       // The original system prompt is still appended after the frame.
       expect(capturedBody).toContain('TEST_SYSTEM_PROMPT');
     });
+  });
 
+  describe('effort knob', () => {
     it('honors ClaudeCliOptions.defaultEffort and is overridable per-call', async () => {
       // The deployment posture for the autonomous flow is `defaultEffort:
       // 'max'` (see scripts/run-approval-cycle.mjs). Per-call options.effort
