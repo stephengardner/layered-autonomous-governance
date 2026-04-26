@@ -48,6 +48,7 @@ let response;
 try {
   response = await fetch(url, {
     method: 'POST',
+    signal: AbortSignal.timeout(15_000),
     headers: {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${token}`,
@@ -58,7 +59,9 @@ try {
     body: JSON.stringify({ body: '@coderabbitai review' }),
   });
 } catch (err) {
-  console.error(`cr-trigger: network error: ${err?.message ?? err}`);
+  const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+  const label = isTimeout ? 'timeout after 15s' : 'network error';
+  console.error(`cr-trigger: ${label}: ${err?.message ?? err}`);
   process.exit(2);
 }
 
