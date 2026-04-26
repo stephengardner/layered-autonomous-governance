@@ -16,10 +16,19 @@ interface NavItem {
    * for it.
    */
   readonly priority?: 'critical';
+  /*
+   * Optional shorter label used when the sidebar collapses into the
+   * mobile bottom-tab bar (≤48rem). Only set this when the desktop
+   * label overflows the constrained tab width on iPhone-13-class
+   * viewports; most labels fit fine. Visibility is CSS-driven via
+   * `.itemLabelDesktop` / `.itemLabelMobile` so there's no JS
+   * viewport read and no SSR mismatch risk.
+   */
+  readonly mobileLabel?: string;
 }
 
 const items: ReadonlyArray<NavItem> = [
-  { id: 'dashboard', label: 'Dashboard', icon: Gauge },
+  { id: 'dashboard', label: 'Dashboard', mobileLabel: 'Home', icon: Gauge },
   { id: 'control', label: 'Control', icon: ShieldAlert, priority: 'critical' },
   { id: 'canon', label: 'Canon', icon: Book },
   { id: 'canon-suggestions', label: 'Suggestions', icon: Lightbulb },
@@ -68,7 +77,10 @@ export function Sidebar({ route }: { route: Route }) {
               }}
             >
               <Icon size={16} strokeWidth={1.75} aria-hidden="true" />
-              <span>{item.label}</span>
+              <span className={styles.itemLabelDesktop}>{item.label}</span>
+              {item.mobileLabel ? (
+                <span className={styles.itemLabelMobile}>{item.mobileLabel}</span>
+              ) : null}
             </a>
           );
         })}
