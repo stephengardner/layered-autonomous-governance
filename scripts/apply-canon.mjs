@@ -92,13 +92,18 @@ async function main() {
    * names where needed. Empty array is safe; the generator falls
    * back to bare ids.
    */
-  let principals = [];
+  const principals = [];
   for (const id of args.principalIds) {
     try {
       const p = await host.principals.get(id);
       if (p) principals.push(p);
-    } catch {
-      /* missing principal is non-fatal */
+    } catch (err) {
+      // Missing principal is non-fatal; surface anything else (FS,
+      // parse, transient errors) instead of silently swallowing them
+      // and rendering bare ids with no operator signal.
+      const msg = String((err && err.message) ?? err);
+      if (!/not.?found|ENOENT/i.test(msg)) throw err;
+      console.warn(`[apply-canon] principal '${id}' not found; skipping`);
     }
   }
 
