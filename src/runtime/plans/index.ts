@@ -47,8 +47,11 @@ export {
   classifyPlan,
   classifyPlans,
   applyReap,
+  loadAllProposedPlans,
   runReaperSweep,
   DEFAULT_REAPER_TTLS,
+  REAPER_PAGE_SIZE,
+  REAPER_PAGE_LIMIT,
 } from './reaper.js';
 export type {
   ReaperTtls,
@@ -56,4 +59,6 @@ export type {
   ReaperClassification,
   ReaperClassifications,
   ReapApplyResult,
+  LoadAllProposedPlansResult,
+  RunReaperSweepResult,
 } from './reaper.js';

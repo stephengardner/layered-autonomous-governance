@@ -36,8 +36,7 @@
  */
 
 import type { Host } from '../../substrate/interface.js';
-import type { Atom, AtomId, PrincipalId } from '../../substrate/types.js';
-import type { AtomFilter } from '../../substrate/types.js';
+import type { Atom, AtomFilter, AtomId, PrincipalId } from '../../substrate/types.js';
 import { canTransition, transitionPlanState } from './state.js';
 
 /**
@@ -167,7 +166,11 @@ export async function applyReap(
   const abandoned: { atomId: AtomId; ageHours: number }[] = [];
   const skipped: { atomId: AtomId; error: string }[] = [];
   for (const c of classifications.abandon) {
-    const ageHours = Math.round(c.ageMs / 3600000);
+    // Math.floor (not Math.round) so the audit reason names full
+    // hours elapsed, never overstates. A 72h29m plan is logged as
+    // "after-72h" not "after-72h" rounded up to 73h: the operator's
+    // primary signal in audit history must be conservative-honest.
+    const ageHours = Math.floor(c.ageMs / 3600000);
     try {
       // Re-fetch right before transition so we honor any state change
       // that happened between classify and apply. canTransition guards
@@ -219,23 +222,39 @@ export async function applyReap(
  * full coverage, not an arbitrary truncation; pagination is the
  * substrate-correct way to bound memory while still seeing
  * everything.
+ *
+ * If the iteration cap fires while a `nextCursor` is still present,
+ * we set `truncated: true` so the caller (or the script driver) can
+ * surface "this sweep saw the first N atoms but more remain" rather
+ * than silently mis-reporting that the slate is clean. A truncated
+ * result is still useful - the next periodic invocation continues
+ * from the front again, so over time the backlog drains - but the
+ * operator deserves the honest signal now, not at the next regression.
  */
-const PAGE_SIZE = 500;
+export const REAPER_PAGE_SIZE = 500;
+export const REAPER_PAGE_LIMIT = 200;
 
-async function loadAllProposedPlans(host: Host): Promise<ReadonlyArray<Atom>> {
+export interface LoadAllProposedPlansResult {
+  readonly atoms: ReadonlyArray<Atom>;
+  readonly truncated: boolean;
+}
+
+export async function loadAllProposedPlans(host: Host): Promise<LoadAllProposedPlansResult> {
   const filter: AtomFilter = { type: ['plan'], plan_state: ['proposed'] };
   const collected: Atom[] = [];
   let cursor: string | undefined;
-  // Bound the loop so a misbehaving adapter never spins forever.
-  // 200 pages * 500 = 100k atoms, well above any realistic single-run
-  // backlog (we re-run periodically anyway).
-  for (let i = 0; i < 200; i++) {
-    const page = await host.atoms.query(filter, PAGE_SIZE, cursor);
+  let truncated = false;
+  for (let i = 0; i < REAPER_PAGE_LIMIT; i++) {
+    const page = await host.atoms.query(filter, REAPER_PAGE_SIZE, cursor);
     for (const a of page.atoms) collected.push(a);
-    if (!page.nextCursor) break;
+    if (!page.nextCursor) {
+      return { atoms: collected, truncated: false };
+    }
     cursor = page.nextCursor;
   }
-  return collected;
+  // Loop exhausted with cursor still present - we saw the cap, more remain.
+  truncated = true;
+  return { atoms: collected, truncated };
 }
 
 /**
@@ -244,19 +263,27 @@ async function loadAllProposedPlans(host: Host): Promise<ReadonlyArray<Atom>> {
  * scheduler hooks). Returns both the classifications (for the digest
  * summary) and the apply result (what actually happened).
  */
+export interface RunReaperSweepResult {
+  readonly classifications: ReaperClassifications;
+  readonly apply: ReapApplyResult;
+  /**
+   * True when the underlying load hit the page-iteration cap with
+   * more atoms still pending. Surfaced so callers can warn an
+   * operator that the slate they just saw is partial.
+   */
+  readonly truncated: boolean;
+}
+
 export async function runReaperSweep(
   host: Host,
   principalId: PrincipalId,
   ttls: ReaperTtls = DEFAULT_REAPER_TTLS,
-): Promise<{
-  readonly classifications: ReaperClassifications;
-  readonly apply: ReapApplyResult;
-}> {
+): Promise<RunReaperSweepResult> {
   // host.clock.now() returns Time (ISO8601 string). Date.parse gives
   // epoch milliseconds for arithmetic.
   const nowMs = Date.parse(host.clock.now());
-  const all = await loadAllProposedPlans(host);
-  const classifications = classifyPlans(all, nowMs, ttls);
+  const { atoms, truncated } = await loadAllProposedPlans(host);
+  const classifications = classifyPlans(atoms, nowMs, ttls);
   const apply = await applyReap(host, principalId, classifications);
-  return { classifications, apply };
+  return { classifications, apply, truncated };
 }

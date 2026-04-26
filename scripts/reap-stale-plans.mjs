@@ -22,7 +22,8 @@
  *
  * Exit codes:
  *   0 - sweep completed (zero or more abandons applied)
- *   1 - kill switch active or fatal error
+ *   1 - fatal error
+ *   2 - kill switch active (.lag/STOP present)
  *
  * Kill switch: respects `.lag/STOP`. The driver halts before any
  * mutation when the sentinel exists, per `inv-kill-switch-first`.
@@ -33,7 +34,12 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createFileHost } from '../dist/adapters/file/index.js';
-import { runReaperSweep, DEFAULT_REAPER_TTLS } from '../dist/runtime/plans/reaper.js';
+import {
+  classifyPlans,
+  loadAllProposedPlans,
+  runReaperSweep,
+  DEFAULT_REAPER_TTLS,
+} from '../dist/runtime/plans/reaper.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -62,12 +68,19 @@ function parseEnvTtls() {
     staleAbandonMs:
       abandonRaw !== undefined ? Number(abandonRaw) : DEFAULT_REAPER_TTLS.staleAbandonMs,
   };
-  if (!Number.isFinite(ttls.staleWarnMs) || ttls.staleWarnMs <= 0) {
-    throw new Error(`Invalid LAG_REAPER_WARN_MS: ${warnRaw}`);
+  // Require positive integer milliseconds. Number('12.5') and
+  // Number('1e3') pass Number.isFinite but neither is a meaningful
+  // operator-set ms; treating fractional / scientific values as
+  // typos matches the fence-validation idiom used in PR #74 fence
+  // atoms and elsewhere in the repo.
+  const isPositiveIntMs = (n) =>
+    typeof n === 'number' && Number.isFinite(n) && Number.isInteger(n) && n > 0;
+  if (!isPositiveIntMs(ttls.staleWarnMs)) {
+    throw new Error(`Invalid LAG_REAPER_WARN_MS: ${warnRaw} (must be positive integer ms)`);
   }
-  if (!Number.isFinite(ttls.staleAbandonMs) || ttls.staleAbandonMs <= ttls.staleWarnMs) {
+  if (!isPositiveIntMs(ttls.staleAbandonMs) || ttls.staleAbandonMs <= ttls.staleWarnMs) {
     throw new Error(
-      `Invalid LAG_REAPER_ABANDON_MS: must be a positive number greater than warn (warn=${ttls.staleWarnMs}, abandon=${ttls.staleAbandonMs})`,
+      `Invalid LAG_REAPER_ABANDON_MS: must be a positive integer ms greater than warn (warn=${ttls.staleWarnMs}, abandon=${ttls.staleAbandonMs})`,
     );
   }
   return ttls;
@@ -88,7 +101,10 @@ async function main() {
   const stopSentinel = resolve(rootDir, 'STOP');
   if (existsSync(stopSentinel)) {
     console.error(`[plan-reaper] STOP sentinel present at ${stopSentinel}; halting before any sweep.`);
-    process.exit(1);
+    // Exit 2 (governance halt, expected) so shell pipelines can
+    // distinguish "STOP armed" from "code threw"; matches the
+    // run-pr-landing.mjs convention.
+    process.exit(2);
   }
 
   const host = await createFileHost({ rootDir });
@@ -107,23 +123,17 @@ async function main() {
    * autonomy dial.
    */
   if (args.dryRun) {
-    const { classifyPlans } = await import('../dist/runtime/plans/reaper.js');
-    const filter = { type: ['plan'], plan_state: ['proposed'] };
-    const all = [];
-    let cursor;
-    for (let i = 0; i < 200; i++) {
-      const page = await host.atoms.query(filter, 500, cursor);
-      for (const a of page.atoms) all.push(a);
-      if (!page.nextCursor) break;
-      cursor = page.nextCursor;
-    }
+    // Reuse the substrate-exported helper so the script stays a
+    // thin driver - if the helper grows (e.g., truncation surfacing,
+    // see RunReaperSweepResult.truncated) the script tracks it.
+    const { atoms, truncated } = await loadAllProposedPlans(host);
     const nowMs = Date.parse(host.clock.now());
-    const c = classifyPlans(all, nowMs, ttls);
+    const c = classifyPlans(atoms, nowMs, ttls);
     console.log(
-      `[plan-reaper] DRY RUN: fresh=${c.fresh.length} warn=${c.warn.length} would-abandon=${c.abandon.length}`,
+      `[plan-reaper] DRY RUN: fresh=${c.fresh.length} warn=${c.warn.length} would-abandon=${c.abandon.length}${truncated ? ' (TRUNCATED - more atoms remain)' : ''}`,
     );
     for (const entry of c.abandon) {
-      const ageHours = Math.round(entry.ageMs / 3600000);
+      const ageHours = Math.floor(entry.ageMs / 3600000);
       console.log(`  would-abandon: ${entry.atomId} (age=${ageHours}h)`);
     }
     return;
@@ -131,7 +141,7 @@ async function main() {
 
   const out = await runReaperSweep(host, REAPER_PRINCIPAL, ttls);
   console.log(
-    `[plan-reaper] classified: fresh=${out.classifications.fresh.length} warn=${out.classifications.warn.length} abandon=${out.classifications.abandon.length}`,
+    `[plan-reaper] classified: fresh=${out.classifications.fresh.length} warn=${out.classifications.warn.length} abandon=${out.classifications.abandon.length}${out.truncated ? ' (TRUNCATED - more atoms remain; will pick up next run)' : ''}`,
   );
   console.log(
     `[plan-reaper] applied: abandoned=${out.apply.abandoned.length} skipped=${out.apply.skipped.length}`,

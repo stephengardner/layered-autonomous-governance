@@ -214,11 +214,12 @@ describe('applyReap', () => {
     expect(after?.plan_state).toBe('approved');
   });
 
-  it('records ageHours in the abandoned entries (audit-legibility)', async () => {
+  it('records ageHours via floor in the abandoned entries (audit-legibility)', async () => {
     const host = createMemoryHost();
     const reaper: PrincipalId = 'plan-reaper' as PrincipalId;
 
-    const stale = planAtom('p-72h', '2026-04-23T20:00:00.000Z');
+    // 72h + 30m old: Math.floor reports 72, never overstates.
+    const stale = planAtom('p-72h', '2026-04-23T19:30:00.000Z');
     await host.atoms.put(stale);
 
     const classifications = classifyPlans([stale], NOW_MS, TTLS);
@@ -229,6 +230,16 @@ describe('applyReap', () => {
 });
 
 describe('runReaperSweep', () => {
+  it('returns truncated=false for normal sweeps (under page-cap)', async () => {
+    const host = createMemoryHost();
+    const reaper: PrincipalId = 'plan-reaper' as PrincipalId;
+    await host.atoms.put(planAtom('only-one', '2026-04-23T18:00:00.000Z'));
+    const fakeNowIso = '2026-04-26T20:00:00.000Z';
+    (host.clock as { now: () => Time }).now = () => fakeNowIso as Time;
+    const out = await runReaperSweep(host, reaper, TTLS);
+    expect(out.truncated).toBe(false);
+  });
+
   it('end-to-end: paginated query + classify + apply, no false transitions', async () => {
     const host = createMemoryHost();
     const reaper: PrincipalId = 'plan-reaper' as PrincipalId;
