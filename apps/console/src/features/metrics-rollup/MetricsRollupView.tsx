@@ -110,7 +110,7 @@ function RollupBody({ data }: { data: MetricsRollup }) {
         <HeroNumber
           tone="danger"
           value={autonomous_loop.failed_in_window}
-          label={autonomous_loop.failed_in_window === 1 ? 'failed' : 'failed'}
+          label={autonomous_loop.failed_in_window === 1 ? 'failure' : 'failures'}
           icon={AlertCircle}
           testId="metrics-hero-failed"
           delay={0.05}
@@ -118,7 +118,7 @@ function RollupBody({ data }: { data: MetricsRollup }) {
         <HeroNumber
           tone="neutral"
           value={autonomous_loop.dispatched_in_window}
-          label={autonomous_loop.dispatched_in_window === 1 ? 'dispatched' : 'dispatched'}
+          label={autonomous_loop.dispatched_in_window === 1 ? 'dispatch' : 'dispatches'}
           icon={undefined}
           testId="metrics-hero-dispatched"
           delay={0.1}

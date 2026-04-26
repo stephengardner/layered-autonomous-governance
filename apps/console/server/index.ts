@@ -998,9 +998,12 @@ async function handleMetricsRollup(params: { window_hours?: number }): Promise<M
     }
   }
 
+  // Dispatch-to-merge minutes: only counts plans we have BOTH an
+  // invocation atom AND a settled atom for, since the duration is
+  // meaningless without both endpoints. Backfilled or migration-era
+  // settled atoms with no invocation peer are skipped here but still
+  // count toward the headline `succeeded_in_window` ratio below.
   const dispatchToMergeMinutes: number[] = [];
-  let succeededInWindow = 0;
-  let failedInWindow = 0;
   for (const [planId, settled] of settledByPlan) {
     const invoked = invokedByPlan.get(planId);
     if (!invoked) continue;
@@ -1010,21 +1013,31 @@ async function handleMetricsRollup(params: { window_hours?: number }): Promise<M
     if (settledTs < dispatchedTs) continue; // sanity guard
     const minutes = (settledTs - dispatchedTs) / (60 * 1000);
     dispatchToMergeMinutes.push(minutes);
+  }
 
-    // Count succeeded-in-window from settled atoms (target_plan_state)
-    // since plan_state may flip after the original dispatch and we
-    // want this metric tied to settlement events landing in the window.
-    if (Number.isFinite(settledTs) && settledTs >= windowStart) {
-      const m = (settled.metadata ?? {}) as Record<string, unknown>;
-      const target = String(m['target_plan_state'] ?? '');
-      if (target === 'succeeded') succeededInWindow += 1;
-    }
+  // Headline counts: succeeded_in_window and failed_in_window are
+  // counted symmetrically off terminal-state evidence, NOT off the
+  // invocation atom. The invocation gate would skew the ratio
+  // pessimistic in backfilled or migration states (failures count,
+  // successes drop). The duration-metric loop above retains the gate
+  // because dispatch-to-merge minutes is meaningless without both
+  // endpoints; the headline ratio reflects what actually happened, not
+  // what was instrumented.
+  let succeededInWindow = 0;
+  for (const settled of settledByPlan.values()) {
+    const settledTs = settled.created_at ? Date.parse(settled.created_at) : NaN;
+    if (!Number.isFinite(settledTs) || settledTs < windowStart) continue;
+    const m = (settled.metadata ?? {}) as Record<string, unknown>;
+    const target = String(m['target_plan_state'] ?? '');
+    if (target === 'succeeded') succeededInWindow += 1;
   }
 
   // Failed-in-window: plans whose dispatch_result.kind === 'error'
   // with `at` falling inside the window. This is a richer signal than
   // settled atoms because non-merged failures (drafter LLM, dirty
-  // worktree, build) never reach the settled-atom path.
+  // worktree, build) never reach the settled-atom path. Like
+  // succeededInWindow above, no invocation gate is applied.
+  let failedInWindow = 0;
   for (const p of plans) {
     const meta = (p.metadata ?? {}) as Record<string, unknown>;
     const dispatch = meta['dispatch_result'] as Record<string, unknown> | undefined;
@@ -1054,7 +1067,10 @@ async function handleMetricsRollup(params: { window_hours?: number }): Promise<M
   const medianCrRounds = median(crRounds);
 
   // Recent failures: most recent 5 plans whose dispatch_result.kind is
-  // 'error'. These are the operator's "what just broke" list.
+  // 'error' AND whose `at` falls inside the dashboard window. The
+  // window filter intersects symmetrically with `failed_in_window`
+  // above so the operator's "what just broke" list never references a
+  // failure that the headline counter excluded.
   const failureCandidates: MetricsRollupFailure[] = [];
   for (const p of plans) {
     const meta = (p.metadata ?? {}) as Record<string, unknown>;
@@ -1064,6 +1080,8 @@ async function handleMetricsRollup(params: { window_hours?: number }): Promise<M
     const at = typeof dispatch['at'] === 'string' ? (dispatch['at'] as string) : null;
     const message = typeof dispatch['message'] === 'string' ? (dispatch['message'] as string) : '';
     if (!at) continue;
+    const atTs = Date.parse(at);
+    if (!Number.isFinite(atTs) || atTs < windowStart) continue;
     failureCandidates.push({
       plan_id: p.id,
       stage: extractFailureStage(message),
