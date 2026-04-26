@@ -223,6 +223,14 @@ function diffPolicyAtom(existing, expected) {
   const esource = JSON.stringify(existing.provenance?.source ?? null);
   const xsource = JSON.stringify(expected.provenance?.source ?? null);
   if (esource !== xsource) diffs.push(`provenance.source: stored=${esource} expected=${xsource}`);
+  // derived_from carries the canonical authority chain (which atoms
+  // this policy claims to descend from); editing it severs the
+  // provenance graph silently. Compare via JSON.stringify after
+  // sorting so element-order edits don't false-fire while
+  // membership edits still surface.
+  const esorted = JSON.stringify((existing.provenance?.derived_from ?? []).slice().sort());
+  const xsorted = JSON.stringify((expected.provenance?.derived_from ?? []).slice().sort());
+  if (esorted !== xsorted) diffs.push(`provenance.derived_from: stored=${esorted} expected=${xsorted}`);
   const ep = existing.metadata?.policy ?? {};
   const xp = expected.metadata.policy;
   for (const k of ['subject', 'tool', 'origin', 'principal', 'action', 'priority']) {
