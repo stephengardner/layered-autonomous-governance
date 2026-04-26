@@ -24,7 +24,8 @@ export type PlanLifecyclePhase =
   | 'dispatch'
   | 'observation'
   | 'merge'
-  | 'settled';
+  | 'settled'
+  | 'failure';
 
 export interface PlanLifecycleTransition {
   readonly phase: PlanLifecyclePhase;
@@ -85,6 +86,20 @@ export interface PlanLifecycleSettled {
   readonly pr_state: string | null;
 }
 
+/*
+ * Failure projection when `plan_state === 'failed'`. `stage` is parsed
+ * from the executor's halt-shape (`stage=<token>`); `fix_hint` is a
+ * small heuristic table — null means no automated suggestion. The full
+ * raw `message` ships through unmodified so operators can read whatever
+ * the executor reported, preformatted.
+ */
+export interface PlanLifecycleFailure {
+  readonly stage: string;
+  readonly message: string;
+  readonly at: string;
+  readonly fix_hint: string | null;
+}
+
 export interface PlanLifecycle {
   readonly plan: PlanLifecyclePlan | null;
   readonly intent: PlanLifecycleIntent | null;
@@ -92,6 +107,7 @@ export interface PlanLifecycle {
   readonly dispatch: PlanLifecycleDispatch | null;
   readonly observation: PlanLifecycleObservation | null;
   readonly settled: PlanLifecycleSettled | null;
+  readonly failure: PlanLifecycleFailure | null;
   readonly transitions: ReadonlyArray<PlanLifecycleTransition>;
 }
 

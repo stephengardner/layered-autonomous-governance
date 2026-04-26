@@ -8,6 +8,7 @@ import {
   Eye,
   GitMerge,
   Sparkles,
+  AlertCircle,
 } from 'lucide-react';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
@@ -20,6 +21,7 @@ import { listPlans, type PlanAtom } from '@/services/plans.service';
 import {
   getPlanLifecycle,
   type PlanLifecycle,
+  type PlanLifecycleFailure,
   type PlanLifecyclePhase,
   type PlanLifecycleTransition,
 } from '@/services/plan-lifecycle.service';
@@ -67,6 +69,7 @@ const PHASE_ICON: Record<PlanLifecyclePhase, typeof Lightbulb> = {
   observation: Eye,
   merge: GitMerge,
   settled: Sparkles,
+  failure: AlertCircle,
 };
 
 const PHASE_TONE: Record<PlanLifecyclePhase, string> = {
@@ -76,6 +79,7 @@ const PHASE_TONE: Record<PlanLifecyclePhase, string> = {
   observation: 'var(--text-tertiary)',
   merge: 'var(--status-success)',
   settled: 'var(--status-success)',
+  failure: 'var(--status-danger)',
 };
 
 const STATE_TONE: Record<string, string> = {
@@ -83,6 +87,7 @@ const STATE_TONE: Record<string, string> = {
   approved: 'var(--status-success)',
   pending: 'var(--status-warning)',
   rejected: 'var(--status-danger)',
+  failed: 'var(--status-danger)',
   proposed: 'var(--accent)',
   executing: 'var(--accent)',
   draft: 'var(--text-tertiary)',
@@ -237,7 +242,7 @@ function PlanLifecycleDetail({ planId }: { planId: string }) {
 }
 
 function PlanLifecycleTimeline({ data }: { data: PlanLifecycle }) {
-  const { plan, dispatch, observation, settled, transitions } = data;
+  const { plan, dispatch, observation, settled, failure, transitions } = data;
   if (!plan) return null;
   const title = extractTitle(plan.content);
   const state = plan.plan_state ?? 'unknown';
@@ -315,6 +320,8 @@ function PlanLifecycleTimeline({ data }: { data: PlanLifecycle }) {
         </aside>
       )}
 
+      {failure && <FailureCard failure={failure} />}
+
       {transitions.length === 0 ? (
         <EmptyState
           title="No transitions yet"
@@ -347,6 +354,59 @@ function SummaryCell({ label, value }: { label: string; value: ReactNode }) {
       <span className={styles.summaryLabel}>{label}</span>
       <span className={styles.summaryValue}>{value}</span>
     </div>
+  );
+}
+
+/*
+ * Failure card: red-bordered surface that surfaces the dispatcher's
+ * halt reason without requiring the operator to grep the atom file.
+ * Three rows: stage pill, full message in a <pre> for whitespace
+ * preservation, and an optional fix hint callout. When `fix_hint` is
+ * null we still show the slot ("no automated hint") so the e2e test
+ * can assert presence regardless of the heuristic outcome — and so
+ * the operator knows the absence is deliberate.
+ */
+function FailureCard({ failure }: { failure: PlanLifecycleFailure }) {
+  const validIso = !Number.isNaN(Date.parse(failure.at));
+  return (
+    <motion.aside
+      className={styles.failureCard}
+      data-testid="plan-lifecycle-failure"
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.24, ease: [0.2, 0, 0, 1] }}
+      aria-label="Plan failure detail"
+    >
+      <header className={styles.failureHeader}>
+        <span className={styles.failureIcon} aria-hidden="true">
+          <AlertCircle size={16} strokeWidth={2} />
+        </span>
+        <span className={styles.failureTitle}>Plan failed</span>
+        <span
+          className={styles.failureStage}
+          data-testid="plan-lifecycle-failure-stage"
+        >
+          stage={failure.stage}
+        </span>
+        {validIso && (
+          <time className={styles.failureTime} dateTime={failure.at}>
+            {new Date(failure.at).toLocaleString()}
+          </time>
+        )}
+      </header>
+      <pre
+        className={styles.failureMessage}
+        data-testid="plan-lifecycle-failure-message"
+      >
+        {failure.message}
+      </pre>
+      <div
+        className={styles.failureHint}
+        data-testid="plan-lifecycle-failure-hint"
+      >
+        {failure.fix_hint ?? 'No automated hint for this stage.'}
+      </div>
+    </motion.aside>
   );
 }
 

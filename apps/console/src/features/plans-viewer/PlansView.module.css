@@ -154,6 +154,39 @@
   word-break: break-all;
 }
 
+/*
+ * Compact failure-summary line under the state pill on a `failed`
+ * plan card. One row, truncated visually + textually upstream. The
+ * link navigates to /plan-lifecycle/<id> so the operator gets the
+ * full FailureCard with raw message + fix hint. Color is the
+ * danger-status token, dashed underline stays consistent with the
+ * accent-link convention used elsewhere.
+ */
+.failureSummary {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--status-danger);
+  text-decoration: none;
+  border-bottom: var(--stroke-hairline) dashed color-mix(in srgb, var(--status-danger) 50%, transparent);
+  align-self: flex-start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color var(--duration-fast) var(--easing-standard);
+}
+
+.failureSummary:hover {
+  color: color-mix(in srgb, var(--status-danger) 80%, var(--text-primary));
+}
+
+.failureSummary:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+  border-radius: var(--radius-xs);
+}
+
 .title {
   margin: 0;
   font-family: var(--font-display);
