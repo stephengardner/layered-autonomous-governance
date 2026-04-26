@@ -29,6 +29,15 @@ import {
 } from './security';
 import { parseAutonomyDial } from './kill-switch-state';
 import { median, extractFailureStage } from './metrics-rollup';
+import {
+  countActivePolicies,
+  pickLastCanonApply,
+  pickOperatorPrincipalId,
+  readSentinelState,
+  resolveSentinelInside,
+  tierFromKillSwitch,
+  type ControlStatus,
+} from './control-status';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -813,6 +822,51 @@ async function readKillSwitchState(): Promise<{
   }
 }
 
+/*
+ * Operator control-panel status. Projection over the live filesystem
+ * + atom store. Read-only by contract: this handler MUST NOT write
+ * the STOP sentinel from the console UI -- engaging the kill switch
+ * crosses the operator-shell trust boundary, and the UI surfaces the
+ * manual `touch .lag/STOP` command instead. Removing that read-only
+ * guarantee changes the threat model and is out of scope for v1.
+ *
+ * Path-traversal: the sentinel path is resolved via
+ * `resolveSentinelInside(LAG_DIR)` which rejects any target whose
+ * resolved location escapes the .lag directory. fs.stat (not access)
+ * gives us the mtime, surfaced as `engaged_at`, so the operator can
+ * see when the halt landed.
+ *
+ * Stale-data: callers (the React view) refetch on a 3-second interval
+ * via TanStack Query refetchInterval. For a single operator on the
+ * dashboard this is fine; if scaling matters (many concurrent
+ * operators on the same backend), a rate-limit middleware on this
+ * handler is the natural follow-up but not load-bearing for v1.
+ */
+async function handleControlStatus(): Promise<ControlStatus> {
+  const sentinelAbs = resolveSentinelInside(LAG_DIR, 'STOP');
+  const [killSwitchState, kill_switch, atoms, principals] = await Promise.all([
+    readKillSwitchState(),
+    readSentinelState(sentinelAbs),
+    readAllAtoms(),
+    readAllPrincipals(),
+  ]);
+  const autonomy_tier = tierFromKillSwitch(killSwitchState.tier);
+  /*
+   * Actors are principals whose role is not 'apex'. The apex root is
+   * the operator; everything signed_by it is a governed actor. This
+   * matches how the principal hierarchy actually composes in the org.
+   */
+  const actors_governed = principals.filter((p) => p.role !== 'apex' && p.active !== false).length;
+  return {
+    kill_switch,
+    autonomy_tier,
+    actors_governed,
+    policies_active: countActivePolicies(atoms),
+    last_canon_apply: pickLastCanonApply(atoms),
+    operator_principal_id: pickOperatorPrincipalId(principals),
+  };
+}
+
 async function handleDaemonStatus(): Promise<{
   atomCount: number;
   lastAtomId: string | null;
@@ -851,6 +905,53 @@ async function handleDaemonStatus(): Promise<{
     atomsInLastDay: inDay,
     lagDir: LAG_DIR,
   };
+}
+
+/*
+ * Canon suggestions: agent-observed L1 atoms whose metadata.kind is
+ * `canon-proposal-suggestion`. The console READS these so the operator
+ * can scan pending suggestions; the console NEVER writes them. Triage
+ * (promote/dismiss/defer) goes through scripts/canon-suggest-triage.mjs
+ * + scripts/decide.mjs per inv-l3-requires-human + the apps/console
+ * "v1 read-only" scope boundary.
+ *
+ * The discriminator is the `metadata.kind` string, NOT a new AtomType.
+ * Per dev-substrate-not-prescription, the framework's AtomType union
+ * stays untouched; suggestions are a metadata-shaped projection over
+ * the existing observation atom type.
+ */
+const CANON_SUGGESTION_KIND = 'canon-proposal-suggestion';
+const CANON_SUGGESTION_REVIEW_STATES = ['pending', 'promoted', 'dismissed', 'deferred'] as const;
+type CanonSuggestionReviewState = typeof CANON_SUGGESTION_REVIEW_STATES[number];
+
+async function handleCanonSuggestionsList(params: {
+  review_state?: CanonSuggestionReviewState;
+}): Promise<Atom[]> {
+  const all = await readAllAtoms();
+  const wanted = params.review_state ?? 'pending';
+  const out = all.filter((a) => {
+    if (a.type !== 'observation') return false;
+    // Defense-in-depth: same taint + supersession guards `filterCanon`
+    // (line 171), `handleCanonApplicable` (line 505), and
+    // `handleDriftReport` (line 442) apply to every other read
+    // projection. A tainted suggestion (scout principal compromised
+    // post-write) MUST NOT surface in the operator's triage inbox; the
+    // operator's mental model is "these are clean candidates for
+    // promotion", and decide.mjs is the downstream gate, not the only
+    // one. Pinning to L1 is bonus rigor: `buildSuggestionAtom` always
+    // writes L1, and this read can't accidentally pick up an L3 atom
+    // that drifted to share the metadata.kind discriminator.
+    if (a.taint && a.taint !== 'clean') return false;
+    if (a.layer !== 'L1') return false;
+    if (a.superseded_by && a.superseded_by.length > 0) return false;
+    const meta = a.metadata as Record<string, unknown> | undefined;
+    if (!meta || meta['kind'] !== CANON_SUGGESTION_KIND) return false;
+    return meta['review_state'] === wanted;
+  });
+  // Newest first so the freshly-suggested ones land at the top of the
+  // operator's review panel.
+  out.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
+  return out;
 }
 
 async function handlePlansList(): Promise<Atom[]> {
@@ -1886,6 +1987,45 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'daemon-status-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/canon-suggestions.list' && req.method === 'POST') {
+    /*
+     * READ-ONLY endpoint per apps/console v1 scope boundary. The
+     * operator triages via the canon-suggest-triage CLI (which writes
+     * the state change) — this endpoint never mutates atom metadata.
+     * Default review_state=pending so a typical request returns the
+     * inbox of suggestions awaiting operator review; pass
+     * review_state=promoted|dismissed|deferred to see the audit trail.
+     */
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const raw = typeof body['review_state'] === 'string' ? (body['review_state'] as string) : 'pending';
+    if (!CANON_SUGGESTION_REVIEW_STATES.includes(raw as CanonSuggestionReviewState)) {
+      sendErr(req, res, 400, 'invalid-review-state', `review_state must be one of ${CANON_SUGGESTION_REVIEW_STATES.join('|')}`);
+      return;
+    }
+    try {
+      const data = await handleCanonSuggestionsList({ review_state: raw as CanonSuggestionReviewState });
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'canon-suggestions-list-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/control.status' && req.method === 'POST') {
+    /*
+     * Operator control-panel projection. Read-only: MUST NOT mutate
+     * the STOP sentinel from this code path. See handleControlStatus
+     * JSDoc for the full read-only contract.
+     */
+    try {
+      const data = await handleControlStatus();
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'control-status-failed', (err as Error).message);
     }
     return;
   }
