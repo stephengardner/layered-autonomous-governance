@@ -112,7 +112,7 @@ export function PrincipalTreeView() {
       {query.isError && (
         <ErrorState
           title="Could not load hierarchy"
-          message={(query.error as Error).message}
+          message={query.error instanceof Error ? query.error.message : String(query.error)}
           testId="principal-tree-error"
         />
       )}
