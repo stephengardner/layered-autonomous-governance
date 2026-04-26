@@ -87,7 +87,7 @@ export function PrincipalCard({ principal, focused = false }: Props) {
         )}
       </header>
 
-      <div className={styles.chips}>
+      <div className={styles.chips} data-testid="principal-card-chips">
         <span className={styles.chip}>role: {principal.role}</span>
         <span className={styles.chip}>{principal.active ? 'active' : 'inactive'}</span>
         {principal.signed_by && (

@@ -77,7 +77,10 @@ test.describe('principal drill-down', () => {
     expect(targetId).toBeTruthy();
 
     // Click the card body (the chips area, not the link or button).
-    await card.locator('[class*="chip"]').first().click();
+    // Uses a stable data-testid hook rather than the CSS-module class
+    // pattern, which is bundler-config-coupled and breaks if the
+    // CSS-modules generated-name format changes.
+    await card.getByTestId('principal-card-chips').click();
     const escaped = encodeURIComponent(targetId!).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     await expect(page).toHaveURL(new RegExp(`/principals/${escaped}$`));
   });
