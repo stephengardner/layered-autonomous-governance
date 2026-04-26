@@ -2,7 +2,11 @@ import { useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { createPortal } from 'react-dom';
 import { listCanonAtoms, type CanonAtom } from '@/services/canon.service';
-import { AtomHoverCard, AtomHoverCardLoading } from '@/components/hover-card/AtomHoverCard';
+import {
+  AtomHoverCard,
+  AtomHoverCardLoading,
+  AtomHoverCardNotInCanon,
+} from '@/components/hover-card/AtomHoverCard';
 import { useHoverCard } from '@/components/hover-card/useHoverCard';
 import { routeForAtomId, routeHref, setRoute, type Route } from '@/state/router.store';
 import styles from './AtomRef.module.css';
@@ -15,27 +19,28 @@ interface Props {
 /**
  * Clickable reference to another atom. Shares the same hover-card
  * visual with the graph and timeline views (one tooltip, one visual
- * language) and the same stay-open hover model — move the cursor
- * from the ref onto the tooltip and it persists.
+ * language) and the same stay-open hover model: move the cursor from
+ * the ref onto the tooltip and it persists.
  *
  * Hover-card render branches three ways so the metadata strip never
  * shows fabricated values:
- *   - resolved match  → <AtomHoverCard atom={match}>
- *   - query pending   → <AtomHoverCardLoading id={id}> (skeleton meta)
- *   - settled empty   → <AtomHoverCard atom={notInCanonFallback}>
- *     (legitimate "this id resolves to a plan / observation / non-canon
- *     atom" sentinel — only after we know the query terminated empty)
+ *   - resolved match  -> AtomHoverCard with real metadata
+ *   - query pending   -> AtomHoverCardLoading with skeleton metadata
+ *   - settled empty   -> AtomHoverCardNotInCanon (id + message only;
+ *                        no metadata strip, so no placeholder principal
+ *                        / confidence / created_at can be read as
+ *                        ground truth)
  */
 export function AtomRef({ id, variant = 'chip' }: Props) {
   const target: Route = routeForAtomId(id);
   const anchorRef = useRef<HTMLAnchorElement>(null);
-  // The hover state itself does not need to carry the atom payload —
+  // The hover state itself does not need to carry the atom payload --
   // we derive the rendered card from `match` + `query.isPending` below.
   // Parameterized as <void> so useHoverCard's API is preserved without
   // a fabricated atom flowing through `hover.show`.
   const hover = useHoverCard<void>();
 
-  // Fetch only while hovering — TanStack caches per-id so repeat
+  // Fetch only while hovering -- TanStack caches per-id so repeat
   // hovers are instant.
   const query = useQuery({
     queryKey: ['canon.list-search', id],
@@ -44,22 +49,6 @@ export function AtomRef({ id, variant = 'chip' }: Props) {
     staleTime: 60_000,
   });
   const match = (query.data ?? []).find((a) => a.id === id) as CanonAtom | undefined;
-
-  /*
-   * Sentinel for the genuine "atom not in canon" terminal state — used
-   * ONLY after the query has settled with no match. Until then we
-   * render <AtomHoverCardLoading> so no fabricated principal /
-   * confidence / created_at is ever shown to the user.
-   */
-  const notInCanonFallback: CanonAtom = {
-    id,
-    type: 'reference',
-    layer: 'L3',
-    content: 'Atom not in canon (may be a plan or observation)',
-    principal_id: '—',
-    confidence: 0,
-    created_at: new Date().toISOString(),
-  };
 
   return (
     <>
@@ -119,8 +108,9 @@ export function AtomRef({ id, variant = 'chip' }: Props) {
               onPointerLeave={hover.scheduleHide}
             />
           ) : (
-            <AtomHoverCard
-              atom={notInCanonFallback}
+            <AtomHoverCardNotInCanon
+              id={id}
+              message="Atom not in canon (may be a plan, observation, or other non-canon artifact)"
               hint={`click · open in ${target}`}
               onPointerEnter={hover.cancelHide}
               onPointerLeave={hover.scheduleHide}

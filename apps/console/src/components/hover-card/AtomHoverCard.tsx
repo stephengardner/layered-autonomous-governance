@@ -91,10 +91,52 @@ export function AtomHoverCardLoading({
         <span className={styles.skeletonLine} />
         <span className={styles.skeletonLineShort} />
       </div>
-      <div className={styles.meta} aria-label="loading metadata">
+      <div className={styles.meta} role="status" aria-label="loading atom metadata">
         <span className={styles.skeletonMeta} aria-hidden="true" />
         <span className={styles.skeletonMetaShort} aria-hidden="true" />
       </div>
+      {hint && <div className={styles.hint}>{hint}</div>}
+    </div>
+  );
+}
+
+/*
+ * Not-in-canon variant: rendered only after the canon-search query has
+ * settled with no match, signalling that the atom-id resolves to a
+ * non-canon artifact (a plan, observation, agent-session, etc.) rather
+ * than a canon atom. Drops the metadata strip entirely so we never
+ * paint placeholder principal / confidence / layer / created_at values
+ * the user could read as ground truth. The id chip and explanatory
+ * content carry all the information that's actually available.
+ */
+export function AtomHoverCardNotInCanon({
+  id,
+  message,
+  hint,
+  onPointerEnter,
+  onPointerLeave,
+}: {
+  id: string;
+  message: string;
+  hint?: string;
+  onPointerEnter?: () => void;
+  onPointerLeave?: () => void;
+}) {
+  return (
+    <div
+      className={styles.card}
+      role="tooltip"
+      data-testid="atom-hover-card"
+      data-loading="false"
+      data-not-in-canon="true"
+      onMouseEnter={onPointerEnter}
+      onMouseLeave={onPointerLeave}
+    >
+      <div className={styles.head}>
+        <span className={styles.type} data-type="non-canon">non-canon</span>
+        <code className={styles.id}>{id}</code>
+      </div>
+      <p className={styles.content}>{truncate(message, 240)}</p>
       {hint && <div className={styles.hint}>{hint}</div>}
     </div>
   );
