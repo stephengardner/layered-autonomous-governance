@@ -88,6 +88,25 @@ async function resolveToken(page: Page, token: string): Promise<string> {
   }, token);
 }
 
+/*
+ * Plans view defaults to the `active` bucket filter, which hides
+ * succeeded/failed/abandoned/rejected pills from the surface. The
+ * tones spec asserts properties of those pills, so it must opt into
+ * the `all` bucket before navigating. Setting localStorage directly
+ * is cheaper + more reliable than a chip click race.
+ *
+ * Storage key + value mirror PLAN_FILTER_STORAGE_KEY in
+ * `src/features/plans-viewer/planStateFilter.ts`. Hardcoded here so
+ * the test stays self-contained and a key rename surfaces as a
+ * focused mismatch instead of a flake.
+ */
+async function showAllPlanStates(page: Page): Promise<void> {
+  await page.goto('/plans');
+  await page.evaluate(() => {
+    localStorage.setItem('lag-console.plans-filter-bucket', JSON.stringify('all'));
+  });
+}
+
 async function readPillColor(page: Page, selector: string): Promise<string> {
   return await page.locator(selector).first().evaluate((el) => {
     return window.getComputedStyle(el).color;
@@ -118,7 +137,8 @@ test.describe('plan_state pill tones', () => {
       'no plan_state values present in store match a known semantic mapping; cannot exercise tone correctness',
     );
 
-    await page.goto('/plans');
+    await showAllPlanStates(page);
+    await page.reload();
     await expect(page.getByTestId('plan-card').first()).toBeVisible({ timeout: 10_000 });
 
     // Resolve the muted-gray reference once so we can assert "NOT this"
@@ -223,7 +243,8 @@ test.describe('plan_state pill tones', () => {
       'neither succeeded nor failed plans in store; cannot exercise the regression',
     );
 
-    await page.goto('/plans');
+    await showAllPlanStates(page);
+    await page.reload();
     await expect(page.getByTestId('plan-card').first()).toBeVisible({ timeout: 10_000 });
 
     const successColor = await resolveToken(page, '--status-success');
