@@ -893,11 +893,36 @@ interface PlanLifecyclePhase {
     | 'dispatch'
     | 'observation'
     | 'merge'
-    | 'settled';
+    | 'settled'
+    | 'failure';
   readonly label: string;
   readonly at: string;
   readonly by: string;
   readonly atom_id: string;
+}
+
+/*
+ * Failure block: surfaces the dispatch_result.message that the
+ * dispatcher already records on the plan atom when an executor halts
+ * with `kind === 'error'`. The console previously rendered only the
+ * `failed` state pill with no reason — operators had to grep
+ * `.lag/atoms/<plan>.json` to find why. This block is the projection
+ * the UI consumes; the raw atom remains the source of truth.
+ *
+ * `stage` is parsed out of the message via the executor's standard
+ * shape `executor failed at stage=<stage>: <reason>`. Falls back to
+ * `'unknown'` when the message doesn't match — better than failing
+ * the whole lifecycle response.
+ *
+ * `fix_hint` is a small heuristic table keyed off `stage`. Keep it
+ * mechanism-only here; vendor-specific failure modes belong in canon
+ * + skill content, not the framework projection.
+ */
+interface PlanLifecycleFailure {
+  readonly stage: string;
+  readonly message: string;
+  readonly at: string;
+  readonly fix_hint: string | null;
 }
 
 interface PlanLifecycle {
@@ -946,7 +971,41 @@ interface PlanLifecycle {
     readonly settled_at: string;
     readonly pr_state: string | null;
   } | null;
+  readonly failure: PlanLifecycleFailure | null;
   readonly transitions: ReadonlyArray<PlanLifecyclePhase>;
+}
+
+/*
+ * Parse the executor's standard halt-shape "stage=<token>" out of a
+ * dispatch_result.message. Tokens never contain whitespace or `:`,
+ * which matches the sentinel set the executor emits today (e.g.
+ * `apply-branch/dirty-worktree`, `cited-path-not-found`,
+ * `llm-call-failed`). When no stage is found we return `'unknown'`
+ * rather than null so the UI always has a non-empty pill — operators
+ * still see "stage=unknown" + the full message and can act.
+ */
+function parseFailureStage(message: string): string {
+  const match = message.match(/stage=([^\s:]+)/);
+  return match && match[1] ? match[1] : 'unknown';
+}
+
+/*
+ * Heuristic fix hints keyed by stage substring. Intentionally a small
+ * lookup of recurring failure modes, not an exhaustive table. New
+ * stages get added here only after they recur often enough to deserve
+ * an automated nudge; one-offs stay in the message itself.
+ */
+function fixHintForStage(stage: string): string | null {
+  if (stage.includes('dirty-worktree')) {
+    return 'Run dispatch from a clean worktree (e.g. .worktrees/dispatch-runner).';
+  }
+  if (stage.includes('cited-path-not-found')) {
+    return 'Drafter cited a path that does not exist. Check cited_paths against the working tree.';
+  }
+  if (stage.includes('llm-call-failed')) {
+    return 'LLM call failed. Check Claude CLI exit code and stderr in the dispatch log.';
+  }
+  return null;
 }
 
 async function handlePlanLifecycle(planId: string): Promise<PlanLifecycle> {
@@ -1118,6 +1177,35 @@ async function handlePlanLifecycle(planId: string): Promise<PlanLifecycle> {
     }
     : null;
 
+  /*
+   * Failure: when plan_state is `failed` the dispatcher already wrote
+   * a `dispatch_result` envelope on the plan describing the halt. We
+   * project that out so the UI never has to read raw metadata. We
+   * accept either an inline `stage` field or one parsed out of the
+   * message — the executor records both shapes today.
+   */
+  const planStateValue = typeof planAny?.['plan_state'] === 'string'
+    ? (planAny['plan_state'] as string)
+    : null;
+  let failureBlock: PlanLifecycleFailure | null = null;
+  if (planStateValue === 'failed' && inlineDispatch && inlineDispatch['kind'] === 'error') {
+    const message = typeof inlineDispatch['message'] === 'string'
+      ? (inlineDispatch['message'] as string)
+      : '';
+    const at = typeof inlineDispatch['at'] === 'string'
+      ? (inlineDispatch['at'] as string)
+      : (plan?.created_at ?? '');
+    const stage = typeof inlineDispatch['stage'] === 'string' && (inlineDispatch['stage'] as string).length > 0
+      ? (inlineDispatch['stage'] as string)
+      : parseFailureStage(message);
+    failureBlock = {
+      stage,
+      message,
+      at,
+      fix_hint: fixHintForStage(stage),
+    };
+  }
+
   // Compose the chronological transitions list. Each present block
   // contributes one phase entry; absent phases are simply omitted.
   // The frontend renders this as a vertical timeline with stagger
@@ -1189,6 +1277,22 @@ async function handlePlanLifecycle(planId: string): Promise<PlanLifecycle> {
       atom_id: settledBlock.atom_id,
     });
   }
+  /*
+   * Failure transition slots in chronologically via the sort below.
+   * `by: 'plan-dispatcher'` is a logical attribution for the halt —
+   * the dispatch_result envelope is written by whichever component
+   * caught the executor error, but the operator-facing label stays
+   * stable so the timeline reads consistently across actors.
+   */
+  if (failureBlock && plan) {
+    transitions.push({
+      phase: 'failure',
+      label: 'Plan failed',
+      at: failureBlock.at,
+      by: 'plan-dispatcher',
+      atom_id: plan.id,
+    });
+  }
   // Stable chronological sort. Ties keep insertion order, which is
   // already domain-meaningful (plan-proposed before approval, etc.).
   transitions.sort((a, b) => a.at.localeCompare(b.at));
@@ -1200,6 +1304,7 @@ async function handlePlanLifecycle(planId: string): Promise<PlanLifecycle> {
     dispatch: dispatchBlock,
     observation: observationBlock,
     settled: settledBlock,
+    failure: failureBlock,
     transitions,
   };
 }

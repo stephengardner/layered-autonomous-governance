@@ -16,9 +16,39 @@ const STATE_TONE: Record<string, string> = {
   approved: 'var(--status-success)',
   pending: 'var(--status-warning)',
   rejected: 'var(--status-danger)',
+  failed: 'var(--status-danger)',
   proposed: 'var(--accent)',
   draft: 'var(--text-tertiary)',
 };
+
+const FAILURE_SUMMARY_MAX = 80;
+
+/*
+ * Plan-card failure summary: when plan_state is `failed` and the
+ * dispatcher recorded a `dispatch_result` envelope on the atom, render
+ * a one-liner under the state pill so operators see *why* the plan
+ * halted without leaving the grid. The full detail (raw message,
+ * fix hint) lives on /plan-lifecycle/<id>; this row is just the
+ * gateway. Returns null when there's no usable signal — silently
+ * absent, never a placeholder.
+ */
+function summarizePlanFailure(plan: PlanAtom): { stage: string; line: string } | null {
+  if (plan.plan_state !== 'failed') return null;
+  const meta = plan.metadata as Record<string, unknown> | undefined;
+  const dispatchResult = meta?.['dispatch_result'] as Record<string, unknown> | undefined;
+  if (!dispatchResult || dispatchResult['kind'] !== 'error') return null;
+  const message = typeof dispatchResult['message'] === 'string'
+    ? (dispatchResult['message'] as string)
+    : '';
+  if (!message) return null;
+  const stageMatch = message.match(/stage=([^\s:]+)/);
+  const stage = stageMatch && stageMatch[1] ? stageMatch[1] : 'unknown';
+  const raw = `failed at ${stage}`;
+  const line = raw.length > FAILURE_SUMMARY_MAX
+    ? `${raw.slice(0, FAILURE_SUMMARY_MAX - 1)}\u2026`
+    : raw;
+  return { stage, line };
+}
 
 const ATOM_ID_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+){3,}$/;
 
@@ -133,6 +163,7 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
 
   const state = plan.plan_state ?? 'unknown';
   const { title, body } = splitTitleAndBody(plan.content);
+  const failure = summarizePlanFailure(plan);
 
   /*
    * Delegated click: clicking whitespace/text in the card navigates to
@@ -168,6 +199,25 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
         </span>
         <code className={styles.id}>{plan.id}</code>
       </header>
+
+      {failure && (
+        <a
+          className={styles.failureSummary}
+          href={routeHref('plan-lifecycle', plan.id)}
+          data-testid="plan-card-failure-summary"
+          data-stage={failure.stage}
+          title={`stage=${failure.stage} — view full detail`}
+          onClick={(e) => {
+            if (e.defaultPrevented || e.button !== 0) return;
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            e.preventDefault();
+            e.stopPropagation();
+            setRoute('plan-lifecycle', plan.id);
+          }}
+        >
+          {failure.line}
+        </a>
+      )}
 
       {title && (
         focused ? (
