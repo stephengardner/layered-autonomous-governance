@@ -413,13 +413,18 @@ export async function runIntentAutoApprovePass(
 
     const planRadius = delegation.implied_blast_radius;
     const envelopeMax = envelope.max_blast_radius;
-    if (typeof planRadius !== 'string' || !(planRadius in RADIUS_RANK)) {
+    // Use Object.hasOwn so prototype-chain keys ('toString', 'valueOf',
+    // 'constructor') do not pass the guard. The `in` operator walks the
+    // chain and would silently fall through to `undefined > N` (false)
+    // at the rank comparison, fail-opening for attacker- or LLM-supplied
+    // strings.
+    if (typeof planRadius !== 'string' || !Object.hasOwn(RADIUS_RANK, planRadius)) {
       await recordSkip(plan, intent, SkipReason.RADIUS_UNKNOWN, {
         plan_radius: typeof planRadius === 'string' ? planRadius : null,
       });
       continue;
     }
-    if (typeof envelopeMax !== 'string' || !(envelopeMax in RADIUS_RANK)) {
+    if (typeof envelopeMax !== 'string' || !Object.hasOwn(RADIUS_RANK, envelopeMax)) {
       await recordSkip(plan, intent, SkipReason.DELEGATION_RADIUS_UNKNOWN, {
         envelope_max_radius: typeof envelopeMax === 'string' ? envelopeMax : null,
       });

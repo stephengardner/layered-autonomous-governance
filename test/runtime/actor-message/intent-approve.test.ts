@@ -508,6 +508,45 @@ describe('runIntentAutoApprovePass', () => {
     expect(events[0]?.details['plan_radius']).toBe('galaxy-brain');
   });
 
+  // 11b. Prototype-chain key on plan radius -> fail-closed + observable skip
+  it('T11b: implied_blast_radius=toString (prototype-chain key) -> RADIUS_UNKNOWN skip, never falls through', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom());
+    await host.atoms.put(intentCreationPolicyAtom());
+    await host.atoms.put(intentAtom('intent-proto-radius', { max_blast_radius: 'framework' }));
+    await host.atoms.put(
+      planAtom('plan-proto-radius', 'intent-proto-radius', { implied_blast_radius: 'toString' }),
+    );
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    // Pre-fix this would silently approve (Object.prototype.toString in RADIUS_RANK === true,
+    // then RADIUS_RANK['toString'] === undefined > N === false at the rank comparison).
+    // Object.hasOwn rejects prototype-chain keys, so the guard fails closed.
+    expect(result.approved).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedByReason[SkipReason.RADIUS_UNKNOWN]).toBe(1);
+    const plan = await host.atoms.get('plan-proto-radius' as AtomId);
+    expect(plan?.plan_state).toBe('proposed');
+  });
+
+  // 12b. Prototype-chain key on envelope -> fail-closed + observable skip
+  it('T12b: max_blast_radius=constructor (prototype-chain key) -> DELEGATION_RADIUS_UNKNOWN skip', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom());
+    await host.atoms.put(intentCreationPolicyAtom());
+    await host.atoms.put(intentAtom('intent-proto-env', { max_blast_radius: 'constructor' }));
+    await host.atoms.put(
+      planAtom('plan-proto-env', 'intent-proto-env', { implied_blast_radius: 'tooling' }),
+    );
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    expect(result.approved).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedByReason[SkipReason.DELEGATION_RADIUS_UNKNOWN]).toBe(1);
+  });
+
   // 12. Unknown envelope max_blast_radius -> fail-closed + observable skip
   it('T12: unknown max_blast_radius in envelope -> observable DELEGATION_RADIUS_UNKNOWN skip', async () => {
     const host = createMemoryHost();
