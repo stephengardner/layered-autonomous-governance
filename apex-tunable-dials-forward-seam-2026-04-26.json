@@ -38,7 +38,7 @@
     },
     "c_console_dial_values_widget_today": {
       "recommendation": "DEFER the literal naming.",
-      "forward_compat_path": "Surface the existing PR #204 active-elevations placeholder as a generic 'Active Policies' read-only panel that lists priority-resolved policy atoms in scope. When dials land, dial-tagged atoms render with extra UX without inventing the dial concept speculatively.",
+      "forward_compat_path": "Surface the existing active-elevations placeholder (the in-flight Console control-panel widget cited via dev-apex-tunable-dials-future-seam) as a generic 'Active Policies' read-only panel that lists priority-resolved policy atoms in scope. When dials land, dial-tagged atoms render with extra UX without inventing the dial concept speculatively.",
       "why": "Per dev-apex-tunable-dials-future-seam (4) and dev-extreme-rigor-and-research, naming a UX before the second concrete dial exists is the over-engineering this directive prohibits.",
       "grounding": ["dev-apex-tunable-dials-future-seam", "dev-extreme-rigor-and-research"]
     },
@@ -75,3 +75,39 @@
     "arch-atomstore-source-of-truth",
     "pol-actor-message-circuit-breaker",
     "pol-inbox-poll-cadence",
+    "pol-circuit-breaker-reset-authority",
+    "pol-code-author-per-pr-cost-cap",
+    "dev-canon-proposals-via-cto-not-direct",
+    "dev-flag-structural-concerns"
+  ],
+  "provenance": {
+    "kind": "operator-seeded",
+    "source": {
+      "agent_id": "cto-actor"
+    },
+    "derived_from": [
+      "q-4649ffb86499dd04-2026-04-26T11-54-57-032Z",
+      "dev-apex-tunable-dials-future-seam",
+      "dev-extreme-rigor-and-research",
+      "dev-indie-floor-org-ceiling",
+      "arch-principal-hierarchy-signed-by",
+      "arch-atomstore-source-of-truth",
+      "pol-actor-message-circuit-breaker",
+      "pol-inbox-poll-cadence",
+      "pol-circuit-breaker-reset-authority",
+      "pol-code-author-per-pr-cost-cap",
+      "dev-canon-proposals-via-cto-not-direct",
+      "dev-flag-structural-concerns"
+    ]
+  },
+  "taint": "clean",
+  "supersedes": [],
+  "superseded_by": [],
+  "confidence": 0.9,
+  "scope": "global",
+  "metadata": {
+    "source": "cto-actor-research-memo",
+    "kind": "analysis-memo",
+    "not_a_plan": true
+  }
+}
