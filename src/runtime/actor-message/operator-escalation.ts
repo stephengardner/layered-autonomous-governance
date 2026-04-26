@@ -67,7 +67,7 @@ export interface OperatorEscalationContext {
   };
   /**
    * The recipient principal. Defaults to 'operator'. Override for
-   * deployments that use a different convention (e.g., 'stephen-human').
+   * deployments that use a different operator-principal convention.
    */
   readonly operator?: PrincipalId;
   /**

@@ -44,6 +44,15 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
 const BOOTSTRAP_TIME = '2026-04-19T00:00:00.000Z';
 
+const OPERATOR_ID = process.env.LAG_OPERATOR_ID;
+if (!OPERATOR_ID) {
+  console.error(
+    '[bootstrap-cto-actor] ERROR: LAG_OPERATOR_ID is not set. Export it and re-run.\n'
+    + '  export LAG_OPERATOR_ID=<your-operator-id>\n',
+  );
+  process.exit(2);
+}
+
 const CTO_ACTOR = 'cto-actor';
 
 const POLICIES = [
@@ -130,7 +139,7 @@ function policyAtom(spec) {
       validation_status: 'unchecked',
       last_validated_at: null,
     },
-    principal_id: process.env.LAG_OPERATOR_ID || 'stephen-human',
+    principal_id: OPERATOR_ID,
     taint: 'clean',
     metadata: {
       policy: {
@@ -198,7 +207,7 @@ async function main() {
   await mkdir(STATE_DIR, { recursive: true });
   const host = await createFileHost({ rootDir: STATE_DIR });
 
-  const operatorId = process.env.LAG_OPERATOR_ID || 'stephen-human';
+  const operatorId = OPERATOR_ID;
   const claudeAgentId = process.env.LAG_AGENT_ID || 'claude-agent';
 
   // Parent chain: operator -> claude-agent -> cto-actor.
@@ -209,7 +218,7 @@ async function main() {
   let principalsWritten = 0;
   let principalsOk = 0;
   for (const [pid, name, role, signedBy, writeLayers] of [
-    [operatorId, 'Operator (human)', 'user', null, ['L0', 'L1', 'L2', 'L3']],
+    [operatorId, 'Apex Agent', 'apex', null, ['L0', 'L1', 'L2', 'L3']],
     [claudeAgentId, 'Agent (Claude Code instance)', 'agent', operatorId, ['L0', 'L1', 'L2']],
     [CTO_ACTOR, 'CTO actor (planning)', 'agent', claudeAgentId, ['L0', 'L1']],
   ]) {

@@ -39,6 +39,15 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
 const BOOTSTRAP_TIME = '2026-04-19T00:00:00.000Z';
 
+const OPERATOR_ID = process.env.LAG_OPERATOR_ID;
+if (!OPERATOR_ID) {
+  console.error(
+    '[bootstrap-pr-landing] ERROR: LAG_OPERATOR_ID is not set. Export it and re-run.\n'
+    + '  export LAG_OPERATOR_ID=<your-operator-id>\n',
+  );
+  process.exit(2);
+}
+
 const PR_LANDING_AGENT = 'pr-landing-agent';
 
 /**
@@ -125,7 +134,7 @@ function policyAtom(spec) {
       validation_status: 'unchecked',
       last_validated_at: null,
     },
-    principal_id: process.env.LAG_OPERATOR_ID || 'stephen-human',
+    principal_id: OPERATOR_ID,
     taint: 'clean',
     metadata: {
       policy: {
@@ -145,7 +154,7 @@ async function main() {
   await mkdir(STATE_DIR, { recursive: true });
   const host = await createFileHost({ rootDir: STATE_DIR });
 
-  const operatorId = process.env.LAG_OPERATOR_ID || 'stephen-human';
+  const operatorId = OPERATOR_ID;
   const claudeAgentId = process.env.LAG_AGENT_ID || 'claude-agent';
 
   // Ensure parent chain exists. bootstrap.mjs normally creates these;
@@ -154,8 +163,8 @@ async function main() {
   if (!existingOperator) {
     await host.principals.put({
       id: operatorId,
-      name: 'Operator (human)',
-      role: 'user',
+      name: 'Apex Agent',
+      role: 'apex',
       permitted_scopes: {
         read: ['session', 'project', 'user', 'global'],
         write: ['session', 'project', 'user', 'global'],
