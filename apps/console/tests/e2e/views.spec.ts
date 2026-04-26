@@ -33,8 +33,18 @@ test.describe('views smoke', () => {
   });
 
   test('plans renders a plan-card or empty state', async ({ page }) => {
+    /*
+     * The Plans view defaults to the `active` bucket filter. To keep
+     * this test asserting the bare "view mounts" property (and not
+     * implicitly asserting "the dataset has an active plan"), opt
+     * into the `all` bucket so the assertion is independent of which
+     * states happen to be present.
+     */
     await page.goto('/plans');
-    // Either a plan card or the empty-state hint renders.
+    await page.evaluate(() => {
+      localStorage.setItem('lag-console.plans-filter-bucket', JSON.stringify('all'));
+    });
+    await page.reload();
     const hasCard = page.locator('[data-testid="plan-card"]').first();
     const empty = page.locator('[data-testid="plans-empty"]');
     await Promise.race([
@@ -75,6 +85,12 @@ test.describe('views smoke', () => {
 
   test('plan card is clickable → opens in focus mode', async ({ page }) => {
     await page.goto('/plans');
+    // Show all states so the test isn't dependent on the default
+    // active-bucket filter having matches.
+    await page.evaluate(() => {
+      localStorage.setItem('lag-console.plans-filter-bucket', JSON.stringify('all'));
+    });
+    await page.reload();
     const firstCard = page.locator('[data-testid="plan-card"]').first();
     await firstCard.waitFor();
     const planId = await firstCard.getAttribute('data-atom-id');

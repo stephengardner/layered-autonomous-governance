@@ -9,9 +9,18 @@ import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { listPlans, type PlanAtom } from '@/services/plans.service';
+import { storage } from '@/services/storage.service';
 import { planStateTone } from '@/features/plan-state/tones';
 import { useRouteId, setRoute, routeHref } from '@/state/router.store';
 import { formatClarifyStubTitle } from './clarifyStubTitle';
+import {
+  bucketForPlanState,
+  matchesBucket,
+  normalizeBucket,
+  PLAN_FILTER_STORAGE_KEY,
+  DEFAULT_PLAN_FILTER,
+  type PlanStateBucket,
+} from './planStateFilter';
 import styles from './PlansView.module.css';
 
 const FAILURE_SUMMARY_MAX = 80;
@@ -69,11 +78,46 @@ export function PlansView() {
   });
   const focusId = useRouteId();
 
+  /*
+   * Filter is local UI state. We initialize from storage so a triage
+   * session that flipped to Failed sticks across reloads. Default is
+   * `active` (most operator-useful surface) when no preference saved.
+   * Focus mode bypasses the filter entirely — the user opened a
+   * specific plan-id, hiding it because of bucket mismatch would be
+   * astonishing.
+   */
+  const [bucket, setBucket] = useState<PlanStateBucket>(
+    () => normalizeBucket(storage.get<unknown>(PLAN_FILTER_STORAGE_KEY)) ?? DEFAULT_PLAN_FILTER,
+  );
+
+  const handleBucketChange = (next: PlanStateBucket) => {
+    setBucket(next);
+    storage.set(PLAN_FILTER_STORAGE_KEY, next);
+  };
+
   const allPlans = query.data ?? [];
+
+  /*
+   * Bucket counts: computed from the full list so each chip shows the
+   * total plans in its bucket regardless of which filter is active.
+   * Operator reads "Failed (11)" before clicking to confirm the chip
+   * is worth their attention.
+   */
+  const counts = useMemo(() => {
+    const c = { active: 0, succeeded: 0, failed: 0, all: allPlans.length };
+    for (const p of allPlans) {
+      const b = bucketForPlanState(p.plan_state);
+      c[b] += 1;
+    }
+    return c;
+  }, [allPlans]);
+
   const plans = useMemo(() => {
-    if (!focusId) return allPlans;
-    return allPlans.filter((p) => p.id === focusId);
-  }, [allPlans, focusId]);
+    if (focusId) return allPlans.filter((p) => p.id === focusId);
+    return allPlans.filter((p) => matchesBucket(p.plan_state, bucket));
+  }, [allPlans, focusId, bucket]);
+
+  const filteredOut = !focusId && allPlans.length > 0 && plans.length === 0;
 
   return (
     <section className={styles.view}>
@@ -81,7 +125,7 @@ export function PlansView() {
       {query.isError && (
         <ErrorState title="Could not load plans" message={(query.error as Error).message} testId="plans-error" />
       )}
-      {query.isSuccess && plans.length === 0 && (
+      {query.isSuccess && allPlans.length === 0 && (
         focusId ? (
           <EmptyState
             title="Plan not found"
@@ -101,7 +145,7 @@ export function PlansView() {
           />
         )
       )}
-      {query.isSuccess && plans.length > 0 && (
+      {query.isSuccess && allPlans.length > 0 && (
         <>
           {focusId && (
             <FocusBanner label="Focused on plan" id={focusId} onClear={() => setRoute('plans')} />
@@ -109,9 +153,39 @@ export function PlansView() {
           <StatsHeader
             total={plans.length}
             label={`plan${plans.length === 1 ? '' : 's'}`}
-            detail={focusId ? '(filtered to focus)' : undefined}
+            detail={focusId
+              ? '(filtered to focus)'
+              : bucket === 'all'
+                ? undefined
+                : `of ${allPlans.length} (${bucket})`}
           />
-          {focusId ? (
+          {!focusId && (
+            <PlanFilterChips
+              bucket={bucket}
+              counts={counts}
+              onChange={handleBucketChange}
+            />
+          )}
+          {filteredOut && (
+            <EmptyState
+              title={`No ${bucket === 'all' ? '' : bucket + ' '}plans`}
+              detail={
+                <>
+                  Nothing in the <code>{bucket}</code> bucket right now.{' '}
+                  <button
+                    type="button"
+                    className={styles.inlineLink}
+                    onClick={() => handleBucketChange('all')}
+                    data-testid="plans-filter-show-all"
+                  >
+                    Show all {allPlans.length}
+                  </button>
+                </>
+              }
+              testId="plans-filter-empty"
+            />
+          )}
+          {!filteredOut && (focusId ? (
             <div className={`${styles.grid} ${styles.gridFocused}`}>
               {plans.map((p) => (
                 <PlanCard key={p.id} plan={p} focused={true} />
@@ -137,10 +211,61 @@ export function PlansView() {
                 ))}
               </div>
             </div>
-          )}
+          ))}
         </>
       )}
     </section>
+  );
+}
+
+/*
+ * Bucket-filter chip row. One row of pill buttons under the stats
+ * header. Each chip shows the bucket name + count; the active one
+ * carries an `aria-pressed` and a visual selected state. Chips are
+ * always visible (no collapse) so the operator never wonders why
+ * counts they remember are missing — the filter is the explanation.
+ */
+const FILTER_LABELS: ReadonlyArray<{ bucket: PlanStateBucket; label: string }> = [
+  { bucket: 'active', label: 'Active' },
+  { bucket: 'succeeded', label: 'Succeeded' },
+  { bucket: 'failed', label: 'Failed' },
+  { bucket: 'all', label: 'All' },
+];
+
+function PlanFilterChips({
+  bucket,
+  counts,
+  onChange,
+}: {
+  bucket: PlanStateBucket;
+  counts: Readonly<Record<PlanStateBucket, number>>;
+  onChange: (next: PlanStateBucket) => void;
+}) {
+  return (
+    <nav
+      className={styles.filterChips}
+      aria-label="Filter plans by state"
+      data-testid="plans-filter-chips"
+    >
+      {FILTER_LABELS.map(({ bucket: b, label }) => {
+        const selected = bucket === b;
+        return (
+          <button
+            key={b}
+            type="button"
+            className={`${styles.filterChip} ${selected ? styles.filterChipSelected : ''}`}
+            aria-pressed={selected}
+            data-testid={`plans-filter-chip-${b}`}
+            data-bucket={b}
+            data-selected={selected ? 'true' : 'false'}
+            onClick={() => onChange(b)}
+          >
+            <span className={styles.filterChipLabel}>{label}</span>
+            <span className={styles.filterChipCount}>{counts[b]}</span>
+          </button>
+        );
+      })}
+    </nav>
   );
 }
 

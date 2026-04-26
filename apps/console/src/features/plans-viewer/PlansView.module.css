@@ -463,6 +463,99 @@
   color: var(--text-muted);
 }
 
+/*
+ * Bucket-filter chip row. Sits under the StatsHeader, above the grid.
+ * Wraps when the viewport is narrow (mobile), no horizontal scroll.
+ * Selected chip lights up with the accent token; counts are
+ * tabular-nums so they align across rows.
+ */
+.filterChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.filterChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard),
+              border-color var(--duration-fast) var(--easing-standard);
+}
+
+.filterChip:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.filterChip:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.filterChipSelected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.filterChipSelected:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent-hover);
+}
+
+.filterChipLabel {
+  letter-spacing: 0.04em;
+}
+
+.filterChipCount {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+  opacity: 0.75;
+}
+
+.filterChipSelected .filterChipCount {
+  opacity: 1;
+}
+
+/*
+ * Inline action link for empty-state "Show all" button. Looks like an
+ * underlined link, behaves like a button. Used inside EmptyState
+ * detail copy where a full button would feel heavy.
+ */
+.inlineLink {
+  color: var(--accent);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.inlineLink:hover {
+  color: var(--accent-hover);
+}
+
+.inlineLink:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
 .footer {
   display: flex;
   gap: var(--space-2);
