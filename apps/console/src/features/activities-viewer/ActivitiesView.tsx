@@ -27,10 +27,14 @@ export function ActivitiesView() {
     // total ~23,324 atoms, so dense weeks at the tail can graze the cap;
     // when that becomes the steady state we move to time-windowing rather
     // than raising a fixed cap further. Cap raised from 500 so the feed +
-    // heatmap reflect a representative ~12-week window. Poll every 15s so
-    // the feed and the heatmap feel live without a WebSocket.
+    // heatmap reflect a representative ~12-week window. Poll every 60s --
+    // the heatmap is a 14-week aggregate that doesn't need sub-minute
+    // freshness, and refetching 20k atoms on a 15s tick is a bandwidth/
+    // CPU regression on the request path. The ActorActivity stream
+    // already covers fast-moving sub-second visibility for the
+    // operator-critical "what is the org doing now" question.
     queryFn: ({ signal }) => listActivities({ limit: 20000 }, signal),
-    refetchInterval: 15_000,
+    refetchInterval: 60_000,
   });
   const focusId = useRouteId();
   const focusRef = useRef<HTMLLIElement | null>(null);
