@@ -91,7 +91,7 @@ describe('computeHeartbeat', () => {
     expect(hb).toEqual({ last_60s: 0, last_5m: 0, last_1h: 0, delta: 0 });
   });
 
-  it('computes positive delta when the most recent 60s outweighs the prior', () => {
+  it('computes negative delta when the prior 60s outweighs the most recent', () => {
     /*
      * Ensure samples land STRICTLY inside the prior window
      * [now - 120s, now - 60s) -- the boundary at exactly now - 60s
@@ -584,6 +584,55 @@ describe('listPrActivity', () => {
         principal_id: 'pr-landing-agent',
         created_at: new Date(NOW - 30_000).toISOString(),
         metadata: { pr: { number: 201 }, target_plan_state: 'succeeded' },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.state).toBe('merged');
+  });
+
+  // Regression: a stale OPEN observation arriving AFTER the settled
+  // atom (or a re-open on a revert flow) must NOT rewind the row from
+  // merged back to open. The aggregator owns this invariant.
+  it('merged is sticky against a later pr-observation OPEN', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'plan-merge-settled-201',
+        type: 'plan-merge-settled',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 60_000).toISOString(),
+        metadata: { pr: { number: 201 }, target_plan_state: 'succeeded' },
+      }),
+      atom({
+        id: 'pr-observation-201-late',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: { kind: 'pr-observation', pr_number: 201, pr_state: 'OPEN' },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.state).toBe('merged');
+  });
+
+  // Regression: when the settled atom has an OLDER timestamp than the
+  // current pick, it still pins the terminal state to merged.
+  it('merged is sticky even when the settled atom is older than later observations', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'pr-observation-202-recent',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 10_000).toISOString(),
+        metadata: { kind: 'pr-observation', pr_number: 202, pr_state: 'OPEN' },
+      }),
+      atom({
+        id: 'plan-merge-settled-202-old',
+        type: 'plan-merge-settled',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 3600_000).toISOString(),
+        metadata: { pr: { number: 202 }, target_plan_state: 'succeeded' },
       }),
     ];
     const out = listPrActivity(atoms, NOW);

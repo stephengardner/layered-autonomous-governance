@@ -281,7 +281,7 @@ function DeliberationRow({ plan }: { plan: LiveOpsLiveDeliberation }) {
       >
         <span className={styles.rowPrimary}>{plan.title}</span>
         <span className={styles.rowSecondary}>
-          {plan.principal_id} - {formatAge(plan.age_seconds)}
+          {plan.principal_id} {'\u00B7'} {formatAge(plan.age_seconds)}
         </span>
       </a>
     </li>
@@ -386,7 +386,7 @@ function TransitionRow({ transition }: { transition: LiveOpsRecentTransition }) 
           >
             {transition.prev_state}
           </span>
-          <span className={styles.transitionArrow} aria-hidden="true">{'->'}</span>
+          <span className={styles.transitionArrow} aria-hidden="true">{'\u2192'}</span>
           <span
             className={styles.statePill}
             style={{ borderColor: planStateTone(transition.new_state), color: planStateTone(transition.new_state) }}
@@ -430,7 +430,7 @@ function PrRow({ pr }: { pr: LiveOpsPrActivity }) {
         #{pr.pr_number} {pr.title ?? '(no title)'}
       </span>
       <span className={styles.rowSecondary}>
-        {pr.state} - {formatRelative(pr.at)}
+        {pr.state} {'\u00B7'} {formatRelative(pr.at)}
       </span>
     </li>
   );
@@ -555,5 +555,11 @@ function formatAge(seconds: number): string {
 }
 
 function formatDuration(ms: number): string {
-  return formatAge(Math.round(ms / 1000));
+  // Clamp negative values: `elevation.ms_until_expiry` is server-
+  // computed at snapshot time; with the 2s poll cadence an elevation
+  // can cross its expiry while the snapshot is in flight, briefly
+  // yielding a negative ms value. The server filters expired
+  // elevations on its side, but the client should reclamp so a stale
+  // tile never renders "expires in -3s". Mirrors `formatRelative`.
+  return formatAge(Math.max(0, Math.round(ms / 1000)));
 }

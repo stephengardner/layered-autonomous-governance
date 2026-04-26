@@ -411,6 +411,7 @@ export function listPrActivity(
     state: string;
     at: string;
     ts: number;
+    merged: boolean;
   }>();
   for (const atom of atoms) {
     if (atom.type !== 'observation' && atom.type !== 'plan-merge-settled') continue;
@@ -437,19 +438,44 @@ export function listPrActivity(
       ? 'merged'
       : (stateRaw ? stateRaw.toLowerCase() : 'unknown');
     const title = typeof meta['pr_title'] === 'string' ? (meta['pr_title'] as string) : null;
+    const isSettled = atom.type === 'plan-merge-settled';
     const existing = byPr.get(prNumber);
-    if (!existing || ts > existing.ts) {
+    // Sticky-merged invariant: once `plan-merge-settled` is observed
+    // for a PR, the row state stays 'merged' regardless of any later
+    // pr-observation. Without this, a stale OPEN observation arriving
+    // after the settled atom (or any GitHub re-open from a revert
+    // flow that lands as pr_state=OPEN) silently rewinds the tile
+    // from 'merged' back to 'open'. The aggregator owns this rule;
+    // the UI does not need to know about settled-vs-observation.
+    if (!existing) {
       byPr.set(prNumber, {
         pr_number: prNumber,
         title,
         state,
         at: atom.created_at,
         ts,
+        merged: isSettled,
       });
+    } else if (ts > existing.ts) {
+      const nextMerged = existing.merged || isSettled;
+      byPr.set(prNumber, {
+        pr_number: prNumber,
+        title: title ?? existing.title,
+        state: nextMerged ? 'merged' : state,
+        at: atom.created_at,
+        ts,
+        merged: nextMerged,
+      });
+    } else if (isSettled) {
+      // Settled atom is older than the current pick but still pins the
+      // PR's terminal state. Don't move `at`/`ts` (still want recency
+      // ordering) but flip the row to merged.
+      existing.state = 'merged';
+      existing.merged = true;
     }
   }
   const rows = Array.from(byPr.values()).sort((a, b) => b.ts - a.ts);
-  return rows.slice(0, MAX_LIST_ITEMS).map(({ ts: _ts, ...rest }) => rest);
+  return rows.slice(0, MAX_LIST_ITEMS).map(({ ts: _ts, merged: _m, ...rest }) => rest);
 }
 
 // ---------------------------------------------------------------------------
