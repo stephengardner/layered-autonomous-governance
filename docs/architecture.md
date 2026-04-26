@@ -17,7 +17,7 @@ Promotion creates a new atom at the target layer with `provenance.kind='canon-pr
 
 ## Principals and signed_by
 
-Every atom is `signed_by` a principal. Principals form a hierarchy from a root key downward; depth feeds source-rank during arbitration. Compromise of a principal cascades taint across every derived atom across `provenance.derived_from` chains. (`arch-principal-hierarchy-signed-by`)
+Every atom records a `principal_id`; principals themselves form a `signed_by` hierarchy from a root key downward. That hierarchy depth feeds source-rank during arbitration. Compromise of a principal cascades taint across every derived atom across `provenance.derived_from` chains. (`arch-principal-hierarchy-signed-by`)
 
 Per-actor bot identities project the principal hierarchy onto GitHub: each Actor role gets its own GitHub App, its own credentials, its own permission set, its own revocation boundary. (`arch-bot-identity-per-actor`)
 
