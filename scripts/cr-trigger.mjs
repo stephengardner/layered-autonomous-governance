@@ -73,6 +73,14 @@ if (!response.ok) {
 }
 
 let json = {};
-try { json = await response.json(); } catch {}
-console.log(json?.html_url ?? `https://github.com/${owner}/${repo}/pull/${prNumber}`);
+try { json = await response.json(); } catch (err) {
+  console.error(`cr-trigger: failed to parse response: ${err?.message ?? err}`);
+  process.exit(2);
+}
+const commentUrl = json?.html_url;
+if (typeof commentUrl !== 'string' || commentUrl.length === 0) {
+  console.error('cr-trigger: response missing html_url; downstream tooling cannot trust the URL');
+  process.exit(2);
+}
+console.log(commentUrl);
 process.exit(0);
