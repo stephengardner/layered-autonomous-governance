@@ -97,26 +97,52 @@ describe('buildPrincipalTree', () => {
     expect(r.orphans).toEqual(['ghost-child']);
   });
 
+  // Regression: an orphan's descendants must propagate into the
+  // orphans array, not silently disappear. A broken upstream link is
+  // a blast-radius signal; the operator needs to see the full subtree
+  // that's affected.
+  it('walks orphan descendants and reports the whole broken subtree', () => {
+    const inputs: PrincipalTreeInput[] = [
+      { id: 'root', role: 'human', signed_by: null },
+      { id: 'ghost-child', role: 'agent', signed_by: 'phantom-parent' },
+      { id: 'grandghost', role: 'agent', signed_by: 'ghost-child' },
+      { id: 'greatgrandghost', role: 'agent', signed_by: 'grandghost' },
+    ];
+    const r = buildPrincipalTree(inputs);
+    expect(r.roots).toHaveLength(1);
+    expect(new Set(r.orphans)).toEqual(new Set(['ghost-child', 'grandghost', 'greatgrandghost']));
+  });
+
   /*
-   * Cycles are structurally hard to reach in well-formed principal-
-   * store data because every principal has at most one signed_by.
-   * The defensive throw in the builder covers two real failure
-   * modes: (1) a future refactor that allows multi-parent edges,
-   * (2) corrupted JSON where two records share an id and one points
-   * at itself. We exercise (2) here -- the duplicate-id record makes
-   * the children index fan a node back into its own subtree, which
-   * trips the visited-set guard on the second visit.
+   * Cycle detection: post-dedupe, each id has exactly one signed_by,
+   * which means childrenById can only fan a node into its own subtree
+   * via a self-loop record (signed_by===own id) reachable from a
+   * root. A self-loop record is also a non-root (signed_by !== null)
+   * so it is not visited from the roots loop; it is only reachable
+   * if another record is its parent. Construction:
+   *   root ---signed_by--- 'a' (signed_by: root)
+   * After dedupe with [{root}, {a, signed_by:root}, {a, signed_by:a}]:
+   *   byId = {root, a (signed_by:'a')}; roots = [root]; childrenById
+   *   = { a: [a] } (since a's signed_by === 'a').
+   * Recursion from root has no children of root in childrenById
+   * (a's signed_by is 'a' post-dedupe, not 'root'), so the cycle is
+   * unreachable and the builder returns cleanly. This documents that
+   * post-dedupe + single-parent makes reachable cycles structurally
+   * impossible; the throw guard inside buildSubtree is future-proofing
+   * for multi-parent schema changes.
    */
-  it('throws on a cycle in the signed_by chain', () => {
+  it('returns cleanly on a structurally-unreachable self-loop after dedupe', () => {
     const sharedIdInputs: PrincipalTreeInput[] = [
       { id: 'root', role: 'human', signed_by: null },
       { id: 'a', role: 'agent', signed_by: 'root' },
-      // Duplicate id `a` whose signed_by points at itself; the
-      // children index then has 'a' under 'a', so the recursion
-      // attempts to revisit `a` and the visited guard throws.
       { id: 'a', role: 'agent', signed_by: 'a' },
     ];
-    expect(() => buildPrincipalTree(sharedIdInputs)).toThrow(/cycle detected/);
+    // No-throw + the self-loop node is neither a root nor an orphan
+    // (its signed_by points at an existing id, itself). It's simply
+    // unreachable from any root, which the projection silently drops.
+    const r = buildPrincipalTree(sharedIdInputs);
+    expect(r.roots.map((n) => n.id)).toEqual(['root']);
+    expect(r.orphans).toEqual([]);
   });
 
   it('treats inactive: false principals as inactive in the projection', () => {

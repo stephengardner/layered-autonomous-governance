@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronRight, Shield, User, Bot, AlertOctagon, AlertTriangle } from 'lucide-react';
@@ -44,6 +44,48 @@ export function PrincipalTreeView() {
   // a filter to ActivitiesView). Lives at view scope rather than in
   // the router so the indication doesn't survive a route change.
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Open-state lives at the view level, keyed by node id, so an
+  // ancestor collapse-then-expand cycle does NOT lose deeper open
+  // state -- AnimatePresence unmounts the children container on exit
+  // and a component-local `useState` initialiser would re-seed every
+  // time the branch remounts. The Set survives child unmounts because
+  // it lives above AnimatePresence. Default-seeded lazily per node
+  // (`open` is computed from `node.depth <= 1` only when the node is
+  // first encountered); subsequent toggles are explicit.
+  const [openIds, setOpenIds] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const [explicitlyToggled, setExplicitlyToggled] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const isOpen = useCallback(
+    (node: PrincipalTreeNode) => {
+      if (explicitlyToggled.has(node.id)) return openIds.has(node.id);
+      // Default seed: roots and depth-1 are open so an org-scale tree
+      // (50+ principals) lands skimmable rather than wall-of-text on
+      // first paint.
+      return node.depth <= 1;
+    },
+    [openIds, explicitlyToggled],
+  );
+  const toggleOpen = useCallback(
+    (node: PrincipalTreeNode) => {
+      const currentlyOpen = explicitlyToggled.has(node.id)
+        ? openIds.has(node.id)
+        : node.depth <= 1;
+      const nextOpen = !currentlyOpen;
+      setOpenIds((prev) => {
+        const next = new Set(prev);
+        if (nextOpen) next.add(node.id);
+        else next.delete(node.id);
+        return next;
+      });
+      setExplicitlyToggled((prev) => {
+        if (prev.has(node.id)) return prev;
+        const next = new Set(prev);
+        next.add(node.id);
+        return next;
+      });
+    },
+    [openIds, explicitlyToggled],
+  );
 
   const summary = useMemo(() => {
     if (!query.data) return null;
@@ -105,9 +147,23 @@ export function PrincipalTreeView() {
               </span>
             </div>
           )}
+          {/*
+           * role="tree" was removed deliberately. The WAI-ARIA APG
+           * tree pattern mandates roving tabindex + arrow-key
+           * navigation + Home/End + typeahead. We don't implement
+           * those today; advertising role="tree" with only Tab-based
+           * navigation creates a spec-implementation mismatch for
+           * AT users. role="list" matches our actual semantics
+           * (linear, Tab-stop per node) and removes the contract
+           * gap. Full keyboard-tree support is a follow-up: when
+           * we add it, restore role="tree" + role="treeitem" +
+           * aria-expanded together. aria-expanded now lives on the
+           * chevron toggle button where the interactive state owner
+           * actually is.
+           */}
           <div
             className={styles.tree}
-            role="tree"
+            role="list"
             aria-label="Principal hierarchy"
             data-testid="principal-tree"
           >
@@ -117,6 +173,8 @@ export function PrincipalTreeView() {
                 node={root}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
+                isOpen={isOpen}
+                onToggleOpen={toggleOpen}
               />
             ))}
           </div>
@@ -130,21 +188,23 @@ function TreeBranch({
   node,
   selectedId,
   onSelect,
+  isOpen,
+  onToggleOpen,
 }: {
   node: PrincipalTreeNode;
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  isOpen: (node: PrincipalTreeNode) => boolean;
+  onToggleOpen: (node: PrincipalTreeNode) => void;
 }) {
   const hasChildren = node.children.length > 0;
-  // Default-expanded: roots and depth-1 nodes are open, deeper levels
-  // start collapsed so an org-scale tree (50+ principals) lands
-  // skimmable rather than wall-of-text on first paint.
-  const [open, setOpen] = useState(node.depth <= 1);
+  const open = isOpen(node);
   const isLeaf = !hasChildren;
   const selected = selectedId === node.id;
+  const childrenId = `principal-tree-children-${node.id}`;
 
   return (
-    <div className={styles.branch} role="none" data-depth={node.depth}>
+    <div className={styles.branch} role="listitem" data-depth={node.depth}>
       <div
         className={[
           styles.row,
@@ -153,10 +213,6 @@ function TreeBranch({
           !node.active ? styles.rowInactive : '',
           selected ? styles.rowSelected : '',
         ].filter(Boolean).join(' ')}
-        role="treeitem"
-        aria-level={node.depth + 1}
-        aria-expanded={hasChildren ? open : undefined}
-        aria-selected={selected || undefined}
         data-testid="principal-tree-node"
         data-principal-id={node.id}
         data-depth={node.depth}
@@ -168,8 +224,10 @@ function TreeBranch({
             type="button"
             className={styles.chevron}
             aria-label={open ? `Collapse ${node.id}` : `Expand ${node.id}`}
+            aria-expanded={open}
+            aria-controls={childrenId}
             data-testid="principal-tree-toggle"
-            onClick={() => setOpen((v) => !v)}
+            onClick={() => onToggleOpen(node)}
           >
             <motion.span
               animate={{ rotate: open ? 90 : 0 }}
@@ -191,20 +249,28 @@ function TreeBranch({
             if (isLeaf) {
               onSelect(selected ? null : node.id);
             } else {
-              setOpen((v) => !v);
+              onToggleOpen(node);
             }
           }}
           data-testid="principal-tree-row-body"
         >
+          {/*
+           * Inner content uses spans (phrasing content) rather than
+           * divs because <button> only accepts phrasing content per
+           * HTML5; nesting a <div> emits React hydration warnings and
+           * trips a11y validators. CSS modules drive the same layout
+           * via display:flex on .body / .headRow / .metaRow so the
+           * span-vs-div swap is visually invisible.
+           */}
           <span className={styles.icon} aria-hidden="true">
             <KindIcon kind={node.kind} />
           </span>
-          <div className={styles.body}>
-            <div className={styles.headRow}>
+          <span className={styles.body}>
+            <span className={styles.headRow}>
               <span className={styles.name}>{node.name}</span>
               <span className={styles.id}>{node.id}</span>
-            </div>
-            <div className={styles.metaRow}>
+            </span>
+            <span className={styles.metaRow}>
               <span className={styles.role}>{node.role}</span>
               <span className={styles.dot} aria-hidden="true">|</span>
               <span
@@ -230,20 +296,21 @@ function TreeBranch({
                   inactive
                 </span>
               )}
-            </div>
-          </div>
+            </span>
+          </span>
         </button>
       </div>
       <AnimatePresence initial={false}>
         {hasChildren && open && (
           <motion.div
             key="children"
+            id={childrenId}
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
             className={styles.children}
-            role="group"
+            role="list"
           >
             {node.children.map((child) => (
               <TreeBranch
@@ -251,6 +318,8 @@ function TreeBranch({
                 node={child}
                 selectedId={selectedId}
                 onSelect={onSelect}
+                isOpen={isOpen}
+                onToggleOpen={onToggleOpen}
               />
             ))}
           </motion.div>

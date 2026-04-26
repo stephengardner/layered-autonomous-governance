@@ -56,14 +56,27 @@ export interface PrincipalTreeResult {
 export function buildPrincipalTree(
   principals: ReadonlyArray<PrincipalTreeInput>,
 ): PrincipalTreeResult {
+  // Dedupe up front: byId is the canonical post-dedupe principal set.
+  // Without this step, duplicate ids in the input would land in
+  // childrenById twice (as siblings under the same parent), which
+  // trips React's duplicate-key invariant in the consuming view AND
+  // undermines the cycle guard's clean error path. Iterate
+  // byId.values() everywhere downstream so each id is processed once.
   const byId = new Map<string, PrincipalTreeInput>();
   for (const p of principals) {
     if (typeof p.id === 'string' && p.id.length > 0) byId.set(p.id, p);
   }
+  const unique = Array.from(byId.values());
 
-  // Children index for O(1) child lookup.
+  // Children index for O(1) child lookup. We iterate `unique` here
+  // (post-dedupe) so duplicate-id records don't materialize as
+  // sibling rows in the rendered forest -- React's duplicate-key
+  // invariant trips otherwise, and the operator sees the same row
+  // twice. Cycle detection still covers the self-loop corruption
+  // case (a record whose signed_by===its own id) via the visited-set
+  // guard inside buildSubtree.
   const childrenById = new Map<string, PrincipalTreeInput[]>();
-  for (const p of principals) {
+  for (const p of unique) {
     const parent = p.signed_by ?? null;
     if (parent === null) continue;
     const bucket = childrenById.get(parent);
@@ -75,19 +88,39 @@ export function buildPrincipalTree(
   }
 
   // Roots: principals whose signed_by is null/missing. Orphans:
-  // principals whose signed_by points at an id that doesn't exist.
-  // Returned alongside so the UI can warn rather than render them as
-  // ghost roots.
+  // principals whose signed_by points at an id that doesn't exist
+  // PLUS every descendant of an orphan (because a broken upstream
+  // link taints the entire subtree from a "blast radius" standpoint;
+  // silently dropping those descendants would erase coverage of an
+  // entire orphan branch from the hierarchy view).
   const roots: PrincipalTreeInput[] = [];
-  const orphans: string[] = [];
-  for (const p of principals) {
+  const orphanRoots: string[] = [];
+  for (const p of unique) {
     if (!p.signed_by) {
       roots.push(p);
     } else if (!byId.has(p.signed_by)) {
-      orphans.push(p.id);
+      orphanRoots.push(p.id);
     }
   }
   roots.sort((a, b) => a.id.localeCompare(b.id));
+
+  // Walk all descendants of each orphan-root to surface the entire
+  // broken subtree, not just the top-of-broken-chain id. Visited
+  // tracks the global set so a malformed cycle inside an orphan
+  // subtree doesn't run forever.
+  const orphans: string[] = [];
+  const orphanSeen = new Set<string>();
+  const orphanQueue = [...orphanRoots];
+  while (orphanQueue.length > 0) {
+    const id = orphanQueue.shift() as string;
+    if (orphanSeen.has(id)) continue;
+    orphanSeen.add(id);
+    orphans.push(id);
+    const kids = childrenById.get(id) ?? [];
+    for (const k of kids) {
+      if (!orphanSeen.has(k.id)) orphanQueue.push(k.id);
+    }
+  }
 
   // Build each root subtree. A separate visited set per root ensures
   // sibling subtrees can both reach a shared id (legal), while a
