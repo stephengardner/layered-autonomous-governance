@@ -1,53 +1,19 @@
-import { test, expect, devices } from '@playwright/test';
+import { test, expect } from '@playwright/test';
+import { skipUnlessMobile, gotoFirstCanon } from './_lib/mobile';
 
 /**
  * Mobile-first assertions for the canon-detail surface (/canon/<id>).
  *
- * Companion to principal-mobile.spec.ts and plans-mobile.spec.ts:
- * same canon discipline (`dev-web-mobile-first-required`), different
- * surface. The canon focus-mode renders one or more CanonCards; on a
- * 390px viewport the contract is no horizontal scroll, 44 CSS-pixel
- * tap targets on the controls an operator touches, and a
- * single-column flow.
+ * Companion to plans-mobile.spec.ts (and principal-mobile.spec.ts via
+ * PR #229): same canon discipline (`dev-web-mobile-first-required`),
+ * different surface. The canon focus-mode renders one or more
+ * CanonCards under a FocusBanner; on a 390px viewport the contract
+ * is no horizontal scroll, 44 CSS-pixel tap targets on the controls
+ * an operator touches, and a single-column flow.
  *
- * Each test runtime-skips on the chromium project so the spec stays
- * meaningful in the mobile project (iPhone 13) without producing
- * false negatives in the desktop project. The skipUnlessMobile helper
- * is duplicated locally; once principal-mobile.spec.ts lands (#229)
- * three specs hold the same helper definition and a follow-up PR
- * extracts to tests/e2e/_lib/mobile.ts per canon
- * `dev-extract-at-n-equals-2`.
+ * Helpers live in tests/e2e/_lib/mobile.ts (extracted at N=3 per
+ * canon `dev-extract-at-n-equals-2`).
  */
-
-const MOBILE_WIDTH = devices['iPhone 13'].viewport.width;
-
-function skipUnlessMobile(viewport: { width: number } | null | undefined): void {
-  // Fail-closed: unknown viewport defaults to skip, not run.
-  const width = viewport?.width ?? Number.POSITIVE_INFINITY;
-  test.skip(width > MOBILE_WIDTH, 'mobile-only assertion');
-}
-
-interface CanonRow {
-  readonly id: string;
-}
-
-/**
- * Discover a stable canon atom id at runtime via /api/canon.list so
- * the spec stays meaningful regardless of which fixtures the local
- * install ships. Skips cleanly when the store has no canon (fresh
- * install) so the spec never false-fails.
- */
-async function gotoFirstCanon(
-  page: import('@playwright/test').Page,
-  request: import('@playwright/test').APIRequestContext,
-): Promise<void> {
-  const res = await request.post('/api/canon.list', { data: {} });
-  expect(res.ok(), 'canon.list endpoint should return 200').toBe(true);
-  const body = await res.json();
-  const atoms: ReadonlyArray<CanonRow> = body?.data ?? body ?? [];
-  test.skip(atoms.length === 0, 'no canon atoms to focus');
-  await page.goto(`/canon/${encodeURIComponent(atoms[0]!.id)}`);
-}
 
 test.describe('canon-detail mobile surface', () => {
   test('focus-mode renders FocusBanner + CanonCard in single column', async ({ page, request, viewport }) => {
@@ -58,11 +24,12 @@ test.describe('canon-detail mobile surface', () => {
     /*
      * The canon focus mode renders the focused atom plus optional
      * supersession-chain context, so >= 1 canon-card is the right
-     * cardinality assertion (not exactly 1).
+     * cardinality assertion. Wait on first-card visibility BEFORE
+     * the cardinality assertion so render-race doesn't false-pass.
      */
     const cards = page.getByTestId('canon-card');
-    const cardCount = await cards.count();
-    expect(cardCount, 'canon focus mode must render at least one canon-card').toBeGreaterThanOrEqual(1);
+    await expect(cards.first()).toBeVisible({ timeout: 10_000 });
+    expect(await cards.count(), 'canon focus mode must render at least one canon-card').toBeGreaterThanOrEqual(1);
 
     const banner = page.getByTestId('focus-banner');
     const firstCard = cards.first();
@@ -70,7 +37,14 @@ test.describe('canon-detail mobile surface', () => {
     const cardBox = await firstCard.boundingBox();
     expect(bannerBox, 'focus-banner must be in the layout flow').not.toBeNull();
     expect(cardBox, 'canon-card must be in the layout flow').not.toBeNull();
-    expect(cardBox!.y, 'canon-card must stack below focus-banner').toBeGreaterThan(bannerBox!.y);
+    /*
+     * Stacking assertion: card top edge must be at or below the
+     * banner BOTTOM edge (banner.y + banner.height). A simple "card.y
+     * > banner.y" allows overlapping cards to pass; the bottom-edge
+     * comparison rules that out.
+     */
+    const bannerBottom = bannerBox!.y + bannerBox!.height;
+    expect(cardBox!.y, 'canon-card top must be below focus-banner bottom').toBeGreaterThanOrEqual(bannerBottom);
     /*
      * Center-x equality between the FocusBanner and the first
      * CanonCard proves they share the column; a regression that

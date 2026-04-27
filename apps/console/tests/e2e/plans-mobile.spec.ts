@@ -1,61 +1,19 @@
-import { test, expect, devices } from '@playwright/test';
+import { test, expect } from '@playwright/test';
+import { skipUnlessMobile, gotoFirstPlan } from './_lib/mobile';
 
 /**
  * Mobile-first assertions for the plans-detail surface (/plans/<id>).
  *
- * Companion to principal-mobile.spec.ts: same canon discipline
- * (`dev-web-mobile-first-required`), different surface. The plans
- * focus-mode renders a single PlanCard under a FocusBanner; on a
- * 390px viewport the contract is a single column, no horizontal
- * scroll, and 44 CSS-pixel tap targets on the controls an operator
- * touches.
+ * Companion to canon-mobile.spec.ts (and principal-mobile.spec.ts via
+ * PR #229): same canon discipline (`dev-web-mobile-first-required`),
+ * different surface. The plans focus-mode renders a single PlanCard
+ * under a FocusBanner; on a 390px viewport the contract is a single
+ * column, no horizontal scroll, and 44 CSS-pixel tap targets on the
+ * controls an operator touches.
  *
- * Each test runtime-skips on the chromium project so the spec stays
- * meaningful in the mobile project (iPhone 13) without producing
- * false negatives in the desktop project. Once principal-mobile
- * lands (#229), both specs duplicate the skipUnlessMobile helper:
- * that is the N=2 trigger for extraction into a shared test helper
- * (tests/e2e/_lib/mobile.ts) in a follow-up PR.
+ * Helpers live in tests/e2e/_lib/mobile.ts (extracted at N=3 per
+ * canon `dev-extract-at-n-equals-2` in the canon-mobile PR).
  */
-
-const MOBILE_WIDTH = devices['iPhone 13'].viewport.width;
-
-/**
- * Fail-closed default: when viewport is missing (e.g. a future
- * Playwright project that does not declare one), the safe choice is
- * SKIP, not run. Treat unknown viewport as wider-than-mobile so the
- * mobile-only assertion does not run against a desktop-shaped page
- * and produce false positives on tap-target/horizontal-scroll
- * checks.
- */
-function skipUnlessMobile(viewport: { width: number } | null | undefined): void {
-  const width = viewport?.width ?? Number.POSITIVE_INFINITY;
-  test.skip(width > MOBILE_WIDTH, 'mobile-only assertion');
-}
-
-interface PlanRow {
-  readonly id: string;
-}
-
-/**
- * Discover a real plan id at runtime so the spec stays meaningful
- * regardless of which fixtures the local install ships, then visit
- * /plans/<id>. Skips cleanly when the store is empty so a
- * fresh-install workflow does not false-fail. Per canon
- * `dev-extract-at-n-equals-2`: this block was duplicated in three
- * tests before extraction.
- */
-async function gotoFirstPlan(
-  page: import('@playwright/test').Page,
-  request: import('@playwright/test').APIRequestContext,
-): Promise<void> {
-  const res = await request.post('/api/plans.list', { data: {} });
-  expect(res.ok(), 'plans.list endpoint should return 200').toBe(true);
-  const body = await res.json();
-  const plans: ReadonlyArray<PlanRow> = body?.data ?? body ?? [];
-  test.skip(plans.length === 0, 'no plans to focus');
-  await page.goto(`/plans/${encodeURIComponent(plans[0]!.id)}`);
-}
 
 test.describe('plans-detail mobile surface', () => {
   test('focus-mode renders FocusBanner + PlanCard in single column', async ({ page, request, viewport }) => {
@@ -78,7 +36,14 @@ test.describe('plans-detail mobile surface', () => {
     const cardBox = await card.boundingBox();
     expect(bannerBox, 'focus-banner must be in the layout flow').not.toBeNull();
     expect(cardBox, 'plan-card must be in the layout flow').not.toBeNull();
-    expect(cardBox!.y, 'plan-card must stack below focus-banner').toBeGreaterThan(bannerBox!.y);
+    /*
+     * Stacking assertion: card top edge must be at or below the
+     * banner BOTTOM edge (banner.y + banner.height). A simple
+     * "card.y > banner.y" allows overlapping cards to pass; the
+     * bottom-edge comparison rules that out.
+     */
+    const bannerBottom = bannerBox!.y + bannerBox!.height;
+    expect(cardBox!.y, 'plan-card top must be below focus-banner bottom').toBeGreaterThanOrEqual(bannerBottom);
     const centerX = (b: { x: number; width: number }) => Math.round(b.x + b.width / 2);
     expect(
       Math.abs(centerX(cardBox!) - centerX(bannerBox!)),
