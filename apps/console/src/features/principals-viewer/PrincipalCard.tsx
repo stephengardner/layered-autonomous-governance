@@ -48,6 +48,22 @@ export function PrincipalCard({ principal, focused = false, stats }: Props) {
   const initials = initialsOf(principal.name || principal.id);
 
   /*
+   * Per-principal atom-count chips. flatMap collapses the
+   * "compute count -> filter zeros" into one pass without producing
+   * the null-padded map + type-predicate filter dance. Render gate
+   * lives on the resulting array length so an empty <div> can never
+   * leak into the DOM.
+   */
+  const visibleStatChips = stats
+    ? SURFACED_TYPES.flatMap(({ key, singular, plural }) => {
+      const count = stats.by_type[key] ?? 0;
+      return count === 0
+        ? []
+        : [{ key, label: formatStatLabel(count, singular, plural) }];
+    })
+    : [];
+
+  /*
    * Delegated click: clicking whitespace/text in the card navigates to
    * focus mode. Clicks on interactive descendants (buttons, links,
    * code in pre, form controls) fall through. Text selection is
@@ -118,35 +134,15 @@ export function PrincipalCard({ principal, focused = false, stats }: Props) {
         )}
       </div>
 
-      {(() => {
-        /*
-         * Render-time subset filter: gate on the renderable types
-         * (plan / observation / decision) having a non-zero count,
-         * not on stats.total. A principal whose live atoms are all
-         * non-surfaced types (e.g. only directives or only
-         * actor-messages) would pass a stats.total > 0 gate but
-         * produce an empty <div>. Computing the visible chips up
-         * front makes the empty-strip case unrepresentable.
-         */
-        if (!stats) return null;
-        const visibleChips = SURFACED_TYPES
-          .map(({ key, singular, plural }) => {
-            const count = stats.by_type[key] ?? 0;
-            if (count === 0) return null;
-            return { key, label: formatStatLabel(count, singular, plural) };
-          })
-          .filter((chip): chip is { key: string; label: string } => chip !== null);
-        if (visibleChips.length === 0) return null;
-        return (
-          <div className={styles.stats} data-testid="principal-card-stats">
-            {visibleChips.map(({ key, label }) => (
-              <span key={key} className={styles.statChip} data-stat-type={key}>
-                {label}
-              </span>
-            ))}
-          </div>
-        );
-      })()}
+      {visibleStatChips.length > 0 && (
+        <div className={styles.stats} data-testid="principal-card-stats">
+          {visibleStatChips.map(({ key, label }) => (
+            <span key={key} className={styles.statChip} data-stat-type={key}>
+              {label}
+            </span>
+          ))}
+        </div>
+      )}
 
       <button
         type="button"
