@@ -27,6 +27,19 @@ export interface AggregateContextOptions {
   readonly maxOpenPlans?: number;
   /** Max relevant principals. Default 20. */
   readonly maxPrincipals?: number;
+  /**
+   * Principal whose own recent atoms (plans, decisions, observations)
+   * should be folded into the planning context as `selfContext`. When
+   * unset, selfContext is empty and the planner runs as before
+   * (backwards-compat default).
+   *
+   * The substrate seam for "principals remember themselves across
+   * time": the cheap path is atoms-as-memory (this option), the
+   * deeper path is agent-loop session resume (separate work).
+   */
+  readonly selfPrincipalId?: PrincipalId;
+  /** Max self-context atoms to include. Default 30. */
+  readonly maxSelfContext?: number;
 }
 
 export async function aggregateRelevantContext(
@@ -96,6 +109,52 @@ export async function aggregateRelevantContext(
     signed_by: p.signed_by,
   }));
 
+  /*
+   * 6. Self-context: the requesting principal's own recent plans +
+   *    decisions + observations. The planner consumes this so its
+   *    judgment is grounded in "what I have already proposed /
+   *    decided / noticed." Empty when no selfPrincipalId is given so
+   *    historical callers see no behavior change.
+   *
+   *    Sort by created_at desc (newest first) so the slice keeps the
+   *    freshest context. We pull plans, decisions, and observations
+   *    -- the atom types most predictive of "what was on this
+   *    principal's mind recently."
+   */
+  const selfPrincipalId = options.selfPrincipalId;
+  const maxSelfContext = options.maxSelfContext ?? 30;
+  let selfContext: Atom[] = [];
+  if (selfPrincipalId) {
+    /*
+     * Push the principal_id filter into the AtomFilter so the store
+     * returns only this principal's atoms (not every plan/decision/
+     * observation in the org). At org-ceiling 50+ actors this is the
+     * difference between fetching 1000 atoms and fetching 30.
+     */
+    const selfPage = await host.atoms.query(
+      {
+        type: ['plan', 'decision', 'observation'],
+        principal_id: [selfPrincipalId],
+      },
+      maxSelfContext * 2, // small headroom for superseded/tainted drops below
+    );
+    selfContext = selfPage.atoms
+      .filter((a) => !a.superseded_by || a.superseded_by.length === 0)
+      /*
+       * Drop tainted atoms. selfContext is inlined verbatim into the
+       * LLM judge prompt; feeding compromised content through there
+       * would risk a tainted-self-influence loop where a compromised
+       * past plan steers the next plan back toward the same drift.
+       * Per inv-taint-propagates, descendants of a compromised root
+       * inherit; the per-atom taint field captures both 'compromised'
+       * (this atom) and 'inherited' (ancestor compromised), and we
+       * only feed clean atoms forward.
+       */
+      .filter((a) => a.taint === 'clean')
+      .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
+      .slice(0, maxSelfContext);
+  }
+
   return {
     request,
     directives,
@@ -103,6 +162,7 @@ export async function aggregateRelevantContext(
     relevantAtoms,
     openPlans,
     relevantPrincipals,
+    selfContext,
     gatheredAt: host.clock.now(),
   };
 }

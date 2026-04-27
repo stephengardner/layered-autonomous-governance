@@ -333,6 +333,20 @@ async function main() {
   const actor = new PlanningActor({
     request: args.request,
     judgment,
+    /*
+     * Self-context pre-pass: thread this principal's recent plans /
+     * decisions / observations into the planning context. The
+     * aggregator filters atoms.principal_id, sorts created_at desc,
+     * caps at maxSelfContext (default 30). The judgment template
+     * surfaces them as `self_context` so the LLM sees "your prior
+     * work" alongside canon and relevant atoms.
+     *
+     * This is the indie-floor seam for "principals remember
+     * themselves across time" -- atoms-as-memory, no agent-loop
+     * session resume required. The deeper session-resume path is
+     * sequenced separately on the org-ceiling roadmap.
+     */
+    aggregate: { selfPrincipalId: principal.id },
     originatingQuestion: {
       id: questionAtom.id,
       prompt: args.request,

@@ -280,6 +280,16 @@ async function main() {
   const actor = new PlanningActor({
     request: args.request,
     judgment,
+    /*
+     * Self-context pre-pass: thread this principal's recent plans /
+     * decisions / observations into the planning context (same
+     * mechanism as run-cto-actor.mjs). The CPO sees its own prior
+     * work alongside canon, so its product-lens judgment is grounded
+     * in 'what I have already proposed / decided'. Default cap is
+     * maxSelfContext=30; tune in the aggregator if a CPO ever
+     * accumulates more relevant history than that.
+     */
+    aggregate: { selfPrincipalId: principal.id },
     originatingQuestion: {
       id: questionAtom.id,
       prompt: args.request,
