@@ -42,10 +42,12 @@
    * Tap-target floor per canon `dev-web-mobile-first-required`:
    * 44x44 CSS pixels, applied unconditionally so desktop and mobile
    * stay consistent. The padding bump (--space-1 -> --space-2 vert)
-   * keeps the visual weight balanced against the new floor.
+   * keeps the visual weight balanced against the new floor. The
+   * literal value lives in tokens.css as --size-touch-target-min so
+   * it stays a one-edit knob if the floor moves.
    */
-  min-height: 44px;
-  min-width: 44px;
+  min-height: var(--size-touch-target-min);
+  min-width: var(--size-touch-target-min);
   transition: background var(--duration-fast) var(--easing-standard),
               color var(--duration-fast) var(--easing-standard);
 }

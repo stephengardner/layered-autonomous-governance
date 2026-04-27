@@ -53,6 +53,27 @@ test.describe('principal-detail mobile surface', () => {
     const activityContent = page.getByTestId('principal-activity-content');
     const activityEmpty = page.getByTestId('principal-activity-empty');
     await expect(activityContent.or(activityEmpty)).toBeVisible({ timeout: 15_000 });
+
+    /*
+     * Single-column assertion: at 390px the principal panels MUST
+     * stack vertically. We verify by sampling the bounding boxes of
+     * the three load-bearing testids (card, skill, activity) and
+     * asserting their top-edges are strictly increasing -- if any two
+     * shared a row, two would have the same y. The card may render in
+     * any of the focus-mode load states, so we resolve which of
+     * skill/activity surfaced (content vs empty) before measuring.
+     */
+    const card = page.getByTestId('principal-card');
+    const skill = (await skillContent.count()) > 0 ? skillContent : skillEmpty;
+    const activity = (await activityContent.count()) > 0 ? activityContent : activityEmpty;
+    const cardBox = await card.boundingBox();
+    const skillBox = await skill.boundingBox();
+    const activityBox = await activity.boundingBox();
+    expect(cardBox, 'card must be in the layout flow').not.toBeNull();
+    expect(skillBox, 'skill panel must be in the layout flow').not.toBeNull();
+    expect(activityBox, 'activity panel must be in the layout flow').not.toBeNull();
+    expect(skillBox!.y, 'skill panel must stack below card').toBeGreaterThan(cardBox!.y);
+    expect(activityBox!.y, 'activity panel must stack below skill').toBeGreaterThan(skillBox!.y);
   });
 
   test('no horizontal scroll at mobile viewport width', async ({ page, viewport }) => {
@@ -114,6 +135,7 @@ test.describe('principal-detail mobile surface', () => {
     const first = items.first();
     const box = await first.boundingBox();
     expect(box, 'first activity entry must be in the layout flow').not.toBeNull();
+    expect(box!.width, `entry width=${box!.width} below 44px tap floor`).toBeGreaterThanOrEqual(44);
     expect(box!.height, `entry height=${box!.height} below 44px tap floor`).toBeGreaterThanOrEqual(44);
   });
 });
