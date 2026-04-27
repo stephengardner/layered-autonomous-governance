@@ -30,15 +30,34 @@ export function skipUnlessMobile(viewport: { width: number } | null | undefined)
 }
 
 /**
+ * Validate the API envelope and extract the array. The console
+ * server returns either `{ ok: true, data: [...] }` or a bare array
+ * (legacy shape); anything else is an envelope error and must not
+ * be indexed into. Returns the array or null on shape mismatch.
+ */
+function extractIdArray(body: unknown): ReadonlyArray<{ id: string }> | null {
+  if (Array.isArray(body)) return body as ReadonlyArray<{ id: string }>;
+  if (body && typeof body === 'object' && 'data' in body) {
+    const data = (body as { data: unknown }).data;
+    if (Array.isArray(data)) return data as ReadonlyArray<{ id: string }>;
+  }
+  return null;
+}
+
+/**
  * Discover the first plan id at runtime via /api/plans.list and
  * navigate to /plans/<id>. Skips cleanly when the store is empty
- * so a fresh-install workflow does not false-fail.
+ * so a fresh-install workflow does not false-fail. Validates the
+ * envelope shape so an error response never gets indexed into.
  */
 export async function gotoFirstPlan(page: Page, request: APIRequestContext): Promise<void> {
   const res = await request.post('/api/plans.list', { data: {} });
   expect(res.ok(), 'plans.list endpoint should return 200').toBe(true);
-  const body = await res.json();
-  const plans: ReadonlyArray<{ id: string }> = body?.data ?? body ?? [];
+  const body = (await res.json()) as unknown;
+  const plans = extractIdArray(body);
+  if (plans === null) {
+    throw new Error(`plans.list returned a non-array payload: ${JSON.stringify(body).slice(0, 200)}`);
+  }
   test.skip(plans.length === 0, 'no plans to focus');
   await page.goto(`/plans/${encodeURIComponent(plans[0]!.id)}`);
 }
@@ -46,12 +65,17 @@ export async function gotoFirstPlan(page: Page, request: APIRequestContext): Pro
 /**
  * Discover the first canon atom id at runtime via /api/canon.list
  * and navigate to /canon/<id>. Skips cleanly when canon is empty.
+ * Validates the envelope shape so an error response never gets
+ * indexed into.
  */
 export async function gotoFirstCanon(page: Page, request: APIRequestContext): Promise<void> {
   const res = await request.post('/api/canon.list', { data: {} });
   expect(res.ok(), 'canon.list endpoint should return 200').toBe(true);
-  const body = await res.json();
-  const atoms: ReadonlyArray<{ id: string }> = body?.data ?? body ?? [];
+  const body = (await res.json()) as unknown;
+  const atoms = extractIdArray(body);
+  if (atoms === null) {
+    throw new Error(`canon.list returned a non-array payload: ${JSON.stringify(body).slice(0, 200)}`);
+  }
   test.skip(atoms.length === 0, 'no canon atoms to focus');
   await page.goto(`/canon/${encodeURIComponent(atoms[0]!.id)}`);
 }
