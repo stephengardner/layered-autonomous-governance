@@ -20,33 +20,47 @@ import { test, expect, devices } from '@playwright/test';
 
 const MOBILE_WIDTH = devices['iPhone 13'].viewport.width;
 
+/**
+ * Fail-closed default: when viewport is missing (e.g. a future
+ * Playwright project that does not declare one), the safe choice is
+ * SKIP, not run. Treat unknown viewport as wider-than-mobile so the
+ * mobile-only assertion does not run against a desktop-shaped page
+ * and produce false positives on tap-target/horizontal-scroll
+ * checks.
+ */
 function skipUnlessMobile(viewport: { width: number } | null | undefined): void {
-  test.skip((viewport?.width ?? 0) > MOBILE_WIDTH, 'mobile-only assertion');
+  const width = viewport?.width ?? Number.POSITIVE_INFINITY;
+  test.skip(width > MOBILE_WIDTH, 'mobile-only assertion');
 }
 
 interface PlanRow {
   readonly id: string;
 }
 
+/**
+ * Discover a real plan id at runtime so the spec stays meaningful
+ * regardless of which fixtures the local install ships, then visit
+ * /plans/<id>. Skips cleanly when the store is empty so a
+ * fresh-install workflow does not false-fail. Per canon
+ * `dev-extract-at-n-equals-2`: this block was duplicated in three
+ * tests before extraction.
+ */
+async function gotoFirstPlan(
+  page: import('@playwright/test').Page,
+  request: import('@playwright/test').APIRequestContext,
+): Promise<void> {
+  const res = await request.post('/api/plans.list', { data: {} });
+  expect(res.ok(), 'plans.list endpoint should return 200').toBe(true);
+  const body = await res.json();
+  const plans: ReadonlyArray<PlanRow> = body?.data ?? body ?? [];
+  test.skip(plans.length === 0, 'no plans to focus');
+  await page.goto(`/plans/${encodeURIComponent(plans[0]!.id)}`);
+}
+
 test.describe('plans-detail mobile surface', () => {
   test('focus-mode renders FocusBanner + PlanCard in single column', async ({ page, request, viewport }) => {
     skipUnlessMobile(viewport);
-
-    /*
-     * Discover a real plan id at runtime so the spec stays meaningful
-     * regardless of which fixtures the local install ships. /plans
-     * always exposes at least one plan once the CTO has run; we skip
-     * cleanly when the store is empty so a fresh-install workflow
-     * doesn't false-fail.
-     */
-    const res = await request.post('/api/plans.list', { data: {} });
-    expect(res.ok(), 'plans.list endpoint should return 200').toBe(true);
-    const body = await res.json();
-    const plans: ReadonlyArray<PlanRow> = body?.data ?? body ?? [];
-    test.skip(plans.length === 0, 'no plans to focus');
-
-    const targetId = plans[0]!.id;
-    await page.goto(`/plans/${encodeURIComponent(targetId)}`);
+    await gotoFirstPlan(page, request);
 
     await expect(page.getByTestId('focus-banner')).toBeVisible({ timeout: 10_000 });
     await expect(page.getByTestId('plan-card')).toHaveCount(1);
@@ -74,13 +88,7 @@ test.describe('plans-detail mobile surface', () => {
 
   test('no horizontal scroll at mobile viewport width', async ({ page, request, viewport }) => {
     skipUnlessMobile(viewport);
-
-    const res = await request.post('/api/plans.list', { data: {} });
-    const body = await res.json();
-    const plans: ReadonlyArray<PlanRow> = body?.data ?? body ?? [];
-    test.skip(plans.length === 0, 'no plans to focus');
-
-    await page.goto(`/plans/${encodeURIComponent(plans[0]!.id)}`);
+    await gotoFirstPlan(page, request);
     await expect(page.getByTestId('plan-card')).toBeVisible({ timeout: 10_000 });
 
     /*
@@ -100,13 +108,7 @@ test.describe('plans-detail mobile surface', () => {
 
   test('Clear-focus button meets 44px tap-target minimum', async ({ page, request, viewport }) => {
     skipUnlessMobile(viewport);
-
-    const res = await request.post('/api/plans.list', { data: {} });
-    const body = await res.json();
-    const plans: ReadonlyArray<PlanRow> = body?.data ?? body ?? [];
-    test.skip(plans.length === 0, 'no plans to focus');
-
-    await page.goto(`/plans/${encodeURIComponent(plans[0]!.id)}`);
+    await gotoFirstPlan(page, request);
     await expect(page.getByTestId('focus-banner')).toBeVisible({ timeout: 10_000 });
 
     /*
