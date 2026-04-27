@@ -105,8 +105,7 @@ test.describe('principal-detail mobile surface', () => {
   });
 
   test('no horizontal scroll at mobile viewport width', async ({ page, viewport }) => {
-    const width = viewport?.width ?? 0;
-    test.skip(width > MOBILE_WIDTH, 'mobile-only assertion');
+    skipUnlessMobile(viewport);
 
     /*
      * documentElement.scrollWidth > clientWidth is the canonical
