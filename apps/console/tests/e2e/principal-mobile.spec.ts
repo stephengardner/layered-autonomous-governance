@@ -22,6 +22,16 @@ import { test, expect, devices } from '@playwright/test';
 
 const MOBILE_WIDTH = devices['iPhone 13'].viewport.width;
 
+/*
+ * Per canon `dev-extract-at-n-equals-2`: the mobile-only guard
+ * appears in every assertion in this file, so it lives behind a
+ * named helper. Adding a fifth mobile assertion stays a one-line
+ * change instead of another copy of the inline expression.
+ */
+function skipUnlessMobile(viewport: { width: number } | null | undefined): void {
+  test.skip((viewport?.width ?? 0) > MOBILE_WIDTH, 'mobile-only assertion');
+}
+
 test.describe('principal-detail mobile surface', () => {
   test.beforeEach(async ({ page }) => {
     /*
@@ -35,7 +45,7 @@ test.describe('principal-detail mobile surface', () => {
   });
 
   test('renders FocusBanner + card + skill + activity panels in single column', async ({ page, viewport }) => {
-    test.skip((viewport?.width ?? 0) > MOBILE_WIDTH, 'mobile-only assertion');
+    skipUnlessMobile(viewport);
 
     /*
      * Each panel must be present. The skill / activity panels each
@@ -56,12 +66,14 @@ test.describe('principal-detail mobile surface', () => {
 
     /*
      * Single-column assertion: at 390px the principal panels MUST
-     * stack vertically. We verify by sampling the bounding boxes of
-     * the three load-bearing testids (card, skill, activity) and
-     * asserting their top-edges are strictly increasing -- if any two
-     * shared a row, two would have the same y. The card may render in
-     * any of the focus-mode load states, so we resolve which of
-     * skill/activity surfaced (content vs empty) before measuring.
+     * stack vertically AND share a column. We verify both: top-edge
+     * ordering (card -> skill -> activity y values strictly increase)
+     * proves vertical sequence, and center-x equality within ±2px
+     * proves they share the same column rather than rendering as
+     * separate columns that happen to be ordered top-to-bottom.
+     * The card may render in any of the focus-mode load states, so
+     * we resolve which of skill/activity surfaced (content vs empty)
+     * before measuring.
      */
     const card = page.getByTestId('principal-card');
     const skill = (await skillContent.count()) > 0 ? skillContent : skillEmpty;
@@ -74,6 +86,22 @@ test.describe('principal-detail mobile surface', () => {
     expect(activityBox, 'activity panel must be in the layout flow').not.toBeNull();
     expect(skillBox!.y, 'skill panel must stack below card').toBeGreaterThan(cardBox!.y);
     expect(activityBox!.y, 'activity panel must stack below skill').toBeGreaterThan(skillBox!.y);
+    /*
+     * Center-x comparison defends against a regression where a panel
+     * floats into a side-by-side column at the same vertical band as
+     * its predecessor; the y-ordering test would still pass but the
+     * single-column contract would silently break.
+     */
+    const centerX = (b: { x: number; width: number }) => Math.round(b.x + b.width / 2);
+    const cardCx = centerX(cardBox!);
+    expect(
+      Math.abs(centerX(skillBox!) - cardCx),
+      'skill panel must share the card column on mobile',
+    ).toBeLessThanOrEqual(2);
+    expect(
+      Math.abs(centerX(activityBox!) - cardCx),
+      'activity panel must share the card column on mobile',
+    ).toBeLessThanOrEqual(2);
   });
 
   test('no horizontal scroll at mobile viewport width', async ({ page, viewport }) => {
@@ -96,7 +124,7 @@ test.describe('principal-detail mobile surface', () => {
   });
 
   test('Clear-focus button meets 44px tap-target minimum', async ({ page, viewport }) => {
-    test.skip((viewport?.width ?? 0) > MOBILE_WIDTH, 'mobile-only assertion');
+    skipUnlessMobile(viewport);
 
     /*
      * FocusBanner exposes a clear-focus action; the operator taps it
@@ -120,7 +148,7 @@ test.describe('principal-detail mobile surface', () => {
   });
 
   test('activity-entry buttons (when present) meet 44px tap-target minimum', async ({ page, viewport }) => {
-    test.skip((viewport?.width ?? 0) > MOBILE_WIDTH, 'mobile-only assertion');
+    skipUnlessMobile(viewport);
 
     /*
      * If the principal has activity, the feed renders clickable

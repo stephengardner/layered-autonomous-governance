@@ -56,3 +56,17 @@
   background: var(--surface-hover);
   color: var(--text-primary);
 }
+
+/*
+ * Keyboard-visible focus per canon `dev-web-app-grade-interactions`
+ * ('hover and focus-visible states exist on every interactive
+ * element'). Mirrors hover state so the visual treatment matches what
+ * the operator already learned from mouse interaction, plus an
+ * explicit outline for unmistakable keyboard cues.
+ */
+.clear:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
