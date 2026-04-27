@@ -101,4 +101,19 @@ describe('parseResolveArgs', () => {
   it('handles empty argv (caller surfaces missing-pr error itself)', () => {
     expect(parseResolveArgs([])).toEqual({ pr: null, dryRun: false, help: false, error: null });
   });
+
+  it('rejects repeated --dry-run loud rather than silently accepting', () => {
+    /*
+     * Symmetric with the duplicate-PR guard: blind argv-forwarding by a
+     * caller (run-pr-fix.mjs / run-pr-landing.mjs / future actors)
+     * should not mask a programming bug as silently-idempotent.
+     */
+    const r = parseResolveArgs(['229', '--dry-run', '--dry-run']);
+    expect(r.error).toMatch(/multiple --dry-run/);
+  });
+
+  it('rejects repeated --help loud rather than silently accepting', () => {
+    const r = parseResolveArgs(['--help', '--help']);
+    expect(r.error).toMatch(/multiple --help/);
+  });
 });

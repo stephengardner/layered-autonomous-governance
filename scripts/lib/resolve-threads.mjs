@@ -81,8 +81,16 @@ export function parseResolveArgs(argv) {
   const out = { pr: null, dryRun: false, help: false, error: null };
   for (const a of argv) {
     if (a === '--dry-run') {
+      if (out.dryRun) {
+        out.error = `multiple --dry-run flags provided; pass at most one`;
+        return out;
+      }
       out.dryRun = true;
     } else if (a === '--help' || a === '-h') {
+      if (out.help) {
+        out.error = `multiple --help flags provided; pass at most one`;
+        return out;
+      }
       out.help = true;
     } else if (/^\d+$/.test(a)) {
       if (out.pr !== null) {

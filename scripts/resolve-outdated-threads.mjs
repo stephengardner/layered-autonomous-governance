@@ -8,34 +8,24 @@
  * anchored line changed) but stays in the unresolved bucket until
  * someone explicitly marks it resolved via the API.
  *
- * Multiple PRs this session (#229, #234) stalled with all CI green
- * + reviewDecision empty + mergeStateStatus=BLOCKED purely because
- * outdated threads were left unresolved. The operator flagged this
- * 2026-04-27: "this should never happen again."
- *
- * Concrete fix: this script lists review threads on the given PR via
- * GraphQL, classifies them via classifyReviewThreads, and resolves
- * the outdated-and-unresolved bucket. Threads still anchored to live
- * code (unresolved + not outdated) are LEFT alone -- those need a
- * human (or a CR-side acknowledgement) because the suggestion may
- * still apply.
- *
- * Pre-merge integration: PR-authoring agent flows (run-pr-fix,
- * run-pr-landing, agent-direct fix-pushes) call this after each
- * fix-push so the merge gate clears as soon as CI does.
+ * Lists review threads on the given PR via GraphQL, classifies them
+ * via classifyReviewThreads, and resolves the outdated-and-unresolved
+ * bucket. Threads still anchored to live code (unresolved + not
+ * outdated) are left alone -- those still need a human (or a CR-side
+ * acknowledgement) because the suggestion may still apply.
  *
  * Usage:
  *   node scripts/resolve-outdated-threads.mjs <pr-number> [--dry-run]
  *
  * Identity: routes through gh-as.mjs lag-ceo so the resolution is
- * attributed to the operator-proxy bot, per canon
- * `dev-bot-identity-mandatory-for-github-actions`. The machine user
- * (LAG_OPS_PAT) is reserved for CR triggers; thread resolution is a
- * routine PR action.
+ * attributed to the operator-proxy bot. The machine user (LAG_OPS_PAT)
+ * is reserved for CR triggers; thread resolution is a routine PR
+ * action.
  *
  * Repo identity: derived from `gh repo view --json nameWithOwner` so
- * a forked LAG (small-team / org consumer) can run this without
- * editing source. Falls through cleanly when gh-as is not configured.
+ * a forked LAG can run this without editing source. The gh-as
+ * sub-call throws if gh-as is not configured for the lag-ceo role; the
+ * caller sees a non-zero exit with the underlying error.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -53,6 +43,15 @@ const RESOLVE_MUTATION = `mutation($id:ID!){
     thread{ id isResolved }
   }
 }`;
+
+/*
+ * Cap on pagination iterations. A theoretical-only safety net: if the
+ * server ever returns hasNextPage=true with an unchanged endCursor (or
+ * keeps returning hasNextPage=true past any reasonable count) the loop
+ * exits with a logged warning rather than spinning forever inside an
+ * actor flow.
+ */
+const MAX_PAGES = 50;
 
 function ghApi(extraArgs) {
   return execFileSync('node', [resolve(REPO_ROOT, 'scripts/gh-as.mjs'), 'lag-ceo', 'api', ...extraArgs], {
@@ -113,20 +112,41 @@ async function main() {
    * Paginate to avoid silent truncation on PRs with more than 100
    * review threads. A truncated read could leave outdated threads
    * unresolved, which is exactly the merge-gate failure this script
-   * exists to prevent.
+   * exists to prevent. MAX_PAGES + same-cursor detection bound the
+   * loop against pathological server responses.
    */
   const allThreads = [];
   let cursor = null;
-  while (true) {
+  let pageCount = 0;
+  let truncated = false;
+  while (pageCount < MAX_PAGES) {
     const queryArgs = ['graphql', '-f', `query=${LIST_QUERY}`, '-F', `n=${parsed.pr}`];
     if (cursor !== null) queryArgs.push('-f', `cursor=${cursor}`);
     const listOut = ghApi(queryArgs);
     const data = JSON.parse(listOut);
+    if (Array.isArray(data?.errors) && data.errors.length > 0) {
+      console.error(
+        `[resolve-outdated-threads] GraphQL errors on pr=${parsed.pr}:`,
+        JSON.stringify(data.errors, null, 2),
+      );
+      process.exit(1);
+    }
     const page = data?.data?.repository?.pullRequest?.reviewThreads;
     if (!page) break;
     if (Array.isArray(page.nodes)) allThreads.push(...page.nodes);
     if (!page.pageInfo?.hasNextPage) break;
-    cursor = page.pageInfo.endCursor;
+    const nextCursor = page.pageInfo.endCursor;
+    if (nextCursor === cursor) {
+      console.error(`[resolve-outdated-threads] cursor stuck at ${cursor}; aborting pagination`);
+      truncated = true;
+      break;
+    }
+    cursor = nextCursor;
+    pageCount += 1;
+  }
+  if (pageCount >= MAX_PAGES) {
+    console.error(`[resolve-outdated-threads] hit MAX_PAGES=${MAX_PAGES}; threads may be truncated`);
+    truncated = true;
   }
 
   const { resolveTargets, stillCurrent, alreadyResolved } = classifyReviewThreads(allThreads);
@@ -134,6 +154,7 @@ async function main() {
     `[resolve-outdated-threads] pr=${parsed.pr} repo=${nwo} total=${allThreads.length} ` +
     `outdated=${resolveTargets.length} still-current=${stillCurrent.length} ` +
     `already-resolved=${alreadyResolved.length}` +
+    (truncated ? ' (TRUNCATED)' : '') +
     (parsed.dryRun ? ' (DRY-RUN)' : ''),
   );
   for (const t of stillCurrent) {
@@ -156,6 +177,13 @@ async function main() {
       '-f', `id=${t.id}`,
     ]);
     const r = JSON.parse(out);
+    if (Array.isArray(r?.errors) && r.errors.length > 0) {
+      console.error(
+        `    -> GraphQL errors resolving ${t.id}:`,
+        JSON.stringify(r.errors, null, 2),
+      );
+      process.exit(1);
+    }
     const ok = r?.data?.resolveReviewThread?.thread?.isResolved === true;
     console.log(`    -> isResolved=${ok}`);
     if (!ok) {
