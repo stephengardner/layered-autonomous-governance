@@ -125,13 +125,32 @@ export async function aggregateRelevantContext(
   const maxSelfContext = options.maxSelfContext ?? 30;
   let selfContext: Atom[] = [];
   if (selfPrincipalId) {
+    /*
+     * Push the principal_id filter into the AtomFilter so the store
+     * returns only this principal's atoms (not every plan/decision/
+     * observation in the org). At org-ceiling 50+ actors this is the
+     * difference between fetching 1000 atoms and fetching 30.
+     */
     const selfPage = await host.atoms.query(
-      { type: ['plan', 'decision', 'observation'] },
-      Math.max(maxSelfContext * 4, 100),
+      {
+        type: ['plan', 'decision', 'observation'],
+        principal_id: [selfPrincipalId],
+      },
+      maxSelfContext * 2, // small headroom for superseded/tainted drops below
     );
     selfContext = selfPage.atoms
-      .filter((a) => a.principal_id === selfPrincipalId)
       .filter((a) => !a.superseded_by || a.superseded_by.length === 0)
+      /*
+       * Drop tainted atoms. selfContext is inlined verbatim into the
+       * LLM judge prompt; feeding compromised content through there
+       * would risk a tainted-self-influence loop where a compromised
+       * past plan steers the next plan back toward the same drift.
+       * Per inv-taint-propagates, descendants of a compromised root
+       * inherit; the per-atom taint field captures both 'compromised'
+       * (this atom) and 'inherited' (ancestor compromised), and we
+       * only feed clean atoms forward.
+       */
+      .filter((a) => a.taint === 'clean')
       .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
       .slice(0, maxSelfContext);
   }
