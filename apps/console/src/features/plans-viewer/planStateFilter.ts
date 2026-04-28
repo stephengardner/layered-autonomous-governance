@@ -5,8 +5,8 @@
  * 60+ plans across a long session that surface drowns in failed and
  * stale-proposed atoms, which an operator reads as "the system is
  * broken" even when the work shipped. The fix is a render-time bucket
- * filter that defaults to a clean active surface, with explicit chips
- * for the closed buckets so anything filtered remains one click away.
+ * filter with explicit chips so anything filtered remains one click
+ * away; the default bucket is documented near DEFAULT_PLAN_FILTER below.
  *
  * Buckets follow operator mental model rather than the substrate
  * vocabulary one-to-one:
