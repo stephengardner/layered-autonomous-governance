@@ -41,9 +41,15 @@ describe('buildOperatorSessionAtom', () => {
     expect(atom.metadata.agent_session.adapter_id).toBe('claude-code-operator-hook');
   });
 
-  it('records human-asserted provenance with the session_id in source', () => {
+  it('records user-directive provenance with the session_id in source', () => {
+    /*
+     * Pin the canonical ProvenanceKind value so a future enum shift
+     * is caught loud. Live operator sessions are 'user-directive'
+     * (live conversational claim) per src/substrate/types.ts; the
+     * downstream source-rank arbitrator uses this for tiebreaks.
+     */
     const atom = buildOperatorSessionAtom(input);
-    expect(atom.provenance.kind).toBe('human-asserted');
+    expect(atom.provenance.kind).toBe('user-directive');
     expect(atom.provenance.source.session_id).toBe(SID);
     expect(atom.provenance.source.tool).toBe('claude-code-operator-hook');
   });

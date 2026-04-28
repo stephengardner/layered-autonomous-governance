@@ -82,7 +82,7 @@ export function buildOperatorSessionAtom(input) {
     type: 'agent-session',
     layer: 'L0',
     provenance: {
-      kind: 'human-asserted',
+      kind: 'user-directive',
       source: {
         tool: 'claude-code-operator-hook',
         agent_id: input.principalId,
@@ -181,7 +181,7 @@ export function buildOperatorTurnAtom(input) {
     type: 'agent-turn',
     layer: 'L0',
     provenance: {
-      kind: 'human-asserted',
+      kind: 'user-directive',
       source: {
         tool: 'claude-code-operator-hook',
         agent_id: input.principalId,
