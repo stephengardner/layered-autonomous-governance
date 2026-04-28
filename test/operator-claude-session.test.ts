@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -297,7 +297,3 @@ describe('acquireSidecarLock', () => {
   });
 });
 
-// Vitest globals shim (we use describe/it/expect/beforeEach/afterEach without
-// `import { ... } from 'vitest'` for the latter two so Vitest's globals are
-// available; the project's vitest config has globals: false so import them).
-import { beforeEach, afterEach } from 'vitest';
