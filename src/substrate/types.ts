@@ -244,6 +244,13 @@ export interface Atom {
    * non-question atoms. Mutable via AtomStore.update. See QuestionState.
    */
   readonly question_state?: QuestionState;
+  /**
+   * Execution state for atoms with `type: 'pipeline'`. Undefined on
+   * non-pipeline atoms. Mutable (transitions via AtomStore.update).
+   * Mirrors the plan_state field shape so consumers read it as a
+   * top-level field, never via metadata.
+   */
+  readonly pipeline_state?: string;
 }
 
 // ---------------------------------------------------------------------------

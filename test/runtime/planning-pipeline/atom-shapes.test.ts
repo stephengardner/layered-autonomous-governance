@@ -23,7 +23,7 @@ describe('mkPipelineAtom', () => {
       mode: 'substrate-deep',
     });
     expect(atom.type).toBe('pipeline');
-    expect((atom as unknown as { pipeline_state: string }).pipeline_state).toBe('pending');
+    expect(atom.pipeline_state).toBe('pending');
     expect((atom.metadata as { mode: string }).mode).toBe('substrate-deep');
     expect(atom.provenance.derived_from).toEqual(['intent-1']);
   });

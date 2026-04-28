@@ -127,8 +127,8 @@ export function mkPipelineAtom(input: MkPipelineAtomInput): Atom {
         total_cost_usd: 0,
       },
     }),
-    pipeline_state: 'pending' as never,
-  } as Atom;
+    pipeline_state: 'pending',
+  };
 }
 
 // ---------------------------------------------------------------------------
