@@ -250,6 +250,51 @@ describe('acquireSidecarLock', () => {
      */
     await a.release();
   });
+
+  it('reclaims a stale lock so a crashed prior hook does not block forever', async () => {
+    /*
+     * Simulate a crashed hook by writing the lock file directly,
+     * waiting until staleMs has elapsed, then asking acquireSidecarLock
+     * to acquire it. Without stale-lock reclamation the call would
+     * spin retries until maxRetries and throw.
+     */
+    const path = join(tmp, 'session.lock');
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(path, '', 'utf8');
+    /*
+     * Use a tiny staleMs so the test runs in milliseconds. Real
+     * deployments use 10_000ms; the helper is parameterized.
+     */
+    await new Promise((r) => setTimeout(r, 30));
+    const lock = await acquireSidecarLock(path, { staleMs: 10, backoffMs: 5, maxRetries: 50 });
+    await lock.release();
+  });
+
+  it('does NOT reclaim a fresh lock (held by an active hook)', async () => {
+    /*
+     * Symmetric guard: the stale-lock reclaimer must not be
+     * triggered for a healthy in-flight hold. A 100ms-old lock
+     * with staleMs=10_000 should NOT be reclaimed; the second
+     * acquire must wait for explicit release (or time out
+     * normally).
+     */
+    const path = join(tmp, 'session.lock');
+    const a = await acquireSidecarLock(path);
+    let bResolved = false;
+    const bPromise = acquireSidecarLock(path, {
+      staleMs: 10_000,
+      backoffMs: 5,
+      maxRetries: 200,
+    }).then((b) => {
+      bResolved = true;
+      return b.release();
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(bResolved).toBe(false);
+    await a.release();
+    await bPromise;
+    expect(bResolved).toBe(true);
+  });
 });
 
 // Vitest globals shim (we use describe/it/expect/beforeEach/afterEach without

@@ -24,7 +24,17 @@
  * explicit at the call boundary.
  */
 
-import { open, unlink } from 'node:fs/promises';
+import { open, stat, unlink } from 'node:fs/promises';
+
+/*
+ * Stale-lock threshold. A hook process that crashes mid-lock would
+ * leave the .lock file behind and block every subsequent
+ * PostToolUse for that session_id forever. 10s is well above the
+ * actual hold-time of a healthy hook (~tens of milliseconds for a
+ * single read-modify-write) and well under any cadence a human
+ * would notice.
+ */
+const STALE_LOCK_MS = 10_000;
 
 /**
  * @typedef {Object} HookPayload
@@ -307,6 +317,7 @@ export function parseHookPayload(raw) {
 export async function acquireSidecarLock(lockPath, opts = {}) {
   const maxRetries = opts.maxRetries ?? 50;
   const backoffMs = opts.backoffMs ?? 20;
+  const staleMs = opts.staleMs ?? STALE_LOCK_MS;
   let lastErr;
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -325,6 +336,30 @@ export async function acquireSidecarLock(lockPath, opts = {}) {
     } catch (err) {
       lastErr = err;
       if (err && err.code !== 'EEXIST') throw err;
+      /*
+       * Stale-lock reclamation: a crashed hook would leave the
+       * .lock file behind and block every subsequent acquire
+       * forever. Stat the existing lock file; if its mtime is
+       * older than the stale threshold, unlink it and retry
+       * immediately (no backoff sleep) so a recovery proceeds
+       * fast. ENOENT during the stat means another concurrent
+       * hook just released; fall through to the backoff retry
+       * path. Other stat/unlink errors are best-effort: log
+       * nothing, just keep retrying.
+       */
+      try {
+        const stats = await stat(lockPath);
+        if (Date.now() - stats.mtimeMs > staleMs) {
+          try {
+            await unlink(lockPath);
+            continue;
+          } catch {
+            // best-effort: another hook may have just released
+          }
+        }
+      } catch {
+        // ENOENT (already gone) or other stat error -- fall through
+      }
       await new Promise((r) => setTimeout(r, backoffMs));
     }
   }
