@@ -85,6 +85,15 @@ export interface RunPipelineOptions {
   readonly mode: 'single-pass' | 'substrate-deep';
   readonly now?: () => Time;
   readonly resumeFromStage?: string;
+  /**
+   * Optional priorOutput hydration for the resumeFromStage path. When
+   * resuming mid-pipeline, the caller supplies the prior stage's
+   * StageOutput.value so the named stage's StageInput.priorOutput is
+   * not silently `null`. Stage output persistence as typed atoms is a
+   * forward follow-up (see plan "Out of scope"); until that lands, the
+   * resume entrypoint passes priorOutput explicitly.
+   */
+  readonly priorOutput?: unknown;
 }
 
 export async function runPipeline(
@@ -133,7 +142,15 @@ export async function runPipeline(
     );
   }
 
-  let priorOutput: unknown = null;
+  // Resume path may hydrate priorOutput from caller; the runner does not
+  // re-query a prior stage's exit-success event because stage output
+  // persistence as typed atoms is a forward follow-up. Without caller
+  // hydration the resumed stage observes priorOutput=null, which is the
+  // documented fallback.
+  let priorOutput: unknown =
+    options.resumeFromStage !== undefined && options.priorOutput !== undefined
+      ? options.priorOutput
+      : null;
   let totalCostUsd = 0;
 
   for (let i = startIdx; i < stages.length; i++) {
@@ -157,10 +174,21 @@ export async function runPipeline(
     }
 
     // Claim-before-mutate: re-read pipeline atom to prevent double-advance
-    // under concurrent ticks. Halt if the atom is missing or tainted.
+    // under concurrent ticks. Halt if the atom is missing, tainted, or
+    // already in a terminal state (completed, failed) which would mean
+    // another tick raced ahead.
     const fresh = await host.atoms.get(pipelineId);
     if (fresh === null) return { kind: 'halted', pipelineId };
     if (fresh.taint !== 'clean') return { kind: 'halted', pipelineId };
+    const currentState = fresh.pipeline_state;
+    if (
+      currentState !== undefined
+      && currentState !== 'pending'
+      && currentState !== 'running'
+      && currentState !== 'hil-paused'
+    ) {
+      return { kind: 'halted', pipelineId };
+    }
 
     await host.atoms.update(pipelineId, { pipeline_state: 'running' });
     await host.atoms.put(

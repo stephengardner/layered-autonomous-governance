@@ -42,6 +42,7 @@
  */
 
 import { promises as fs } from 'node:fs';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import type {
   AuditFinding,
@@ -170,9 +171,23 @@ async function runSpec(
   };
 }
 
-async function pathExists(p: string): Promise<boolean> {
+/**
+ * Verify a cited path is reachable on disk AND resolves inside the
+ * repository root (default: process.cwd()). Absolute paths and relative
+ * paths that escape via `..` are rejected as out-of-scope. The check
+ * runs path.resolve to canonicalise the input, then path.relative
+ * against the repo root; the resulting relative path must NOT begin
+ * with `..` for the citation to count as in-scope.
+ */
+async function pathExistsInRepo(p: string, repoRoot: string): Promise<boolean> {
+  // Reject absolute paths outright; spec citations are repo-relative by
+  // contract.
+  if (isAbsolute(p)) return false;
+  const canonical = resolve(repoRoot, p);
+  const rel = relative(repoRoot, canonical);
+  if (rel === '' || rel.startsWith('..')) return false;
   try {
-    await fs.access(p);
+    await fs.access(canonical);
     return true;
   } catch {
     return false;
@@ -184,34 +199,46 @@ async function auditSpec(
   ctx: StageContext,
 ): Promise<ReadonlyArray<AuditFinding>> {
   const findings: AuditFinding[] = [];
-  // Verify every cited atom-id resolves via host.atoms.get. A fabricated
-  // id is a 'critical' finding; the runner halts the stage.
+  const repoRoot = process.cwd();
+  // Verify every cited atom-id is authoritative: present, untainted,
+  // and not superseded. A non-authoritative citation is treated as
+  // equivalent to a fabricated id because the LLM cited a state that
+  // does not hold under arbitration.
   for (const id of output.cited_atom_ids) {
     const atom = await ctx.host.atoms.get(id as AtomId);
+    let reason: string | null = null;
     if (atom === null) {
+      reason = 'does not resolve via host.atoms.get';
+    } else if (atom.taint !== 'clean') {
+      reason = 'resolves to an atom whose taint is not clean';
+    } else if (atom.superseded_by.length > 0) {
+      reason = 'resolves to an atom that has been superseded';
+    }
+    if (reason !== null) {
       findings.push({
         severity: 'critical',
         category: 'fabricated-cited-atom',
         message:
-          `Spec cites atom id "${id}" which does not resolve via `
-          + 'host.atoms.get. Mitigates the drafter-citation-verification '
-          + 'failure mode at the substrate level.',
+          `Spec cites atom id "${id}" which ${reason}. Mitigates the `
+          + 'drafter-citation-verification failure mode at the substrate '
+          + 'level.',
         cited_atom_ids: [id as AtomId],
         cited_paths: [],
       });
     }
   }
-  // Verify every cited path is reachable on disk. An unreachable path
-  // is a 'critical' finding; the runner halts the stage.
+  // Verify every cited path is reachable on disk inside the repo root.
+  // An unreachable or out-of-scope path is a 'critical' finding; the
+  // runner halts the stage.
   for (const p of output.cited_paths) {
-    if (!(await pathExists(p))) {
+    if (!(await pathExistsInRepo(p, repoRoot))) {
       findings.push({
         severity: 'critical',
         category: 'unreachable-cited-path',
         message:
-          `Spec cites path "${p}" which is not reachable via fs.access. `
-          + 'Mitigates the drafter-citation-verification failure mode at '
-          + 'the substrate level.',
+          `Spec cites path "${p}" which is not reachable inside the repo `
+          + 'root via fs.access. Mitigates the drafter-citation-verification '
+          + 'failure mode at the substrate level.',
         cited_atom_ids: [],
         cited_paths: [p],
       });

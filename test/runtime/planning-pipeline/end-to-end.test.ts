@@ -125,7 +125,7 @@ function stubLlm(
                 option: 'option-a',
                 rejection_reason:
                   payloads.brainstormCitedAtomId !== undefined
-                    ? `superseded by ${payloads.brainstormCitedAtomId}`
+                    ? `superseded by atom:${payloads.brainstormCitedAtomId}`
                     : 'incomplete coverage',
               },
             ],
@@ -219,20 +219,104 @@ function buildStages(): ReadonlyArray<PlanningStage> {
   ];
 }
 
+const STAGE_NAMES = [
+  'brainstorm-stage',
+  'spec-stage',
+  'plan-stage',
+  'review-stage',
+  'dispatch-stage',
+] as const;
+
+/**
+ * Seed pause_mode='never' policy atoms for each default stage so the
+ * pipeline walks end-to-end without halting on the fail-closed HIL
+ * default introduced for governance-before-autonomy. Production
+ * deployments author equivalent atoms via the bootstrap script; tests
+ * inline them so the runner observes substrate-pure policy state.
+ */
+async function seedPauseNeverPolicies(host: MemoryHost): Promise<void> {
+  for (const stageName of STAGE_NAMES) {
+    await host.atoms.put({
+      schema_version: 1,
+      id: `pol-pipeline-stage-hil-${stageName}-test` as AtomId,
+      content: `test-fixture pause_mode=never for ${stageName}`,
+      type: 'directive',
+      layer: 'L3',
+      provenance: {
+        kind: 'operator-seeded',
+        source: { tool: 'test-fixture' },
+        derived_from: [],
+      },
+      confidence: 1,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'operator-principal' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        policy: {
+          subject: 'pipeline-stage-hil',
+          stage_name: stageName,
+          pause_mode: 'never',
+          auto_resume_after_ms: null,
+          allowed_resumers: [],
+        },
+      },
+    });
+  }
+}
+
+/**
+ * Build runPipeline options with the standard test seeds + an optional
+ * override slice. Centralises the four call sites in this file so each
+ * test only declares the field that differs (correlationId, optional
+ * resumeFromStage).
+ */
+function makeRunOptions(
+  overrides: { correlationId: string; resumeFromStage?: string },
+): {
+  principal: PrincipalId;
+  correlationId: string;
+  seedAtomIds: ReadonlyArray<AtomId>;
+  now: () => Time;
+  mode: 'substrate-deep';
+  stagePolicyAtomId: string;
+  resumeFromStage?: string;
+} {
+  return {
+    principal: PRINCIPAL,
+    correlationId: overrides.correlationId,
+    seedAtomIds: [SEED_INTENT_ID],
+    now: () => NOW,
+    mode: 'substrate-deep',
+    stagePolicyAtomId: 'pol-test',
+    ...(overrides.resumeFromStage !== undefined
+      ? { resumeFromStage: overrides.resumeFromStage }
+      : {}),
+  };
+}
+
 describe('deep planning pipeline end-to-end', () => {
   it('walks all five default stages and emits a stage-event atom chain rooted at the pipeline atom', async () => {
     const host = createMemoryHost();
     await host.atoms.put(operatorIntentAtom(SEED_INTENT_ID));
+    await seedPauseNeverPolicies(host);
     stubLlm(host);
 
-    const result = await runPipeline(buildStages(), host, {
-      principal: PRINCIPAL,
-      correlationId: 'corr-e2e-happy',
-      seedAtomIds: [SEED_INTENT_ID],
-      now: () => NOW,
-      mode: 'substrate-deep',
-      stagePolicyAtomId: 'pol-test',
-    });
+    const result = await runPipeline(
+      buildStages(),
+      host,
+      makeRunOptions({ correlationId: 'corr-e2e-happy' }),
+    );
 
     expect(result.kind).toBe('completed');
     if (result.kind !== 'completed') return;
@@ -284,6 +368,7 @@ describe('deep planning pipeline end-to-end', () => {
   it('halts on a fabricated cited_path (confabulation regression)', async () => {
     const host = createMemoryHost();
     await host.atoms.put(operatorIntentAtom(SEED_INTENT_ID));
+    await seedPauseNeverPolicies(host);
     // The spec stub emits a cited path that fs.access cannot reach,
     // which is the substrate-level failure mode the review stage
     // exists to catch.
@@ -291,14 +376,11 @@ describe('deep planning pipeline end-to-end', () => {
       specCitedPaths: ['nonexistent/path/forced-by-test.fabricated'],
     });
 
-    const result = await runPipeline(buildStages(), host, {
-      principal: PRINCIPAL,
-      correlationId: 'corr-e2e-confab',
-      seedAtomIds: [SEED_INTENT_ID],
-      now: () => NOW,
-      mode: 'substrate-deep',
-      stagePolicyAtomId: 'pol-test',
-    });
+    const result = await runPipeline(
+      buildStages(),
+      host,
+      makeRunOptions({ correlationId: 'corr-e2e-confab' }),
+    );
 
     expect(result.kind).toBe('failed');
     if (result.kind !== 'failed') return;
@@ -328,17 +410,17 @@ describe('deep planning pipeline end-to-end', () => {
   it('resume-from-stage starts mid-pipeline at the named stage', async () => {
     const host = createMemoryHost();
     await host.atoms.put(operatorIntentAtom(SEED_INTENT_ID));
+    await seedPauseNeverPolicies(host);
     stubLlm(host);
 
-    const result = await runPipeline(buildStages(), host, {
-      principal: PRINCIPAL,
-      correlationId: 'corr-e2e-resume',
-      seedAtomIds: [SEED_INTENT_ID],
-      now: () => NOW,
-      mode: 'substrate-deep',
-      stagePolicyAtomId: 'pol-test',
-      resumeFromStage: 'spec-stage',
-    });
+    const result = await runPipeline(
+      buildStages(),
+      host,
+      makeRunOptions({
+        correlationId: 'corr-e2e-resume',
+        resumeFromStage: 'spec-stage',
+      }),
+    );
 
     expect(result.kind).toBe('completed');
     if (result.kind !== 'completed') return;
@@ -368,17 +450,17 @@ describe('deep planning pipeline end-to-end', () => {
   it('halts at pre-flight when resumeFromStage names an unknown stage', async () => {
     const host = createMemoryHost();
     await host.atoms.put(operatorIntentAtom(SEED_INTENT_ID));
+    await seedPauseNeverPolicies(host);
     stubLlm(host);
 
-    const result = await runPipeline(buildStages(), host, {
-      principal: PRINCIPAL,
-      correlationId: 'corr-e2e-malformed',
-      seedAtomIds: [SEED_INTENT_ID],
-      now: () => NOW,
-      mode: 'substrate-deep',
-      stagePolicyAtomId: 'pol-test',
-      resumeFromStage: 'never-defined-stage',
-    });
+    const result = await runPipeline(
+      buildStages(),
+      host,
+      makeRunOptions({
+        correlationId: 'corr-e2e-malformed',
+        resumeFromStage: 'never-defined-stage',
+      }),
+    );
 
     expect(result.kind).toBe('failed');
     if (result.kind !== 'failed') return;

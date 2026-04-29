@@ -187,10 +187,10 @@ describe('readPipelineStageHilPolicy', () => {
     expect(result.pause_mode).toBe('always');
   });
 
-  it('returns "never" when no policy atom matches', async () => {
+  it('returns "always" when no policy atom matches (fail-closed default)', async () => {
     const host = createMemoryHost();
     const result = await readPipelineStageHilPolicy(host, 'unknown-stage');
-    expect(result.pause_mode).toBe('never');
+    expect(result.pause_mode).toBe('always');
     expect(result.auto_resume_after_ms).toBeNull();
     expect(result.allowed_resumers).toEqual([]);
   });

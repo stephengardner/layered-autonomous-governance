@@ -65,28 +65,30 @@ export const brainstormPayloadSchema = z.object({
 export type BrainstormPayload = z.infer<typeof brainstormPayloadSchema>;
 
 /**
- * Atom-id token regex.
+ * Atom-id citation regex.
  *
  * LAG atom ids are kebab-case lowercase identifiers with at least one
- * hyphen. The regex matches that shape and is bounded to a reasonable
- * maximum hyphen-count to bound regex cost on adversarial input.
+ * hyphen. To avoid matching ordinary hyphenated words (e.g. "rule-of-three"
+ * inside prose), this regex requires an explicit `atom:` prefix in front
+ * of the id. Callers cite atoms as `atom:dev-no-claude-attribution`.
+ * Bounded hyphen-count keeps regex cost linear on adversarial input.
  *
  * NOTE: this is a pragmatic extractor for v1. A future iteration may
  * accept LLM-emitted cited_atom_ids as a structured array on the payload
  * rather than parsing prose.
  */
-const ATOM_ID_TOKEN = /\b[a-z][a-z0-9]*(?:-[a-z0-9]+){1,15}\b/g;
+const ATOM_ID_TOKEN = /\batom:([a-z][a-z0-9]*(?:-[a-z0-9]+){1,15})\b/g;
 
 function extractCitedAtomIds(text: string): ReadonlyArray<string> {
-  const matches = text.match(ATOM_ID_TOKEN);
-  if (matches === null) return [];
-  // Dedupe while preserving order so the audit walk is deterministic.
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const m of matches) {
-    if (!seen.has(m)) {
-      seen.add(m);
-      out.push(m);
+  ATOM_ID_TOKEN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ATOM_ID_TOKEN.exec(text)) !== null) {
+    const id = match[1]!;
+    if (!seen.has(id)) {
+      seen.add(id);
+      out.push(id);
     }
   }
   return out;
@@ -94,9 +96,11 @@ function extractCitedAtomIds(text: string): ReadonlyArray<string> {
 
 const BRAINSTORM_SYSTEM_PROMPT = `You are the brainstorm stage of a deep-planning pipeline.
 Survey alternatives, surface open questions, and identify decision points
-for the seeded operator-intent. Cite the atom id of any prior canon you
-reference inside rejection_reason. Emit ONLY a payload that matches the
-provided schema; no prose outside the schema fields.`;
+for the seeded operator-intent. Cite atoms with the explicit prefix
+"atom:" inside rejection_reason (e.g. "atom:dev-no-claude-attribution"),
+NOT bare hyphenated tokens, so the auditor can distinguish citations from
+prose. Emit ONLY a payload that matches the provided schema; no prose
+outside the schema fields.`;
 
 async function runBrainstorm(
   input: StageInput<unknown>,

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runPipeline } from '../../../src/runtime/planning-pipeline/runner.js';
-import { createMemoryHost } from '../../../src/adapters/memory/index.js';
+import {
+  createMemoryHost,
+  type MemoryHost,
+} from '../../../src/adapters/memory/index.js';
 import type { PlanningStage } from '../../../src/runtime/planning-pipeline/types.js';
 import type { AtomId, PrincipalId, Time } from '../../../src/types.js';
 
@@ -24,9 +27,60 @@ function mkStage<TIn, TOut>(
   };
 }
 
+/**
+ * Seed pause_mode='never' policy atoms for the supplied stage names so
+ * the runner does not halt on the fail-closed HIL default. Test
+ * fixtures inline the policy because production deployments author it
+ * via the bootstrap script.
+ */
+async function seedPauseNeverPolicies(
+  host: MemoryHost,
+  stageNames: ReadonlyArray<string>,
+): Promise<void> {
+  for (const stageName of stageNames) {
+    await host.atoms.put({
+      schema_version: 1,
+      id: `pol-pipeline-stage-hil-${stageName}-test` as AtomId,
+      content: `test-fixture pause_mode=never for ${stageName}`,
+      type: 'directive',
+      layer: 'L3',
+      provenance: {
+        kind: 'operator-seeded',
+        source: { tool: 'test-fixture' },
+        derived_from: [],
+      },
+      confidence: 1,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'operator-principal' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        policy: {
+          subject: 'pipeline-stage-hil',
+          stage_name: stageName,
+          pause_mode: 'never',
+          auto_resume_after_ms: null,
+          allowed_resumers: [],
+        },
+      },
+    });
+  }
+}
+
 describe('runPipeline', () => {
   it('advances pending -> running -> completed through linear stages', async () => {
     const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['stage-a', 'stage-b']);
     const stages = [
       mkStage<unknown, { a: number }>('stage-a', () => ({ a: 1 })),
       mkStage<{ a: number }, { b: number }>('stage-b', (i) => ({ b: i.a + 1 })),
@@ -135,6 +189,7 @@ describe('runPipeline', () => {
 
   it('emits a pipeline-stage-event atom per state transition', async () => {
     const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['a', 'b']);
     const stages = [
       mkStage<unknown, unknown>('a', () => ({})),
       mkStage<unknown, unknown>('b', () => ({})),

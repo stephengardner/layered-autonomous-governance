@@ -27,7 +27,7 @@ describe('brainstormStage', () => {
       {
         open_questions: [],
         alternatives_surveyed: [
-          { option: 'foo', rejection_reason: 'cited atom-does-not-exist' },
+          { option: 'foo', rejection_reason: 'cited atom:atom-does-not-exist' },
         ],
         decision_points: [],
         cost_usd: 0,
@@ -109,7 +109,7 @@ describe('brainstormStage', () => {
       {
         open_questions: [],
         alternatives_surveyed: [
-          { option: 'foo', rejection_reason: `cited ${seededId}` },
+          { option: 'foo', rejection_reason: `cited atom:${seededId}` },
         ],
         decision_points: [],
         cost_usd: 0,

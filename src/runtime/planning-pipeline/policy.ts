@@ -139,7 +139,10 @@ export async function readPipelineStageHilPolicy(
       : [];
     return { pause_mode: mode, auto_resume_after_ms: autoResume, allowed_resumers: allowed };
   }
-  return { pause_mode: 'never', auto_resume_after_ms: null, allowed_resumers: [] };
+  // Fail-closed default: when no policy atom matches, pause for HIL rather
+  // than silently advancing. Operator-authored policy atoms widen this to
+  // 'on-critical-finding' or 'never' per dev-governance-before-autonomy.
+  return { pause_mode: 'always', auto_resume_after_ms: null, allowed_resumers: [] };
 }
 
 export async function readPipelineDefaultModePolicy(

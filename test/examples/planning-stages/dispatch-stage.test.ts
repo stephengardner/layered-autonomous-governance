@@ -79,6 +79,40 @@ async function seedPlanForDispatch(
   return atomId;
 }
 
+/**
+ * Build the shared StageInput for dispatch-stage tests with a default
+ * priorOutput (clean review-report) and optional overrides for the
+ * priorOutput slice + seedAtomIds. Centralises the three test call
+ * sites that exercise stage.run() so each test only declares the field
+ * that differs.
+ */
+function makeStageRunInput(
+  host: ReturnType<typeof createMemoryHost>,
+  overrides: {
+    priorOutput?: {
+      audit_status: 'clean' | 'findings';
+      findings: ReadonlyArray<unknown>;
+      total_bytes_read: number;
+      cost_usd: number;
+    };
+    seedAtomIds?: ReadonlyArray<AtomId>;
+  } = {},
+) {
+  return {
+    host,
+    principal: 'plan-dispatcher' as PrincipalId,
+    correlationId: 'corr',
+    priorOutput: overrides.priorOutput ?? {
+      audit_status: 'clean' as const,
+      findings: [],
+      total_bytes_read: 0,
+      cost_usd: 0,
+    },
+    pipelineId: 'pipeline-corr' as AtomId,
+    seedAtomIds: overrides.seedAtomIds ?? [],
+  };
+}
+
 async function seedPipelineResumeAtom(
   host: ReturnType<typeof createMemoryHost>,
   pipelineId: AtomId,
@@ -201,19 +235,7 @@ describe('dispatchStage', () => {
     await seedPlanForDispatch(host, 'plan-test-1', 'test-sub-actor');
 
     const stage = createDispatchStage(registry);
-    const output = await stage.run({
-      host,
-      principal: 'plan-dispatcher' as PrincipalId,
-      correlationId: 'corr',
-      priorOutput: {
-        audit_status: 'clean',
-        findings: [],
-        total_bytes_read: 0,
-        cost_usd: 0,
-      },
-      pipelineId: 'pipeline-corr' as AtomId,
-      seedAtomIds: [],
-    });
+    const output = await stage.run(makeStageRunInput(host));
     expect(output.atom_type).toBe('dispatch-record');
     expect(output.value.dispatch_status).toBe('completed');
     expect(output.value.scanned).toBeGreaterThanOrEqual(1);
@@ -232,27 +254,24 @@ describe('dispatchStage', () => {
     await seedPlanForDispatch(host, 'plan-test-2', 'test-sub-actor');
 
     const stage = createDispatchStage(registry);
-    const output = await stage.run({
-      host,
-      principal: 'plan-dispatcher' as PrincipalId,
-      correlationId: 'corr',
-      priorOutput: {
-        audit_status: 'findings',
-        findings: [
-          {
-            severity: 'critical',
-            category: 'fabricated-cited-atom',
-            message: 'plan cites unresolved atom',
-            cited_atom_ids: ['atom-x'],
-            cited_paths: [],
-          },
-        ],
-        total_bytes_read: 0,
-        cost_usd: 0,
-      },
-      pipelineId: 'pipeline-corr' as AtomId,
-      seedAtomIds: [],
-    });
+    const output = await stage.run(
+      makeStageRunInput(host, {
+        priorOutput: {
+          audit_status: 'findings',
+          findings: [
+            {
+              severity: 'critical',
+              category: 'fabricated-cited-atom',
+              message: 'plan cites unresolved atom',
+              cited_atom_ids: ['atom-x'],
+              cited_paths: [],
+            },
+          ],
+          total_bytes_read: 0,
+          cost_usd: 0,
+        },
+      }),
+    );
     expect(output.value.dispatch_status).toBe('gated');
     expect(output.value.dispatched).toBe(0);
     // Default-deny: a non-clean review-report MUST NOT trigger dispatch.
@@ -275,27 +294,25 @@ describe('dispatchStage', () => {
     );
 
     const stage = createDispatchStage(registry);
-    const output = await stage.run({
-      host,
-      principal: 'plan-dispatcher' as PrincipalId,
-      correlationId: 'corr',
-      priorOutput: {
-        audit_status: 'findings',
-        findings: [
-          {
-            severity: 'critical',
-            category: 'fabricated-cited-atom',
-            message: 'plan cites unresolved atom',
-            cited_atom_ids: ['atom-x'],
-            cited_paths: [],
-          },
-        ],
-        total_bytes_read: 0,
-        cost_usd: 0,
-      },
-      pipelineId: 'pipeline-corr' as AtomId,
-      seedAtomIds: [resumeId],
-    });
+    const output = await stage.run(
+      makeStageRunInput(host, {
+        priorOutput: {
+          audit_status: 'findings',
+          findings: [
+            {
+              severity: 'critical',
+              category: 'fabricated-cited-atom',
+              message: 'plan cites unresolved atom',
+              cited_atom_ids: ['atom-x'],
+              cited_paths: [],
+            },
+          ],
+          total_bytes_read: 0,
+          cost_usd: 0,
+        },
+        seedAtomIds: [resumeId],
+      }),
+    );
     expect(output.value.dispatch_status).toBe('completed');
     expect(invokedAtAll).toBe(true);
   });

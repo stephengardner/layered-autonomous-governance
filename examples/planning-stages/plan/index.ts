@@ -247,48 +247,79 @@ async function runPlan(
   };
 }
 
+/**
+ * Categorise a fetched atom for citation-audit purposes. An atom that
+ * fails any of {present, untainted, not-superseded} is non-authoritative
+ * and a citation pointing at it is treated as a critical finding equal
+ * to a fabricated id, because the LLM cited a state that does not hold.
+ */
+type AtomAuthorityStatus =
+  | 'authoritative'
+  | 'missing'
+  | 'tainted'
+  | 'superseded';
+
+function classifyAtomAuthority(
+  atom: Awaited<ReturnType<StageContext['host']['atoms']['get']>>,
+): AtomAuthorityStatus {
+  if (atom === null) return 'missing';
+  if (atom.taint !== 'clean') return 'tainted';
+  if (atom.superseded_by.length > 0) return 'superseded';
+  return 'authoritative';
+}
+
+function citationFinding(
+  planTitle: string,
+  field: 'derived_from' | 'principles_applied',
+  id: string,
+  status: Exclude<AtomAuthorityStatus, 'authoritative'>,
+): AuditFinding {
+  const reason: Record<typeof status, string> = {
+    missing: 'does not resolve via host.atoms.get',
+    tainted: 'resolves to an atom whose taint is not clean',
+    superseded: 'resolves to an atom that has been superseded',
+  };
+  return {
+    severity: 'critical',
+    category: 'fabricated-cited-atom',
+    message:
+      `Plan "${planTitle}" cites atom id "${id}" in ${field} which `
+      + `${reason[status]}. Mitigates the drafter-citation-verification `
+      + 'failure mode at the substrate level.',
+    cited_atom_ids: [id as AtomId],
+    cited_paths: [],
+  };
+}
+
 async function auditPlan(
   output: PlanPayload,
   ctx: StageContext,
 ): Promise<ReadonlyArray<AuditFinding>> {
   const findings: AuditFinding[] = [];
   for (const plan of output.plans) {
-    // Verify every derived_from atom-id resolves via host.atoms.get. A
-    // fabricated id is a 'critical' finding; the runner halts the stage.
+    // Verify every derived_from atom-id is authoritative: present,
+    // untainted, and not superseded. Any failure is a critical finding;
+    // the runner halts the stage. A tainted or superseded citation is
+    // equivalent to a fabricated id because the LLM cited a state that
+    // does not hold under arbitration.
     for (const id of plan.derived_from) {
       const atom = await ctx.host.atoms.get(id as AtomId);
-      if (atom === null) {
-        findings.push({
-          severity: 'critical',
-          category: 'fabricated-cited-atom',
-          message:
-            `Plan "${plan.title}" cites atom id "${id}" in derived_from `
-            + 'which does not resolve via host.atoms.get. Mitigates the '
-            + 'drafter-citation-verification failure mode at the substrate '
-            + 'level.',
-          cited_atom_ids: [id as AtomId],
-          cited_paths: [],
-        });
+      const status = classifyAtomAuthority(atom);
+      if (status !== 'authoritative') {
+        findings.push(citationFinding(plan.title, 'derived_from', id, status));
       }
     }
-    // Verify every principles_applied atom-id resolves. principles_applied
-    // is a SUBSET of derived_from per PLAN_DRAFT, but a misaligned LLM may
-    // emit ids in principles_applied not present in derived_from; we audit
-    // independently to catch that drift.
+    // Verify every principles_applied atom-id resolves authoritatively.
+    // principles_applied is a SUBSET of derived_from per PLAN_DRAFT, but
+    // a misaligned LLM may emit ids in principles_applied not present in
+    // derived_from; audit independently to catch that drift.
     for (const id of plan.principles_applied) {
       const atom = await ctx.host.atoms.get(id as AtomId);
-      if (atom === null) {
-        findings.push({
-          severity: 'critical',
-          category: 'fabricated-cited-atom',
-          message:
-            `Plan "${plan.title}" cites atom id "${id}" in `
-            + 'principles_applied which does not resolve via '
-            + 'host.atoms.get. Mitigates the drafter-citation-verification '
-            + 'failure mode at the substrate level.',
-          cited_atom_ids: [id as AtomId],
-          cited_paths: [],
-        });
+      const status = classifyAtomAuthority(atom);
+      if (status !== 'authoritative') {
+        findings.push(
+          citationFinding(plan.title, 'principles_applied', id, status),
+        );
       }
     }
   }

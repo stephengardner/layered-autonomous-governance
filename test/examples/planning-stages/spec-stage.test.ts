@@ -14,8 +14,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
 import { specStage } from '../../../examples/planning-stages/spec/index.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
 import type { AtomId, PrincipalId } from '../../../src/types.js';
@@ -149,16 +148,19 @@ describe('specStage', () => {
       taint: 'clean',
       metadata: {},
     });
-    // Create a real file so the path cite resolves.
-    const tmp = mkdtempSync(join(tmpdir(), 'spec-stage-test-'));
-    const filePath = join(tmp, 'real-file.txt');
-    writeFileSync(filePath, 'hello');
+    // Create a real file inside the repo root so the path cite resolves
+    // through the canonicalize-and-bound-to-repo-root guard. Citations
+    // outside cwd are rejected by the auditor by design.
+    const tmp = mkdtempSync(join(process.cwd(), 'spec-stage-test-'));
+    const absFilePath = join(tmp, 'real-file.txt');
+    writeFileSync(absFilePath, 'hello');
+    const relFilePath = relative(process.cwd(), absFilePath);
     try {
       const findings = await specStage.audit?.(
         {
           goal: 'design X',
           body: 'short body',
-          cited_paths: [filePath],
+          cited_paths: [relFilePath],
           cited_atom_ids: [seededId],
           alternatives_rejected: [],
           cost_usd: 0,

@@ -136,7 +136,7 @@ Iterate until Approved.
 
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add src/substrate/types.ts test/substrate/types.test.ts
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): extend AtomType for pipeline atom types"
 ```
@@ -659,7 +659,7 @@ Iterate until Approved.
 
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add src/runtime/planning-pipeline/atom-shapes.ts test/runtime/planning-pipeline/atom-shapes.test.ts
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add atom-shape builders with zod validators"
 ```
@@ -846,7 +846,7 @@ Iterate until Approved.
 
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add src/runtime/planning-pipeline/types.ts src/runtime/planning-pipeline/stage.ts test/runtime/planning-pipeline/types.test.ts
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add PlanningStage interface (pure types)"
 ```
@@ -1148,7 +1148,7 @@ Iterate until Approved.
 
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add src/runtime/planning-pipeline/policy.ts test/runtime/planning-pipeline/policy.test.ts
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add canon policy parsers"
 ```
@@ -1594,7 +1594,7 @@ Iterate until Approved.
 
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add src/runtime/planning-pipeline/runner.ts test/runtime/planning-pipeline/runner.test.ts
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add runner state machine"
 ```
@@ -1700,7 +1700,7 @@ Dispatch a canon-compliance auditor with prompt:
 
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add src/runtime/planning-pipeline/index.ts
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add public barrel"
 ```
@@ -1782,7 +1782,7 @@ Per `dev-implementation-canon-audit-loop`. Pass: CLAUDE.md + atoms `dev-actor-sc
 
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add .lag/atoms/principal-brainstorm-actor.json .lag/atoms/principal-spec-author.json .lag/atoms/principal-pipeline-auditor.json .lag/atoms/principal-plan-dispatcher.json .lag/atoms/pol-llm-tool-policy-brainstorm-actor.json .lag/atoms/pol-llm-tool-policy-spec-author.json .lag/atoms/pol-llm-tool-policy-pipeline-auditor.json .lag/atoms/pol-llm-tool-policy-plan-dispatcher.json scripts/bootstrap-decisions-canon.mjs test/runtime/planning-pipeline/principal-policies.test.ts
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): bootstrap per-principal tool-policy atoms (precursor for Tasks 7-11)"
 ```
@@ -1858,7 +1858,7 @@ Dispatch with prompt:
 
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add examples/planning-stages/brainstorm/
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add reference brainstorm-stage adapter"
 ```
@@ -1901,7 +1901,7 @@ Dispatch with prompt: review `examples/planning-stages/spec/index.ts` against `d
 
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add examples/planning-stages/spec/
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add reference spec-stage adapter"
 ```
@@ -1926,7 +1926,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add re
 - [ ] **Step 5: Canon-audit subagent** -- review against `dev-substrate-not-prescription`, `dev-drafter-citation-verification-required`, `pol-judgment-fallback-ladder`.
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add examples/planning-stages/plan/
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add reference plan-stage adapter"
 ```
@@ -1953,7 +1953,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add re
 - [ ] **Step 5: Canon-audit subagent** -- pass spec section 14 threat model AND `dev-drafter-citation-verification-required` as context. Review must verify: (a) auditor sub-actor invocation; (b) per-file + per-audit byte caps; (c) auditor cannot widen scope; (d) hash-comparison fallback for files exceeding the per-file cap; (e) fail-closed on auditor error.
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add examples/planning-stages/review/
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add reference review-stage adapter"
 ```
@@ -1979,7 +1979,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add re
 - [ ] **Step 5: Canon-audit subagent** -- review against the spec section 7 ordering invariants AND `inv-governance-before-autonomy`.
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add examples/planning-stages/dispatch/
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add reference dispatch-stage adapter"
 ```
@@ -2019,7 +2019,7 @@ Review against `dev-indie-floor-org-ceiling`, `dev-substrate-not-prescription`, 
 
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add scripts/run-cto-actor.mjs
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add --mode=substrate-deep flag to run-cto-actor.mjs"
 ```
@@ -2051,7 +2051,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add --
 
 - [ ] **Step 2: Run the script in the worktree**
 
-```
+```bash
 node scripts/bootstrap-deep-planning-pipeline-canon.mjs --dry-run
 ```
 
@@ -2063,7 +2063,7 @@ Mirror the structure in any existing `scripts/bootstrap-*-canon.mjs`. Each atom 
 
 - [ ] **Step 4: Run the script for real**
 
-```
+```bash
 node scripts/bootstrap-deep-planning-pipeline-canon.mjs
 ```
 
@@ -2075,7 +2075,7 @@ Review the script against `dev-canon-proposals-via-cto-not-direct`, `inv-l3-requ
 
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add scripts/bootstrap-deep-planning-pipeline-canon.mjs .lag/atoms/
 node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): bootstrap deep planning pipeline canon atoms"
 ```
@@ -2118,7 +2118,7 @@ Pass the spec section 14 threat model AND `arch-atomstore-source-of-truth`, `dev
 
 - [ ] **Step 6: Commit via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo add test/runtime/planning-pipeline/end-to-end.test.ts
 node ../../scripts/git-as.mjs lag-ceo commit -m "test(planning-pipeline): end-to-end with default stage set"
 ```
@@ -2145,7 +2145,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "test(planning-pipeline): end-to
 
 - [ ] **Step 1: Run the CR CLI on the full diff**
 
-```
+```bash
 node scripts/cr-precheck.mjs --base main
 ```
 
@@ -2161,13 +2161,13 @@ Iterate until Approved.
 
 - [ ] **Step 3: Run the pre-push grep checklist**
 
-```
+```bash
 npm run lint:pre-push
 ```
 
 Or, manually:
 
-```
+```bash
 node scripts/pre-push-grep.mjs
 ```
 
@@ -2175,7 +2175,7 @@ Expected: zero hits across the checklist.
 
 - [ ] **Step 4: Run the full test + typecheck + build**
 
-```
+```bash
 npm run typecheck && npm run build && npm test
 ```
 
@@ -2183,7 +2183,7 @@ Expected: all green.
 
 - [ ] **Step 5: Push the branch via lag-ceo**
 
-```
+```bash
 node ../../scripts/git-as.mjs lag-ceo push origin feat/deep-planning-pipeline
 ```
 
@@ -2191,7 +2191,7 @@ node ../../scripts/git-as.mjs lag-ceo push origin feat/deep-planning-pipeline
 
 Author the PR body to a temp file, then pass it via `--body-file`. Shell heredocs are not reliable through the `gh-as.mjs` wrapper (it does not proxy stdin); use a tracked file so the body survives shell quoting:
 
-```
+```bash
 cat > /tmp/dpp-pr-body.md <<'EOF'
 ## Summary
 
@@ -2220,7 +2220,7 @@ node ../../scripts/gh-as.mjs lag-ceo gh pr create --base main --head feat/deep-p
 
 - [ ] **Step 7: Trigger CodeRabbit review via cr-trigger.mjs**
 
-```
+```bash
 node ../../scripts/cr-trigger.mjs <pr-number>
 ```
 

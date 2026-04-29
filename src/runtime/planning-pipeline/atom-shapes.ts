@@ -12,8 +12,21 @@
  * src/; this module just stamps atoms.
  */
 
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Atom, AtomId, PrincipalId, Time } from '../../substrate/types.js';
+
+/**
+ * Short deterministic hash of an arbitrary string. Used to keep atom
+ * ids unique when the same {severity, category} recurs across distinct
+ * findings in the same stage (e.g. two cite-fail findings on the same
+ * spec). 8 hex chars = 32 bits = collision probability < 2^-16 across
+ * 256 findings per pipeline; the bound on findings per stage is below
+ * that threshold by an order of magnitude in practice.
+ */
+function shortHash(input: string): string {
+  return createHash('sha256').update(input).digest('hex').slice(0, 8);
+}
 
 export const PIPELINE_STATE_VALUES = [
   'pending',
@@ -248,7 +261,10 @@ export function mkPipelineAuditFindingAtom(input: MkPipelineAuditFindingAtomInpu
     citedAtomIds: input.citedAtomIds.map(String),
     citedPaths: [...input.citedPaths],
   });
-  const id = `pipeline-audit-finding-${input.pipelineId}-${input.stageName}-${input.correlationId}-${input.severity}-${input.category}` as AtomId;
+  // Append a short deterministic hash of the message so two findings
+  // sharing severity + category in the same stage do not collide on id.
+  const messageDigest = shortHash(input.message);
+  const id = `pipeline-audit-finding-${input.pipelineId}-${input.stageName}-${input.correlationId}-${input.severity}-${input.category}-${messageDigest}` as AtomId;
   return baseAtom({
     id,
     type: 'pipeline-audit-finding',
