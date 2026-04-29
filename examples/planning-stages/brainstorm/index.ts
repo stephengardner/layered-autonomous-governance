@@ -94,13 +94,44 @@ function extractCitedAtomIds(text: string): ReadonlyArray<string> {
   return out;
 }
 
-const BRAINSTORM_SYSTEM_PROMPT = `You are the brainstorm stage of a deep-planning pipeline.
+/**
+ * Brainstorm system prompt.
+ *
+ * Exported so the contract-tests can assert on the citation-grounding
+ * language. Tightened (substrate-fix in this PR) so the LLM does not
+ * fabricate plausible-but-invented atom-ids: the e2e of the deep
+ * planning pipeline halted 100% of the time on first try because the
+ * unconstrained prompt invited citations like
+ * "atom:stage-responsibility-brainstorm" and "atom:stage-isolation"
+ * that the post-stage auditor had to reject. Constraining citations
+ * to the verified seed-atom set passed via the templated DATA block
+ * (data.verified_seed_atom_ids) reduces the halt rate without a
+ * structural retry-with-feedback loop. Retry-with-feedback is a
+ * separate substrate change.
+ */
+export const BRAINSTORM_SYSTEM_PROMPT = `You are the brainstorm stage of a deep-planning pipeline.
 Survey alternatives, surface open questions, and identify decision points
-for the seeded operator-intent. Cite atoms with the explicit prefix
-"atom:" inside rejection_reason (e.g. "atom:dev-no-claude-attribution"),
-NOT bare hyphenated tokens, so the auditor can distinguish citations from
-prose. Emit ONLY a payload that matches the provided schema; no prose
-outside the schema fields.`;
+for the seeded operator-intent. Emit ONLY a payload that matches the
+provided schema; no prose outside the schema fields.
+
+Citation grounding (HARD CONSTRAINT):
+- The DATA block contains a "verified seed atom set" under
+  data.verified_seed_atom_ids. This array is the ONLY authoritative
+  list of atom-ids you have been shown.
+- When you cite an atom inside an alternative's rejection_reason, you
+  MUST cite ONLY ids that appear in data.verified_seed_atom_ids.
+- Citations use the explicit prefix "atom:" (e.g.
+  "atom:dev-no-claude-attribution"), NOT bare hyphenated tokens, so
+  the post-stage auditor can distinguish citations from prose.
+- If you cannot ground a claim in an id from the verified seed atom
+  set, OMIT the citation rather than guess. A rejection_reason
+  without a citation is preferable to a fabricated atom-id.
+
+Self-check (REQUIRED before emitting):
+- Walk every atom-id appearing in your output (rejection_reason
+  fields, decision_points, open_questions). For each, verify the id
+  appears literally in data.verified_seed_atom_ids. If it does not,
+  rewrite the field to omit the citation before emitting.`;
 
 async function runBrainstorm(
   input: StageInput<unknown>,
@@ -140,7 +171,17 @@ async function runBrainstorm(
     BRAINSTORM_SYSTEM_PROMPT,
     {
       pipeline_id: String(input.pipelineId),
+      // Legacy key: kept for backwards-compatible consumers that may
+      // be reading this DATA block from prompt-fingerprint logs. The
+      // load-bearing key for the prompt's citation-grounding contract
+      // is verified_seed_atom_ids below.
       seed_atom_ids: input.seedAtomIds.map(String),
+      // Citation-grounding fence: the LLM is constrained by the
+      // BRAINSTORM_SYSTEM_PROMPT to cite ONLY atom-ids that appear in
+      // this array. Mirrors seed_atom_ids today; the separate name
+      // makes the contract obvious to downstream prompt-edit
+      // reviewers and gives the test suite a stable assertion target.
+      verified_seed_atom_ids: input.seedAtomIds.map(String),
       correlation_id: input.correlationId,
     },
     {

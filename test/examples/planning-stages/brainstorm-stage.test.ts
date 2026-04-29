@@ -12,7 +12,10 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { brainstormStage } from '../../../examples/planning-stages/brainstorm/index.js';
+import {
+  BRAINSTORM_SYSTEM_PROMPT,
+  brainstormStage,
+} from '../../../examples/planning-stages/brainstorm/index.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
 import type { AtomId, PrincipalId } from '../../../src/types.js';
 
@@ -71,6 +74,76 @@ describe('brainstormStage', () => {
       cost_usd: 0.42,
     });
     expect(result?.success).toBe(true);
+  });
+
+  // Substrate-design fix: the brainstorm prompt must constrain
+  // citations to the verified seed-atom set. The e2e of the deep
+  // planning pipeline halted 100% of the time on first try because
+  // the prompt invited the LLM to fabricate plausible-but-invented
+  // atom-ids (stage-responsibility-brainstorm, stage-isolation, etc.)
+  // that the auditor caught. Tightening the prompt is the cheapest
+  // mitigation; structural retry-with-feedback is a separate change.
+  describe('BRAINSTORM_SYSTEM_PROMPT (citation-grounding)', () => {
+    it('mentions a verified seed atom set the LLM is constrained to', () => {
+      // The exact wording is intentional surface: a follow-up that
+      // weakens this guidance must update both the prompt AND this
+      // assertion. The pair is the gate.
+      expect(BRAINSTORM_SYSTEM_PROMPT).toMatch(/verified seed atom set/i);
+    });
+
+    it('instructs the LLM to omit a citation rather than guess', () => {
+      expect(BRAINSTORM_SYSTEM_PROMPT).toMatch(/omit/i);
+    });
+
+    it('asks the LLM to walk every emitted atom-id against the verified set', () => {
+      expect(BRAINSTORM_SYSTEM_PROMPT).toMatch(/walk|verify|self-check/i);
+    });
+  });
+
+  it('runBrainstorm passes the seed-atom set through to the LLM data block', async () => {
+    const host = createMemoryHost();
+    let captured: { system: string; data: Record<string, unknown> } | null = null;
+    host.llm.judge = (async (
+      _schema: unknown,
+      system: unknown,
+      data: unknown,
+      _options: unknown,
+    ) => {
+      captured = {
+        system: system as string,
+        data: data as Record<string, unknown>,
+      };
+      return {
+        output: {
+          open_questions: [],
+          alternatives_surveyed: [],
+          decision_points: [],
+          cost_usd: 0,
+        },
+        metadata: { latency_ms: 1, cost_usd: 0 },
+      };
+    }) as typeof host.llm.judge;
+
+    const seedIds = ['atom-one', 'atom-two', 'atom-three'] as ReadonlyArray<AtomId>;
+    await brainstormStage.run({
+      host,
+      principal: 'brainstorm-actor' as PrincipalId,
+      correlationId: 'corr',
+      priorOutput: null,
+      pipelineId: 'p' as AtomId,
+      seedAtomIds: seedIds,
+    });
+    // Prompt-grounding contract: the data block carries the verified
+    // seed-atom set under a stable key so the LLM has a templated
+    // DATA reference for the prompt's "verified seed atom set"
+    // language.
+    expect(captured).not.toBeNull();
+    if (captured !== null) {
+      const c = captured as { system: string; data: Record<string, unknown> };
+      expect(Array.isArray(c.data.verified_seed_atom_ids)).toBe(true);
+      expect(c.data.verified_seed_atom_ids).toEqual(seedIds.map(String));
+      expect(c.system).toMatch(/verified seed atom set/i);
+    }
   });
 
   it('audit() returns no findings when every cited id resolves', async () => {
