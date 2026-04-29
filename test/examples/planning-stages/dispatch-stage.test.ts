@@ -38,6 +38,7 @@ async function seedPlanForDispatch(
   host: ReturnType<typeof createMemoryHost>,
   id: string,
   subActorPrincipalId: string,
+  pipelineId: AtomId = 'pipeline-corr' as AtomId,
 ): Promise<AtomId> {
   const atomId = id as AtomId;
   const plan: Atom = {
@@ -49,7 +50,10 @@ async function seedPlanForDispatch(
     provenance: {
       kind: 'agent-observed',
       source: { agent_id: 'cto-actor' },
-      derived_from: [],
+      // Plans are pipeline-scoped: the dispatch-stage's planFilter
+      // accepts only plans whose derived_from includes the pipeline
+      // atom id.
+      derived_from: [pipelineId],
     },
     confidence: 0.9,
     created_at: '2026-04-28T00:00:00.000Z' as Time,

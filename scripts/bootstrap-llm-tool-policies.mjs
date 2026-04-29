@@ -198,15 +198,23 @@ function diffAtom(existing, expected) {
 // because clock drift on a bootstrap rerun is not a governance concern.
 function diffPlanningPipelinePrincipal(existing, expected) {
   const diffs = [];
-  for (const k of ['name', 'role', 'signed_by', 'active']) {
+  for (const k of ['name', 'role', 'signed_by', 'active', 'compromised_at']) {
     if (existing[k] !== expected[k]) {
       diffs.push(`${k}: stored=${JSON.stringify(existing[k])} expected=${JSON.stringify(expected[k])}`);
     }
   }
+  // Robust array comparator: treat undefined as empty, compare lengths,
+  // then compare element-by-element on a sorted copy. Joining with ','
+  // is unsafe because an element containing a comma collides with the
+  // separator (e.g. ['a,b','c'] joins to the same string as ['a','b,c']).
   const sortedEq = (a, b) => {
-    const as = (a ?? []).slice().sort().join(',');
-    const bs = (b ?? []).slice().sort().join(',');
-    return as === bs;
+    const aa = (a ?? []).slice().sort();
+    const bb = (b ?? []).slice().sort();
+    if (aa.length !== bb.length) return false;
+    for (let i = 0; i < aa.length; i++) {
+      if (aa[i] !== bb[i]) return false;
+    }
+    return true;
   };
   if (!sortedEq(existing.permitted_scopes?.read, expected.permitted_scopes.read)) {
     diffs.push('permitted_scopes.read');

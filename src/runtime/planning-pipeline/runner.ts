@@ -189,8 +189,32 @@ export async function runPipeline(
     ) {
       return { kind: 'halted', pipelineId };
     }
+    // Stage-level claim: a peer tick that already advanced past index
+    // i is ahead of us; halt rather than re-execute. The peer marks
+    // its progress via current_stage_index on the pipeline atom. The
+    // AtomStore lacks true compare-and-swap so the claim is
+    // best-effort: file/memory adapters serialise calls in practice
+    // and avoid the race; a multi-process adapter must add a native
+    // conditional update.
+    const freshMeta = (fresh.metadata as Record<string, unknown>) ?? {};
+    const peerIndex = freshMeta.current_stage_index;
+    if (typeof peerIndex === 'number' && peerIndex > i) {
+      return { kind: 'halted', pipelineId };
+    }
 
-    await host.atoms.update(pipelineId, { pipeline_state: 'running' });
+    await host.atoms.update(pipelineId, {
+      pipeline_state: 'running',
+      metadata: { current_stage: stage.name, current_stage_index: i },
+    });
+    // Re-read after write to confirm we still hold the claim. If a
+    // concurrent tick clobbered current_stage_index above our value
+    // between our update and this read, halt rather than proceed.
+    const claimed = await host.atoms.get(pipelineId);
+    const claimedMeta = (claimed?.metadata as Record<string, unknown>) ?? {};
+    const claimedIndex = claimedMeta.current_stage_index;
+    if (typeof claimedIndex !== 'number' || claimedIndex !== i) {
+      return { kind: 'halted', pipelineId };
+    }
     await host.atoms.put(
       mkPipelineStageEventAtom({
         pipelineId,
@@ -218,6 +242,14 @@ export async function runPipeline(
       output = await stage.run(stageInput);
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
+      // Even when the stage threw, re-check the kill switch before
+      // post-run writes: if STOP flipped while the promise was in
+      // flight, we honour the absolute-priority guarantee from the
+      // file header and halt without writing the failure event /
+      // pipeline-failed atom.
+      if (host.scheduler.killswitchCheck()) {
+        return { kind: 'halted', pipelineId };
+      }
       await host.atoms.put(
         mkPipelineStageEventAtom({
           pipelineId,
@@ -231,6 +263,14 @@ export async function runPipeline(
         }),
       );
       return await failPipeline(host, pipelineId, options, now, stage.name, cause, i);
+    }
+    // Re-check the kill switch on the success path before any post-run
+    // writes. Without this, a STOP that flipped while stage.run was
+    // in flight still produces schema-failure atoms, audit findings,
+    // exit-success events, and pipeline_state='completed' downstream;
+    // that would break the absolute-priority guarantee.
+    if (host.scheduler.killswitchCheck()) {
+      return { kind: 'halted', pipelineId };
     }
     const durationMs = Date.now() - t0;
 

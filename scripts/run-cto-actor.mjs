@@ -214,7 +214,16 @@ async function runDeepPipeline(args) {
     process.exit(2);
   }
 
-  const host = await createFileHost({ rootDir: STATE_DIR });
+  // Wire an LLM into the deep-mode host because the reference brainstorm,
+  // spec, plan, and review adapters call host.llm.judge. Without this,
+  // the first stage that reaches host.llm.judge fails at runtime. Use
+  // ClaudeCliLLM (the same default the single-pass path uses) with the
+  // operator-tunable per-call timeout. Per-call budget cap is forwarded
+  // by the runner via stage.budget_cap_usd / pol-pipeline-stage-cost-cap.
+  const llm = new ClaudeCliLLM({
+    defaultTimeoutMs: args.timeoutMs ?? INSTANCE_JUDGE_TIMEOUT_MS,
+  });
+  const host = await createFileHost({ rootDir: STATE_DIR, llm });
   const principal = await host.principals.get(args.principalId);
   if (!principal) {
     console.error(

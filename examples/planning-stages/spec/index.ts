@@ -148,6 +148,11 @@ async function runSpec(
       pipeline_id: String(input.pipelineId),
       seed_atom_ids: input.seedAtomIds.map(String),
       correlation_id: input.correlationId,
+      // Forward the upstream brainstorm-stage payload so the spec
+      // synthesises against the open_questions, alternatives_surveyed,
+      // and decision_points it produced. Without this, the model
+      // sees only correlation metadata and synthesises in a vacuum.
+      brainstorm_output: input.priorOutput ?? null,
     },
     {
       // Mechanism scaffold: callers compose this stage with their own

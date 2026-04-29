@@ -64,7 +64,7 @@ import type {
   StageInput,
   StageOutput,
 } from '../../../src/runtime/planning-pipeline/index.js';
-import type { AtomId } from '../../../src/types.js';
+import type { Atom, AtomId } from '../../../src/types.js';
 import {
   runDispatchTick,
   type SubActorRegistry,
@@ -180,11 +180,24 @@ export function createDispatchStage(
       };
     }
 
-    // Hand off to the existing runDispatchTick. All the existing
-    // claim-before-mutate, escalation, and low-stakes auto-approve
-    // machinery applies unchanged: the dispatch-stage does not
-    // reimplement dispatch.
-    const tick = await runDispatchTick(input.host, registry);
+    // Hand off to the existing runDispatchTick with a pipeline-scoped
+    // planFilter so the tick only claims approved plans whose
+    // provenance chain traces back to the current pipeline atom.
+    // Without this filter the tick is global: a pipeline that reaches
+    // dispatch-stage would claim approved plans from unrelated
+    // pipelines, replaying their dispatch with the wrong correlation.
+    // The filter walks derived_from on the plan; plans authored by
+    // the upstream plan-stage in this pipeline carry pipelineId in
+    // their derived_from chain.
+    const currentPipelineId = String(input.pipelineId);
+    const planFilter = (plan: Atom): boolean => {
+      const derived = plan.provenance?.derived_from ?? [];
+      for (const id of derived) {
+        if (String(id) === currentPipelineId) return true;
+      }
+      return false;
+    };
+    const tick = await runDispatchTick(input.host, registry, { planFilter });
     return {
       value: {
         dispatch_status: 'completed',
