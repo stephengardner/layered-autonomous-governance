@@ -65,10 +65,20 @@ import type {
   StageOutput,
 } from '../../../src/runtime/planning-pipeline/index.js';
 import type { Atom, AtomId } from '../../../src/types.js';
+// Value import via the package self-name. The relative source-path
+// '../../../src/runtime/actor-message/index.js' compiles correctly via
+// project references but emits the literal string into dist, which
+// resolves to a non-existent dist/src/ at runtime (dist/ flattens src/).
+// Routing the value import through the package's published `./actor-message`
+// subpath export uses the pre-built dist artifact directly and survives
+// `node`'s literal-string ESM resolution post-build. Type-only imports
+// above are erased at compile time so their relative src/ prefix is
+// harmless. See test/examples/planning-stages/dist-import-paths.test.ts
+// for the build-validation gate.
 import {
   runDispatchTick,
   type SubActorRegistry,
-} from '../../../src/runtime/actor-message/index.js';
+} from 'layered-autonomous-governance/actor-message';
 
 /** Maximum length for the gating_reason field; bounds runaway emissions. */
 const MAX_REASON = 4096;
