@@ -79,15 +79,29 @@ function scopeDepth(policyScope: unknown): number {
   return 0;
 }
 
+/**
+ * Determine whether a policy scope applies to the requested ctx scope.
+ *
+ * Project policy ('project') applies to every scope.
+ * Feature/principal policies ('feature:<id>' / 'principal:<id>') apply
+ * only when ctx.scope matches the same prefix-and-id form, so a
+ * principal:foo policy does not leak into a principal:bar query.
+ */
+function scopeApplies(policyScope: unknown, ctxScope: string): boolean {
+  if (typeof policyScope !== 'string') return false;
+  if (policyScope === 'project') return true;
+  return policyScope === ctxScope;
+}
+
 export async function readPipelineStagesPolicy(
   host: Host,
   ctx: { readonly scope: string },
 ): Promise<PipelineStagesPolicyResult> {
-  void ctx;
   let best: { atom: Atom; depth: number } | null = null;
   for await (const atom of iteratePolicyAtoms(host)) {
     const policy = readPolicy(atom);
     if (policy?.subject !== 'planning-pipeline-stages') continue;
+    if (!scopeApplies(policy.scope, ctx.scope)) continue;
     const depth = scopeDepth(policy.scope);
     if (best === null || depth > best.depth) best = { atom, depth };
   }
@@ -131,7 +145,9 @@ export async function readPipelineStageHilPolicy(
         ? rawMode
         : 'always';
     const autoResume =
-      typeof policy.auto_resume_after_ms === 'number' && Number.isFinite(policy.auto_resume_after_ms)
+      typeof policy.auto_resume_after_ms === 'number'
+      && Number.isFinite(policy.auto_resume_after_ms)
+      && policy.auto_resume_after_ms >= 0
         ? policy.auto_resume_after_ms
         : null;
     const allowed = Array.isArray(policy.allowed_resumers)

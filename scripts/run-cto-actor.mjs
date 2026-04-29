@@ -223,6 +223,53 @@ async function runDeepPipeline(args) {
     process.exit(1);
   }
 
+  // Validate the supplied intent atom is the right type and carries a
+  // fresh trust envelope before consuming pipeline budget. Failing
+  // closed here keeps a stale or malformed intent from authorising a
+  // multi-stage run; the autonomous-intent canon surface is the
+  // load-bearing approval gate, not the intent-id flag itself.
+  const intentAtom = await host.atoms.get(args.intentId);
+  if (intentAtom === null) {
+    console.error(
+      `ERROR: --intent-id '${args.intentId}' does not resolve via host.atoms.get.`,
+    );
+    process.exit(2);
+  }
+  if (intentAtom.type !== 'operator-intent') {
+    console.error(
+      `ERROR: --intent-id '${args.intentId}' resolves to atom type `
+      + `'${intentAtom.type}', not 'operator-intent'. The substrate-deep `
+      + 'gate requires an operator-authored intent atom.',
+    );
+    process.exit(2);
+  }
+  if (intentAtom.taint !== 'clean') {
+    console.error(
+      `ERROR: --intent-id '${args.intentId}' is tainted ('${intentAtom.taint}') `
+      + 'and cannot authorise a substrate-deep run.',
+    );
+    process.exit(2);
+  }
+  if (intentAtom.expires_at !== null && intentAtom.expires_at !== undefined) {
+    const expiry = new Date(intentAtom.expires_at).getTime();
+    if (Number.isFinite(expiry) && expiry < Date.now()) {
+      console.error(
+        `ERROR: --intent-id '${args.intentId}' expired at `
+        + `${intentAtom.expires_at}; the trust envelope is no longer fresh.`,
+      );
+      process.exit(2);
+    }
+  }
+  const trustEnvelope = intentAtom.metadata?.trust_envelope;
+  if (trustEnvelope === undefined || trustEnvelope === null
+      || typeof trustEnvelope !== 'object') {
+    console.error(
+      `ERROR: --intent-id '${args.intentId}' is missing a trust_envelope `
+      + 'on metadata; substrate-deep requires an operator-signed envelope.',
+    );
+    process.exit(2);
+  }
+
   const stages = await readPipelineStagesPolicy(host, { scope: 'project' });
   if (stages.atomId === null || stages.stages.length === 0) {
     console.error(
@@ -233,21 +280,42 @@ async function runDeepPipeline(args) {
     process.exit(2);
   }
 
-  // Stage-actor adapters are loaded from a stage-invoker registry
-  // wired in the bootstrap path. Until the registry is populated,
-  // the substrate-deep driver halts cleanly rather than silently
-  // running with an empty stage list. The runner itself handles
-  // an empty list as a no-op completion; the driver enforces the
-  // authorial-intent check (the operator wanted stages, the canon
-  // listed stages, but no adapter resolved) BEFORE the runner spins.
+  // Resolve stage adapters from the reference set shipped in
+  // examples/planning-stages/. Each canon-listed stage name must map
+  // to an adapter; an unmapped stage halts the driver rather than
+  // silently truncating the pipeline. Custom org stages drop in by
+  // adding entries to this map (the registry-wiring follow-up may
+  // replace this in-script literal with a per-stage canon-driven
+  // resolver, which is mechanism, not policy).
+  const { brainstormStage } = await import('../dist/examples/planning-stages/brainstorm/index.js');
+  const { specStage } = await import('../dist/examples/planning-stages/spec/index.js');
+  const { planStage } = await import('../dist/examples/planning-stages/plan/index.js');
+  const { reviewStage } = await import('../dist/examples/planning-stages/review/index.js');
+  const { createDispatchStage } = await import('../dist/examples/planning-stages/dispatch/index.js');
+  const { SubActorRegistry } = await import('../dist/runtime/actor-message/index.js');
+  const stageRegistry = new Map([
+    ['brainstorm-stage', brainstormStage],
+    ['spec-stage', specStage],
+    ['plan-stage', planStage],
+    ['review-stage', reviewStage],
+    ['dispatch-stage', createDispatchStage(new SubActorRegistry())],
+  ]);
   const stageAdapters = [];
-  if (stageAdapters.length === 0) {
+  const unresolvedStages = [];
+  for (const s of stages.stages) {
+    const adapter = stageRegistry.get(s.name);
+    if (adapter === undefined) {
+      unresolvedStages.push(s.name);
+    } else {
+      stageAdapters.push(adapter);
+    }
+  }
+  if (unresolvedStages.length > 0) {
     console.error(
-      `ERROR: no stage adapters resolved for stages [${stages.stages.map((s) => s.name).join(', ')}]. ` +
-      'The stage-invoker registry is not populated yet; the substrate-deep ' +
-      'driver halts here so a partial run does not produce an incomplete ' +
-      'atom chain. Track the registry-wiring follow-up in the planning-pipeline ' +
-      'plan.',
+      `ERROR: no stage adapters resolved for stages [${unresolvedStages.join(', ')}]. ` +
+      'Each canon-listed stage requires a registered adapter. Add the ' +
+      'adapter to the in-script stageRegistry map in run-cto-actor.mjs ' +
+      'or override the stages list via the canon policy.',
     );
     process.exit(2);
   }

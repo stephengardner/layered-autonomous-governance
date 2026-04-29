@@ -110,7 +110,31 @@ describe('readPipelineStagesPolicy', () => {
     expect(result.atomId).toBeNull();
   });
 
-  it('source-rank arbitration: principal scope beats project scope', async () => {
+  it('source-rank arbitration: principal scope beats project scope when ctx.scope matches the principal', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-stages-project', {
+        subject: 'planning-pipeline-stages',
+        scope: 'project',
+        stages: [{ name: 'project-stage', principal_id: 'project-actor' }],
+      }),
+    );
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-stages-cto', {
+        subject: 'planning-pipeline-stages',
+        scope: 'principal:cto-actor',
+        stages: [{ name: 'principal-stage', principal_id: 'principal-actor' }],
+      }),
+    );
+    // ctx.scope must match the principal-scoped policy for it to apply.
+    const result = await readPipelineStagesPolicy(host, {
+      scope: 'principal:cto-actor',
+    });
+    expect(result.stages).toHaveLength(1);
+    expect(result.stages[0]?.name).toBe('principal-stage');
+  });
+
+  it('principal-scoped policy does NOT leak into project-scope query', async () => {
     const host = createMemoryHost();
     await host.atoms.put(
       policyAtom('pol-planning-pipeline-stages-project', {
@@ -128,7 +152,7 @@ describe('readPipelineStagesPolicy', () => {
     );
     const result = await readPipelineStagesPolicy(host, { scope: 'project' });
     expect(result.stages).toHaveLength(1);
-    expect(result.stages[0]?.name).toBe('principal-stage');
+    expect(result.stages[0]?.name).toBe('project-stage');
   });
 
   it('skips superseded atoms', async () => {

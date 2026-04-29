@@ -174,20 +174,29 @@ async function runSpec(
 /**
  * Verify a cited path is reachable on disk AND resolves inside the
  * repository root (default: process.cwd()). Absolute paths and relative
- * paths that escape via `..` are rejected as out-of-scope. The check
- * runs path.resolve to canonicalise the input, then path.relative
- * against the repo root; the resulting relative path must NOT begin
- * with `..` for the citation to count as in-scope.
+ * paths that escape via `..` or symlink-traversal are rejected as
+ * out-of-scope. The check resolves symlinks via fs.realpath on both
+ * sides before computing the relative path, so a symlink inside the
+ * repo pointing to /etc/passwd is correctly rejected. Read permission
+ * is verified explicitly via fs.access(R_OK).
  */
 async function pathExistsInRepo(p: string, repoRoot: string): Promise<boolean> {
   // Reject absolute paths outright; spec citations are repo-relative by
   // contract.
   if (isAbsolute(p)) return false;
-  const canonical = resolve(repoRoot, p);
-  const rel = relative(repoRoot, canonical);
-  if (rel === '' || rel.startsWith('..')) return false;
+  const lexical = resolve(repoRoot, p);
+  // Lexical relative check first as a cheap pre-filter; the realpath
+  // round-trip below is the authoritative boundary check.
+  const lexicalRel = relative(repoRoot, lexical);
+  if (lexicalRel === '' || lexicalRel.startsWith('..')) return false;
   try {
-    await fs.access(canonical);
+    const [rootReal, candidateReal] = await Promise.all([
+      fs.realpath(repoRoot),
+      fs.realpath(lexical),
+    ]);
+    const rel = relative(rootReal, candidateReal);
+    if (rel === '' || rel.startsWith('..')) return false;
+    await fs.access(candidateReal, fs.constants.R_OK);
     return true;
   } catch {
     return false;

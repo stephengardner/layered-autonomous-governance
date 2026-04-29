@@ -64,7 +64,7 @@ if (!OPERATOR_ID) {
 // drift rather than silently passing.
 function diffAtom(existing, expected) {
   const diffs = [];
-  for (const k of ['type', 'layer', 'content', 'principal_id', 'taint']) {
+  for (const k of ['type', 'layer', 'content', 'principal_id', 'taint', 'scope']) {
     if (existing[k] !== expected[k]) {
       diffs.push(`${k}: stored=${JSON.stringify(existing[k])} expected=${JSON.stringify(expected[k])}`);
     }
