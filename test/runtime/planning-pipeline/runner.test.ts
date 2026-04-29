@@ -203,6 +203,18 @@ describe('runPipeline', () => {
       stagePolicyAtomId: 'pol-test',
     });
     const page = await host.atoms.query({ type: ['pipeline-stage-event'] }, 100);
-    expect(page.atoms.length).toBeGreaterThanOrEqual(4);
+    // Verify the actual transition sequence rather than just counting
+    // atoms: a malformed runner could emit four atoms with the wrong
+    // transition kinds and still pass a length check.
+    const transitions = page.atoms.map((a) => {
+      const meta = a.metadata as Record<string, unknown>;
+      return [meta.stage_name, meta.transition] as [unknown, unknown];
+    });
+    expect(transitions).toEqual([
+      ['a', 'enter'],
+      ['a', 'exit-success'],
+      ['b', 'enter'],
+      ['b', 'exit-success'],
+    ]);
   });
 });

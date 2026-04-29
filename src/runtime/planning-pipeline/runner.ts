@@ -156,20 +156,13 @@ export async function runPipeline(
   for (let i = startIdx; i < stages.length; i++) {
     const stage = stages[i]!;
 
-    // Kill-switch poll before each stage transition.
+    // Kill-switch poll before each stage transition. STOP is an operator
+    // halt, NOT a stage failure: per the file-header contract
+    // ("polled BEFORE any write"), the runner returns halted without
+    // emitting an exit-failure event. Misclassifying a STOP as a
+    // failure would pollute the audit chain and trigger downstream
+    // failure-recovery flows that should not fire on a clean halt.
     if (host.scheduler.killswitchCheck()) {
-      await host.atoms.put(
-        mkPipelineStageEventAtom({
-          pipelineId,
-          stageName: stage.name,
-          principalId: options.principal,
-          correlationId: options.correlationId,
-          now: now(),
-          transition: 'exit-failure',
-          durationMs: 0,
-          costUsd: 0,
-        }),
-      );
       return { kind: 'halted', pipelineId };
     }
 
@@ -452,16 +445,30 @@ async function failPipeline(
   cause: string,
   failedIndex: number,
 ): Promise<PipelineResult> {
-  const chainPage = await host.atoms.query(
-    { type: ['pipeline-stage-event'] },
-    200,
-  );
+  // Build the provenance chain by paginating ALL pipeline-stage-event
+  // atoms and filtering on metadata.pipeline_id. A single first-page
+  // query is unsafe under load: a busy store with many peer pipelines
+  // could push this pipeline's events past the first page, leaving
+  // the failed-atom chain partial and non-deterministic. Pagination
+  // walks until nextCursor=null OR a hard MAX is reached.
+  const PAGE_SIZE = 200;
+  const MAX_CHAIN_PAGES = 64;
   const chain: AtomId[] = [];
-  for (const atom of chainPage.atoms) {
-    const meta = atom.metadata as Record<string, unknown> | undefined;
-    if (meta?.pipeline_id === pipelineId) {
-      chain.push(atom.id);
+  let cursor: string | undefined = undefined;
+  for (let page = 0; page < MAX_CHAIN_PAGES; page++) {
+    const result = await host.atoms.query(
+      { type: ['pipeline-stage-event'] },
+      PAGE_SIZE,
+      cursor,
+    );
+    for (const atom of result.atoms) {
+      const meta = atom.metadata as Record<string, unknown> | undefined;
+      if (meta?.pipeline_id === pipelineId) {
+        chain.push(atom.id);
+      }
     }
+    if (result.nextCursor === null) break;
+    cursor = result.nextCursor;
   }
   await host.atoms.put(
     mkPipelineFailedAtom({
