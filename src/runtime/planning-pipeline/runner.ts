@@ -115,16 +115,56 @@ export async function runPipeline(
   const now = options.now ?? (() => new Date().toISOString() as Time);
 
   const pipelineId = `pipeline-${options.correlationId}` as AtomId;
-  const pipelineAtom = mkPipelineAtom({
-    pipelineId,
-    principalId: options.principal,
-    correlationId: options.correlationId,
-    now: now(),
-    seedAtomIds: options.seedAtomIds,
-    stagePolicyAtomId: options.stagePolicyAtomId,
-    mode: options.mode,
-  });
-  await host.atoms.put(pipelineAtom);
+  // First-run vs resume: only seed a fresh pipeline atom when none
+  // exists. A resume path with an existing atom must NOT reset
+  // pipeline_state, started_at, total_cost_usd, or current_stage
+  // metadata; the resume entrypoint is responsible for verifying the
+  // atom is in a resumable state before calling runPipeline.
+  const existingPipelineAtom = await host.atoms.get(pipelineId);
+  if (existingPipelineAtom === null) {
+    const pipelineAtom = mkPipelineAtom({
+      pipelineId,
+      principalId: options.principal,
+      correlationId: options.correlationId,
+      now: now(),
+      seedAtomIds: options.seedAtomIds,
+      stagePolicyAtomId: options.stagePolicyAtomId,
+      mode: options.mode,
+    });
+    await host.atoms.put(pipelineAtom);
+  } else if (options.resumeFromStage === undefined) {
+    // No resume requested but the atom already exists: a fresh-run
+    // collision. Halt rather than overwrite history.
+    return { kind: 'halted', pipelineId };
+  }
+
+  // Local helper: every mkPipelineStageEventAtom call site shares the
+  // same invariant fields (pipelineId, principal, correlationId, now)
+  // and varies only in transition + cost + duration + optional
+  // outputAtomId. Extracted at N=2 per the repo's duplication-floor
+  // canon; reduces drift across the kill-switch / claim-before-mutate
+  // / HIL fixes that touch these emit sites.
+  async function emitStageEvent(
+    stageName: string,
+    transition: 'enter' | 'exit-success' | 'exit-failure' | 'hil-pause' | 'hil-resume',
+    durationMs: number,
+    costUsd: number,
+    outputAtomId?: AtomId,
+  ): Promise<void> {
+    await host.atoms.put(
+      mkPipelineStageEventAtom({
+        pipelineId,
+        stageName,
+        principalId: options.principal,
+        correlationId: options.correlationId,
+        now: now(),
+        transition,
+        durationMs,
+        costUsd,
+        ...(outputAtomId !== undefined ? { outputAtomId } : {}),
+      }),
+    );
+  }
 
   const startIdx =
     options.resumeFromStage === undefined
@@ -208,18 +248,7 @@ export async function runPipeline(
     if (typeof claimedIndex !== 'number' || claimedIndex !== i) {
       return { kind: 'halted', pipelineId };
     }
-    await host.atoms.put(
-      mkPipelineStageEventAtom({
-        pipelineId,
-        stageName: stage.name,
-        principalId: options.principal,
-        correlationId: options.correlationId,
-        now: now(),
-        transition: 'enter',
-        durationMs: 0,
-        costUsd: 0,
-      }),
-    );
+    await emitStageEvent(stage.name, 'enter', 0, 0);
 
     const t0 = Date.now();
     let output: StageOutput<unknown>;
@@ -243,18 +272,7 @@ export async function runPipeline(
       if (host.scheduler.killswitchCheck()) {
         return { kind: 'halted', pipelineId };
       }
-      await host.atoms.put(
-        mkPipelineStageEventAtom({
-          pipelineId,
-          stageName: stage.name,
-          principalId: options.principal,
-          correlationId: options.correlationId,
-          now: now(),
-          transition: 'exit-failure',
-          durationMs: Date.now() - t0,
-          costUsd: 0,
-        }),
-      );
+      await emitStageEvent(stage.name, 'exit-failure', Date.now() - t0, 0);
       return await failPipeline(host, pipelineId, options, now, stage.name, cause, i);
     }
     // Re-check the kill switch on the success path before any post-run
@@ -273,18 +291,7 @@ export async function runPipeline(
     if (stage.outputSchema !== undefined) {
       const parsed = stage.outputSchema.safeParse(output.value);
       if (!parsed.success) {
-        await host.atoms.put(
-          mkPipelineStageEventAtom({
-            pipelineId,
-            stageName: stage.name,
-            principalId: options.principal,
-            correlationId: options.correlationId,
-            now: now(),
-            transition: 'exit-failure',
-            durationMs,
-            costUsd: output.cost_usd,
-          }),
-        );
+        await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
         return await failPipeline(
           host,
           pipelineId,
@@ -308,18 +315,7 @@ export async function runPipeline(
       && stageCap !== undefined
       && output.cost_usd > stageCap
     ) {
-      await host.atoms.put(
-        mkPipelineStageEventAtom({
-          pipelineId,
-          stageName: stage.name,
-          principalId: options.principal,
-          correlationId: options.correlationId,
-          now: now(),
-          transition: 'exit-failure',
-          durationMs,
-          costUsd: output.cost_usd,
-        }),
-      );
+      await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
       return await failPipeline(
         host,
         pipelineId,
@@ -363,18 +359,7 @@ export async function runPipeline(
 
     const hasCritical = findings.some((f) => f.severity === 'critical');
     if (hasCritical) {
-      await host.atoms.put(
-        mkPipelineStageEventAtom({
-          pipelineId,
-          stageName: stage.name,
-          principalId: options.principal,
-          correlationId: options.correlationId,
-          now: now(),
-          transition: 'exit-failure',
-          durationMs,
-          costUsd: output.cost_usd,
-        }),
-      );
+      await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
       return await failPipeline(
         host,
         pipelineId,
@@ -397,33 +382,16 @@ export async function runPipeline(
         && (hasCritical || auditorAbsent));
     if (shouldPause) {
       await host.atoms.update(pipelineId, { pipeline_state: 'hil-paused' });
-      await host.atoms.put(
-        mkPipelineStageEventAtom({
-          pipelineId,
-          stageName: stage.name,
-          principalId: options.principal,
-          correlationId: options.correlationId,
-          now: now(),
-          transition: 'hil-pause',
-          durationMs,
-          costUsd: output.cost_usd,
-        }),
-      );
+      await emitStageEvent(stage.name, 'hil-pause', durationMs, output.cost_usd);
       return { kind: 'hil-paused', pipelineId, stageName: stage.name };
     }
 
-    await host.atoms.put(
-      mkPipelineStageEventAtom({
-        pipelineId,
-        stageName: stage.name,
-        principalId: options.principal,
-        correlationId: options.correlationId,
-        now: now(),
-        transition: 'exit-success',
-        durationMs,
-        costUsd: output.cost_usd,
-        ...(output.atom_id !== undefined ? { outputAtomId: output.atom_id } : {}),
-      }),
+    await emitStageEvent(
+      stage.name,
+      'exit-success',
+      durationMs,
+      output.cost_usd,
+      output.atom_id,
     );
 
     priorOutput = output.value;
@@ -450,11 +418,16 @@ async function failPipeline(
   // query is unsafe under load: a busy store with many peer pipelines
   // could push this pipeline's events past the first page, leaving
   // the failed-atom chain partial and non-deterministic. Pagination
-  // walks until nextCursor=null OR a hard MAX is reached.
+  // walks until nextCursor=null. MAX_CHAIN_PAGES is a runaway-loop
+  // bound; if we hit it WITH a non-null cursor still in hand, the
+  // chain is incomplete and we throw rather than silently emit a
+  // truncated provenance record. Honours the substrate-level
+  // "every atom must carry provenance with a source chain" contract.
   const PAGE_SIZE = 200;
   const MAX_CHAIN_PAGES = 64;
   const chain: AtomId[] = [];
   let cursor: string | undefined = undefined;
+  let exhausted = false;
   for (let page = 0; page < MAX_CHAIN_PAGES; page++) {
     const result = await host.atoms.query(
       { type: ['pipeline-stage-event'] },
@@ -467,8 +440,20 @@ async function failPipeline(
         chain.push(atom.id);
       }
     }
-    if (result.nextCursor === null) break;
+    if (result.nextCursor === null) {
+      exhausted = true;
+      break;
+    }
     cursor = result.nextCursor;
+  }
+  if (!exhausted) {
+    throw new Error(
+      `runPipeline: provenance-chain pagination exhausted MAX_CHAIN_PAGES=`
+      + `${MAX_CHAIN_PAGES} for pipeline ${pipelineId} but nextCursor was `
+      + `still non-null. A pipeline-failed atom with a partial chain would `
+      + `violate the substrate provenance contract; raise MAX_CHAIN_PAGES `
+      + `or wire a pipeline-scoped query before retrying.`,
+    );
   }
   await host.atoms.put(
     mkPipelineFailedAtom({
