@@ -17,7 +17,7 @@ Concrete: a brainstorm-stage emits a payload with a fabricated `atom:foo-bar` ci
 
 ## 2. Current state (post-PR #247)
 
-```
+```text
 runStage:
   output  = stage.run(input)
   findings = stage.audit(output, ctx) ?? []
@@ -35,7 +35,9 @@ Failure mode: a `major` finding is logged but the pipeline accepts the imperfect
 
 ## 3. Proposed: re-prompt on findings
 
-```
+The control flow filters findings by the configured `severity_floor` so the loop activates only on findings at-or-above that floor. Define `actionable = findings.filter(f => rank[f.severity] >= rank[severity_floor])`, where `rank = { minor: 0, major: 1, critical: 2 }`. The loop exits success when `actionable` is empty (any below-floor findings are passed through as advisory). When `severity_floor='critical'`, only critical findings are actionable; majors and minors are non-actionable and accepted with the output. When `severity_floor='major'` (the indie-floor default), majors and criticals are actionable; minors are non-actionable.
+
+```text
 runStage:
   attempts = 0
   prior_findings = []
@@ -43,21 +45,26 @@ runStage:
     output = stage.run({ ...input, prior_audit_findings: prior_findings })
     findings = stage.audit(output, ctx) ?? []
     for finding in findings: write pipeline-audit-finding atom
-    if findings.every(f => f.severity === 'minor'):
+    actionable = findings.filter(f => rank[f.severity] >= rank[severity_floor])
+    if actionable.length === 0:
       write pipeline-stage-event(exit-success)
       return { halted: false, output }
     if attempts >= max_audit_retries:
       // Original critical-halts-stage / major-proceeds-with-warning behaviour
-      if any finding is 'critical':
+      if actionable.some(f => f.severity === 'critical'):
         write pipeline-stage-event(exit-failure)
         return { halted: true }
       write pipeline-stage-event(exit-success-with-findings)
       return { halted: false, output }
     if !stage.acceptsAuditFeedback:
-      // Stage opted out; fall through to original behaviour
-      ... (same as above)
+      // Stage opted out; fall through to the floor-respecting halt logic above.
+      if actionable.some(f => f.severity === 'critical'):
+        write pipeline-stage-event(exit-failure)
+        return { halted: true }
+      write pipeline-stage-event(exit-success-with-findings)
+      return { halted: false, output }
     write pipeline-stage-event(retry-after-findings)
-    prior_findings = findings
+    prior_findings = actionable
     attempts += 1
 ```
 
@@ -68,12 +75,12 @@ runStage:
 ```ts
 interface StageInput<T> {
   ...existing fields;
-  /** Audit findings from the prior attempt at this stage; empty on first attempt. */
-  readonly prior_audit_findings: ReadonlyArray<AuditFinding>;
+  /** Audit findings from the prior attempt at this stage; absent on first attempt. */
+  readonly prior_audit_findings?: ReadonlyArray<AuditFinding>;
 }
 ```
 
-Default value: `[]`. Existing stages that don't read this field stay backwards-compatible.
+The field is optional. When the runner re-invokes a stage after findings, it passes the actionable subset; on the first attempt it omits the field entirely. Stages SHOULD treat `undefined` and `[]` identically (default to `[]` at the read site). Existing stages that don't read this field stay backwards-compatible.
 
 ### 4.2 `PlanningStage` gains an opt-in flag
 
@@ -88,27 +95,27 @@ interface PlanningStage<TIn, TOut> {
 
 Reference adapters (`brainstorm-stage`, `spec-stage`, `plan-stage`, `review-stage`, `dispatch-stage`) flip this to `true` per stage as they become loop-aware. The runner change ships first; adapter migrations follow per stage.
 
-### 4.3 New atom event type
+### 4.3 New atom event transition
 
-`pipeline-stage-event.event_type` gains `'retry-after-findings'`. Carries `attempt_index`, `findings_summary` (count by severity), and `total_attempted` so the audit trail shows the loop activation.
+The existing `pipeline-stage-event` shape (`src/runtime/planning-pipeline/atom-shapes.ts`, `mkPipelineStageEventAtom` + `TRANSITION` enum) carries the kind on `metadata.transition`, typed as the union `'enter' | 'exit-success' | 'exit-failure' | 'hil-pause' | 'hil-resume'`. PR-B extends the union to add `'retry-after-findings'` (and the parallel `'exit-success-with-findings'` value used at retry-cap). The new transition variants carry `attempt_index`, `findings_summary` (count by severity), and `total_attempted` inside `metadata`, alongside the existing `pipeline_id`, `stage_name`, `duration_ms`, and `cost_usd` fields. No new atom type is introduced; only the typed `transition` discriminant grows.
 
 ### 4.4 New policy atom
 
-```
+```text
 pol-pipeline-stage-audit-retry-max
   scope: { stage_name?: string }   // omit for global default
   policy:
     max_audit_retries: number      // default: 1
-    severity_floor: 'major'        // 'major' | 'critical' -- only retry on findings at/above this severity
+    severity_floor: 'major'        // 'major' | 'critical' -- only findings at/above this severity are actionable; below-floor findings are advisory and accepted with the output
 ```
 
 Indie-floor default: `max_audit_retries=1`, `severity_floor='major'`. Org-ceiling deployments raise to 2-3 if their LLM-of-choice benefits from multi-shot self-correction.
 
 ## 5. Stage-adapter migration: brainstorm-stage as the first consumer
 
-When `prior_audit_findings.length > 0`, the brainstorm-stage prompt prepends:
+When `prior_audit_findings` is non-empty, the brainstorm-stage prompt prepends:
 
-```
+```text
 Your prior attempt produced these audit findings:
 
 {for f in prior_audit_findings:}
@@ -145,7 +152,7 @@ PR #247's severity downgrade can then be reverted (separate PR): brainstorm cita
 ## 8. Migration plan
 
 PR-A (this spec, docs only) -- committed as `docs/pipeline-feedback-loop-spec`.
-PR-B -- substrate runner change: `StageInput.prior_audit_findings` field, `PlanningStage.acceptsAuditFeedback` flag, runner retry loop, new `pipeline-stage-event.retry-after-findings`, new `pol-pipeline-stage-audit-retry-max` policy parser. Reference adapters opt out (`acceptsAuditFeedback: false`) initially.
+PR-B -- substrate runner change: optional `StageInput.prior_audit_findings` field, `PlanningStage.acceptsAuditFeedback` flag, runner retry loop with `severity_floor`-aware actionable filtering, extension of the `TRANSITION` union in `mkPipelineStageEventAtom` to include `'retry-after-findings'` and `'exit-success-with-findings'`, new `pol-pipeline-stage-audit-retry-max` policy parser. Reference adapters opt out (`acceptsAuditFeedback: false`) initially.
 PR-C -- brainstorm-stage opt-in (`acceptsAuditFeedback: true`), prompt-template change, revert PR #247's severity downgrade.
 PR-D -- spec-stage opt-in.
 PR-E -- plan-stage opt-in.
