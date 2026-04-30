@@ -248,6 +248,10 @@ describe('brainstormStage', () => {
       expect(Array.isArray(c.data.verified_seed_atom_ids)).toBe(true);
       expect(c.data.verified_seed_atom_ids).toEqual(seedIds.map(String));
       expect(c.system).toMatch(/exploratory/i);
+      // Regression guard: the prompt MUST NOT re-introduce the old
+      // hard-constraint "verified seed atom set" wording. The fence
+      // moved to the review-stage; brainstorm prose stays exploratory.
+      expect(c.system).not.toMatch(/verified seed atom set/i);
     }
   });
 

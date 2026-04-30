@@ -122,8 +122,6 @@ provenance verification, so the citation-grounding fence belongs
 there (per the dev-deep-planning-pipeline canon directive), not at
 the exploratory stage.
 
-If you absolutely must reference a prior atom in prose, use a phrase
-like "the indie-floor invariant" rather than the literal atom-id.
 The post-stage auditor flags any literal "atom:<id>" citation that
 did not come from the verified seed set as a 'major' finding
 (advisory, non-blocking) so a stray citation does not halt the
