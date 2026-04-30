@@ -235,6 +235,7 @@ describe('brainstormStage', () => {
       priorOutput: null,
       pipelineId: 'p' as AtomId,
       seedAtomIds: seedIds,
+      verifiedCitedAtomIds: seedIds,
     });
     // Audit-trail contract: the data block still carries the verified
     // seed-atom set under a stable key so the post-stage auditor can

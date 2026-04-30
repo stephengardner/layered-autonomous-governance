@@ -163,7 +163,17 @@ async function runReview(
 
   // Walk every plan's derived_from and principles_applied. A
   // fabricated atom-id is the substrate-level failure mode this stage
-  // exists to catch.
+  // exists to catch. The reference (indie-floor) review-stage walks
+  // host.atoms.get only; the verifiedCitedAtomIds set on
+  // StageInput is forwarded by the runner for org-ceiling LLM-driven
+  // review-stage adapters that compose into this same PlanningStage
+  // shape and may use the set as a positive grounding contract for
+  // their own LLM call (mirroring the spec-stage and plan-stage
+  // patterns). The reference adapter does not consume the field so
+  // that an absent or empty set never widens the citation fence past
+  // resolvability; the runner's halt-on-critical-finding plus the
+  // existing fabricated-cited-atom check is the load-bearing fence
+  // for the indie-floor path.
   for (const plan of plans) {
     const planLabel =
       typeof plan.title === 'string' && plan.title.length > 0

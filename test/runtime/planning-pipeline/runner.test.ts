@@ -117,6 +117,73 @@ describe('runPipeline', () => {
     }
   });
 
+  it('forwards options.verifiedCitedAtomIds to every stage StageInput', async () => {
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['stage-a', 'stage-b']);
+    // Capture the StageInput each stage observes so the test can
+    // assert the runner's plumbing is uniform across the pipeline:
+    // every stage MUST see the same readonly array as its
+    // input.verifiedCitedAtomIds. This is the substrate-side guard
+    // for the closure-of-citations property the spec/plan/review
+    // stage prompts depend on.
+    const captured: Array<{ name: string; verified: ReadonlyArray<AtomId> }> = [];
+    const stageA: PlanningStage<unknown, { a: number }> = {
+      name: 'stage-a',
+      async run(input) {
+        captured.push({ name: 'stage-a', verified: input.verifiedCitedAtomIds });
+        return { value: { a: 1 }, cost_usd: 0, duration_ms: 0, atom_type: 'spec' };
+      },
+    };
+    const stageB: PlanningStage<{ a: number }, { b: number }> = {
+      name: 'stage-b',
+      async run(input) {
+        captured.push({ name: 'stage-b', verified: input.verifiedCitedAtomIds });
+        return { value: { b: 2 }, cost_usd: 0, duration_ms: 0, atom_type: 'spec' };
+      },
+    };
+    const verified = [
+      'intent-foo' as AtomId,
+      'dev-canon-foo' as AtomId,
+      'dev-canon-bar' as AtomId,
+    ];
+    const result = await runPipeline([stageA, stageB], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-verified-fanout',
+      seedAtomIds: ['intent-foo' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+      verifiedCitedAtomIds: verified,
+    });
+    expect(result.kind).toBe('completed');
+    expect(captured.length).toBe(2);
+    expect(captured[0]?.verified).toEqual(verified);
+    expect(captured[1]?.verified).toEqual(verified);
+  });
+
+  it('forwards an empty verifiedCitedAtomIds default when the option is omitted', async () => {
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['stage-a']);
+    let observed: ReadonlyArray<AtomId> | null = null;
+    const stage: PlanningStage<unknown, unknown> = {
+      name: 'stage-a',
+      async run(input) {
+        observed = input.verifiedCitedAtomIds;
+        return { value: {}, cost_usd: 0, duration_ms: 0, atom_type: 'spec' };
+      },
+    };
+    await runPipeline([stage], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-verified-default',
+      seedAtomIds: ['intent-foo' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(observed).not.toBeNull();
+    expect(observed).toEqual([]);
+  });
+
   it('halts on kill-switch before the first stage', async () => {
     const host = createMemoryHost();
     vi.spyOn(host.scheduler, 'killswitchCheck').mockReturnValue(true);

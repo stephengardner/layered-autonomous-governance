@@ -94,6 +94,16 @@ export interface RunPipelineOptions {
    * resume entrypoint passes priorOutput explicitly.
    */
   readonly priorOutput?: unknown;
+  /**
+   * Verified citation set forwarded to every stage's StageInput. The
+   * caller (e.g. a deep-pipeline driver) computes this from the seed
+   * atoms plus the canon atoms applicable at the planning principal's
+   * scope, and the runner threads it through to each stage's
+   * StageInput.verifiedCitedAtomIds without inspecting the contents.
+   * When omitted the runner forwards an empty list; stage adapters
+   * with a non-empty grounding contract must fail closed in that case.
+   */
+  readonly verifiedCitedAtomIds?: ReadonlyArray<AtomId>;
 }
 
 export async function runPipeline(
@@ -260,6 +270,7 @@ export async function runPipeline(
         priorOutput,
         pipelineId,
         seedAtomIds: options.seedAtomIds,
+        verifiedCitedAtomIds: options.verifiedCitedAtomIds ?? [],
       };
       output = await stage.run(stageInput);
     } catch (err) {

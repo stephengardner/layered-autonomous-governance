@@ -96,13 +96,37 @@ export const specPayloadSchema = z.object({
 
 export type SpecPayload = z.infer<typeof specPayloadSchema>;
 
-const SPEC_SYSTEM_PROMPT = `You are the spec stage of a deep-planning pipeline.
+/**
+ * Spec system prompt.
+ *
+ * Exported so the contract-tests can assert on the citation-grounding
+ * language. Mirrors the brainstorm-stage HARD-CONSTRAINT pattern: the
+ * LLM may cite ONLY atom-ids that appear in the verified set passed
+ * via the templated DATA block (data.verified_cited_atom_ids). The
+ * verified set is computed by the runner from the seed atoms plus the
+ * canon atoms applicable at the planning principal's scope; the spec-
+ * stage prompt does not enumerate the set itself, it only constrains
+ * the LLM to cite from it. Without this fence, a model that sees only
+ * "cite verifiable ids" will confabulate plausible-but-invented ids
+ * (the dogfeed of 2026-04-30 surfaced this on plan-stage; spec-stage
+ * is the same shape and gets the same fence so the pattern is uniform
+ * across the pipeline).
+ */
+export const SPEC_SYSTEM_PROMPT = `You are the spec stage of a deep-planning pipeline.
 Synthesize the brainstorm-stage output into a prose-shaped specification:
 state the goal, describe the design with citations to verifiable atom
 ids and repository paths, and capture the alternatives you rejected.
-Cite ONLY atom ids and paths that already exist in the system; an
-unverifiable citation halts the stage. Emit ONLY a payload that matches
-the provided schema; no prose outside the schema fields.`;
+
+HARD CONSTRAINT on atom-id citations: the cited_atom_ids array, and
+any atom-id citation embedded in body or alternatives_rejected, MUST
+contain ONLY atom-ids that appear in data.verified_cited_atom_ids.
+If an atom-id you would cite is not in that set, OMIT the citation
+rather than guess. Inventing or paraphrasing an atom-id outside the
+verified set produces a critical audit finding and halts the stage.
+
+Cite paths that exist in the repository on disk; an unreachable path
+also halts the stage. Emit ONLY a payload that matches the provided
+schema; no prose outside the schema fields.`;
 
 async function runSpec(
   input: StageInput<unknown>,
@@ -147,6 +171,18 @@ async function runSpec(
     {
       pipeline_id: String(input.pipelineId),
       seed_atom_ids: input.seedAtomIds.map(String),
+      // Citation-grounding fence: the LLM is constrained by the
+      // SPEC_SYSTEM_PROMPT to cite ONLY atom-ids that appear in this
+      // array. Computed by the runner's caller (runDeepPipeline) from
+      // the seed atoms plus the canon atoms applicable at the planning
+      // principal's scope, and forwarded through the runner via
+      // RunPipelineOptions.verifiedCitedAtomIds. Empty array means the
+      // caller did not compute a set; the prompt still instructs the
+      // LLM to cite only from this set, so an empty set effectively
+      // forbids atom-id citations entirely. The post-stage auditor
+      // continues to verify each citation against host.atoms.get and
+      // emits a critical finding on fabrication.
+      verified_cited_atom_ids: input.verifiedCitedAtomIds.map(String),
       correlation_id: input.correlationId,
       // Forward the upstream brainstorm-stage payload so the spec
       // synthesises against the open_questions, alternatives_surveyed,

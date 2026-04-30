@@ -39,6 +39,7 @@ import { loadLlmToolPolicy } from '../dist/llm-tool-policy.js';
 import { askQuestion } from '../dist/runtime/questions/index.js';
 import { runPlanApprovalTick } from '../dist/actor-message/index.js';
 import { parseRunCtoActorArgs } from './lib/run-cto-actor.mjs';
+import { computeVerifiedCitedAtomIds } from './lib/verified-citation-set.mjs';
 
 // Instance configuration lives here, NOT in src/. Framework code
 // stays mechanism-focused; vendor model ids are the caller's choice.
@@ -330,12 +331,33 @@ async function runDeepPipeline(args) {
   }
 
   const correlationId = `cto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // Compute the verified citation set the runner forwards into every
+  // stage's StageInput. The set is the closure of citations the
+  // pipeline's LLM-driven stages may ground on: the seed atoms (the
+  // operator-intent that authorised the run) PLUS the canon atoms
+  // applicable at the planning principal's scope. Without this set,
+  // the LLM has no positive signal for "what counts as a real atom-
+  // id", which is how the dogfeed of 2026-04-30 produced four
+  // fabricated principle ids in the plan-stage. Computed once per
+  // pipeline run; the runner threads the readonly array through the
+  // existing StageInput shape and never mutates it.
+  const verifiedCitedAtomIds = await computeVerifiedCitedAtomIds(host, {
+    seedAtomIds: [args.intentId],
+    scope: 'project',
+  });
+  console.log(
+    `[cto-actor] verified-citation-set computed for principal=${principal.id} `
+    + `scope=project: ${verifiedCitedAtomIds.length} atom-ids `
+    + `(${[args.intentId].length} seed + `
+    + `${verifiedCitedAtomIds.length - [args.intentId].length} canon)`,
+  );
   const result = await runPipeline(stageAdapters, host, {
     principal: principal.id,
     correlationId,
     seedAtomIds: [args.intentId],
     stagePolicyAtomId: stages.atomId,
     mode: 'substrate-deep',
+    verifiedCitedAtomIds,
   });
   console.log('[cto-actor] --- DEEP-PIPELINE REPORT ---');
   console.log(JSON.stringify(result, null, 2));

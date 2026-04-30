@@ -114,6 +114,13 @@ function makeStageRunInput(
     },
     pipelineId: 'pipeline-corr' as AtomId,
     seedAtomIds: overrides.seedAtomIds ?? [],
+    // The dispatch-stage adapter does not consume verifiedCitedAtomIds
+    // (no LLM call; the gate is review-clean OR pipeline-resume), but
+    // the substrate StageInput shape requires the field after the
+    // citation-fence extension. Forward an empty array so the stage's
+    // structural type matches without changing the dispatch-stage's
+    // gating semantics.
+    verifiedCitedAtomIds: [] as ReadonlyArray<AtomId>,
   };
 }
 

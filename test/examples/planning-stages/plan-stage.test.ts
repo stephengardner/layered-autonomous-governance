@@ -14,7 +14,10 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { planStage } from '../../../examples/planning-stages/plan/index.js';
+import {
+  PLAN_SYSTEM_PROMPT,
+  planStage,
+} from '../../../examples/planning-stages/plan/index.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
 import type { AtomId, PrincipalId } from '../../../src/types.js';
 
@@ -157,6 +160,80 @@ describe('planStage', () => {
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
+  });
+
+  // Substrate-design fix: the plan prompt MUST constrain citations
+  // to the runner-supplied verified set. The dogfeed of 2026-04-30
+  // halted on plan-stage because the prompt said "NEVER invent atom
+  // ids" without giving the LLM a positive grounding signal; the
+  // LLM hallucinated four plausible principle ids in
+  // principles_applied that the auditor caught and surfaced as
+  // critical findings.
+  describe('PLAN_SYSTEM_PROMPT (citation guidance)', () => {
+    it('instructs the LLM to ground every atom-id citation in data.verified_cited_atom_ids', () => {
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/verified_cited_atom_ids/);
+    });
+
+    it('uses "HARD CONSTRAINT" wording so the LLM treats the fence as load-bearing', () => {
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/HARD CONSTRAINT/);
+    });
+
+    it('instructs the LLM to omit a citation rather than guess', () => {
+      // The "OMIT the citation\nrather than guess" wording wraps over a
+      // line break in PLAN_SYSTEM_PROMPT so the regex tolerates any
+      // whitespace (including \n) between the two halves.
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/OMIT the citation\s+rather than guess/i);
+    });
+
+    it('warns the LLM that an out-of-set citation halts the stage', () => {
+      expect(PLAN_SYSTEM_PROMPT).toMatch(
+        /critical audit finding|halts the stage/i,
+      );
+    });
+  });
+
+  it('runPlan passes the verified-cited-atom-ids set through to the LLM data block', async () => {
+    const host = createMemoryHost();
+    let captured: { system: string; data: Record<string, unknown> } | null = null;
+    host.llm.judge = (async (
+      _schema: unknown,
+      system: unknown,
+      data: unknown,
+      _options: unknown,
+    ) => {
+      captured = {
+        system: system as string,
+        data: data as Record<string, unknown>,
+      };
+      return {
+        output: {
+          plans: [samplePlan],
+          cost_usd: 0,
+        },
+        metadata: { latency_ms: 1, cost_usd: 0 },
+      };
+    }) as typeof host.llm.judge;
+
+    const verifiedIds = ['atom-one', 'atom-two', 'atom-three'] as ReadonlyArray<AtomId>;
+    await planStage.run({
+      host,
+      principal: 'plan-author' as PrincipalId,
+      correlationId: 'corr',
+      priorOutput: null,
+      pipelineId: 'p' as AtomId,
+      seedAtomIds: ['intent-foo' as AtomId],
+      verifiedCitedAtomIds: verifiedIds,
+    });
+    expect(captured).not.toBeNull();
+    if (captured !== null) {
+      const c = captured as { system: string; data: Record<string, unknown> };
+      expect(Array.isArray(c.data.verified_cited_atom_ids)).toBe(true);
+      expect(c.data.verified_cited_atom_ids).toEqual(verifiedIds.map(String));
+      // The system prompt MUST reference the data field by exact name
+      // so a downstream prompt-edit reviewer can see the contract
+      // wired end-to-end.
+      expect(c.system).toMatch(/verified_cited_atom_ids/);
+    }
   });
 
   it('audit() returns no findings when every cited atom resolves', async () => {
