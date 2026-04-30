@@ -87,6 +87,7 @@ describe('brainstormStage', () => {
         correlationId: 'corr',
         pipelineId,
         stageName: 'brainstorm-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.some(
@@ -235,6 +236,7 @@ describe('brainstormStage', () => {
       priorOutput: null,
       pipelineId: 'p' as AtomId,
       seedAtomIds: seedIds,
+      verifiedCitedAtomIds: seedIds,
     });
     // Audit-trail contract: the data block still carries the verified
     // seed-atom set under a stable key so the post-stage auditor can
@@ -324,6 +326,7 @@ describe('brainstormStage', () => {
         correlationId: 'corr',
         pipelineId,
         stageName: 'brainstorm-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.length).toBeGreaterThan(0);
@@ -352,6 +355,7 @@ describe('brainstormStage', () => {
         correlationId: 'corr',
         pipelineId,
         stageName: 'brainstorm-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.length).toBe(0);
@@ -378,6 +382,7 @@ describe('brainstormStage', () => {
         correlationId: 'corr',
         pipelineId,
         stageName: 'brainstorm-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.length).toBe(0);

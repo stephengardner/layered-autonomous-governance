@@ -130,7 +130,23 @@ export const planPayloadSchema = z.object({
 
 export type PlanPayload = z.infer<typeof planPayloadSchema>;
 
-const PLAN_SYSTEM_PROMPT = `You are the plan stage of a deep-planning pipeline.
+/**
+ * Plan system prompt.
+ *
+ * Exported so the contract-tests can assert on the citation-grounding
+ * language. Tightened (substrate-fix in this PR) so the LLM does not
+ * fabricate plausible-but-invented atom-ids in derived_from or
+ * principles_applied: the e2e of the deep planning pipeline halted on
+ * 2026-04-30 because the unconstrained "NEVER invent atom ids" prompt
+ * still left the LLM free to hallucinate plausible principle ids
+ * (e.g. "treat-data-as-literal", "minimal-blast-radius") that the
+ * post-stage auditor caught and surfaced as critical findings.
+ * Constraining citations to data.verified_cited_atom_ids gives the
+ * LLM a positive grounding signal it can succeed against; mirrors
+ * the brainstorm-stage `verified_seed_atom_ids` pattern, generalised
+ * to the plan stage where citation correctness is load-bearing.
+ */
+export const PLAN_SYSTEM_PROMPT = `You are the plan stage of a deep-planning pipeline.
 Synthesize the spec-stage output into a plan that the operator can
 approve and dispatch. Each plan carries a title, a markdown body with
 "Why this", "Concrete steps", and "Provenance" sections, a derived_from
@@ -139,8 +155,17 @@ principles_applied subset that the plan claims to satisfy, an
 alternatives_rejected list with one-line reasons, a
 what_breaks_if_revisit sentence, a confidence score in [0,1], and a
 delegation object naming the sub-actor that will implement the plan.
-NEVER invent atom ids. Emit ONLY a payload that matches the provided
-schema; no prose outside the schema fields.`;
+
+HARD CONSTRAINT on atom-id citations: every atom-id you place in
+derived_from and principles_applied MUST appear in
+data.verified_cited_atom_ids. If a principle or supporting atom you
+would cite is not in that set, OMIT the citation rather than guess.
+Inventing or paraphrasing an atom-id outside the verified set produces
+a critical audit finding and halts the stage. principles_applied is a
+subset of derived_from; both are bounded by the verified set.
+
+Emit ONLY a payload that matches the provided schema; no prose
+outside the schema fields.`;
 
 async function runPlan(
   input: StageInput<unknown>,
@@ -223,7 +248,24 @@ async function runPlan(
     {
       pipeline_id: String(input.pipelineId),
       seed_atom_ids: input.seedAtomIds.map(String),
+      // Citation-grounding fence: the LLM is constrained by
+      // PLAN_SYSTEM_PROMPT to cite ONLY atom-ids that appear in this
+      // array, in derived_from and principles_applied. Computed by
+      // the runner's caller (runDeepPipeline) from the seed atoms
+      // plus the canon atoms applicable at the planning principal's
+      // scope. Empty array means the caller did not compute a set;
+      // the prompt still instructs the LLM to cite only from this
+      // set, so an empty set effectively forbids atom-id citations
+      // entirely. The post-stage auditor continues to verify each
+      // citation against host.atoms.get and emits a critical finding
+      // on fabrication or non-authoritative resolution.
+      verified_cited_atom_ids: input.verifiedCitedAtomIds.map(String),
       correlation_id: input.correlationId,
+      // Forward the upstream spec-stage payload so the plan synthesises
+      // against the goal, body, cited_paths, and cited_atom_ids the
+      // spec produced. Without this, the model sees only correlation
+      // metadata and plans in a vacuum.
+      spec_output: input.priorOutput ?? null,
     },
     {
       // Mechanism scaffold: callers compose this stage with their own
@@ -296,17 +338,47 @@ async function auditPlan(
   ctx: StageContext,
 ): Promise<ReadonlyArray<AuditFinding>> {
   const findings: AuditFinding[] = [];
+  // Build a Set view of the verified citation set for O(1) membership
+  // checks below. Empty set => skip the closure-of-citations check
+  // and fall back to resolvability-only (legacy callers, including
+  // direct audit() invocations from tests, do not compute a verified
+  // set; they rely on the existing fabricated-cited-atom check
+  // alone).
+  const verifiedSet = new Set(ctx.verifiedCitedAtomIds.map(String));
+  const enforceVerifiedSet = verifiedSet.size > 0;
   for (const plan of output.plans) {
     // Verify every derived_from atom-id is authoritative: present,
     // untainted, and not superseded. Any failure is a critical finding;
     // the runner halts the stage. A tainted or superseded citation is
     // equivalent to a fabricated id because the LLM cited a state that
     // does not hold under arbitration.
+    const derivedFromSet = new Set(plan.derived_from.map(String));
     for (const id of plan.derived_from) {
       const atom = await ctx.host.atoms.get(id as AtomId);
       const status = classifyAtomAuthority(atom);
       if (status !== 'authoritative') {
         findings.push(citationFinding(plan.title, 'derived_from', id, status));
+        continue;
+      }
+      // Closure-of-citations: a derived_from id that resolves but
+      // is NOT in the verified set means the LLM grounded a citation
+      // outside the input contract, which is the same failure mode
+      // as fabrication (the auditor cannot distinguish "LLM made up
+      // a plausible id that accidentally exists" from "LLM honestly
+      // cited an in-set atom" without the verified set as a
+      // referent).
+      if (enforceVerifiedSet && !verifiedSet.has(String(id))) {
+        findings.push({
+          severity: 'critical',
+          category: 'non-verified-cited-atom',
+          message:
+            `Plan "${plan.title}" cites atom id "${id}" in derived_from `
+            + 'which resolves but is NOT in the verified citation set. The '
+            + 'plan-stage citation fence enforces the closure-of-citations '
+            + 'property at the audit layer, not just the prompt layer.',
+          cited_atom_ids: [id as AtomId],
+          cited_paths: [],
+        });
       }
     }
     // Verify every principles_applied atom-id resolves authoritatively.
@@ -320,6 +392,40 @@ async function auditPlan(
         findings.push(
           citationFinding(plan.title, 'principles_applied', id, status),
         );
+        continue;
+      }
+      // Subset-rule enforcement: the prompt promises
+      // principles_applied is a subset of derived_from, but neither
+      // the schema nor the audit checked it before. A clean atom in
+      // principles_applied that is NOT in derived_from breaks the
+      // plan's provenance contract.
+      if (!derivedFromSet.has(String(id))) {
+        findings.push({
+          severity: 'critical',
+          category: 'principles-not-in-derived-from',
+          message:
+            `Plan "${plan.title}" cites atom id "${id}" in `
+            + 'principles_applied which is NOT present in derived_from. '
+            + 'principles_applied must be a subset of derived_from per '
+            + 'the plan-stage provenance contract.',
+          cited_atom_ids: [id as AtomId],
+          cited_paths: [],
+        });
+        continue;
+      }
+      if (enforceVerifiedSet && !verifiedSet.has(String(id))) {
+        findings.push({
+          severity: 'critical',
+          category: 'non-verified-cited-atom',
+          message:
+            `Plan "${plan.title}" cites atom id "${id}" in `
+            + 'principles_applied which resolves but is NOT in the '
+            + 'verified citation set. The plan-stage citation fence '
+            + 'enforces the closure-of-citations property at the audit '
+            + 'layer, not just the prompt layer.',
+          cited_atom_ids: [id as AtomId],
+          cited_paths: [],
+        });
       }
     }
   }

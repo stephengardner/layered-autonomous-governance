@@ -15,9 +15,18 @@
 import { describe, expect, it } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { specStage } from '../../../examples/planning-stages/spec/index.js';
+import {
+  SPEC_SYSTEM_PROMPT,
+  specStage,
+} from '../../../examples/planning-stages/spec/index.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
 import type { AtomId, PrincipalId } from '../../../src/types.js';
+import {
+  captureStageRunPrompt,
+  expectCitationFencePrompt,
+  expectVerifiedCitedAtomIdsForwarded,
+  mkPromptContractStageInput,
+} from './citation-fence-helpers.js';
 
 describe('specStage', () => {
   it('exports a PlanningStage with name "spec-stage"', () => {
@@ -89,6 +98,7 @@ describe('specStage', () => {
         correlationId: 'corr',
         pipelineId: 'p' as AtomId,
         stageName: 'spec-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
@@ -111,9 +121,46 @@ describe('specStage', () => {
         correlationId: 'corr',
         pipelineId: 'p' as AtomId,
         stageName: 'spec-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
+  });
+
+  // Substrate-design fix: the spec prompt MUST constrain atom-id
+  // citations to the runner-supplied verified set, mirroring the
+  // plan-stage fence. Spec-stage carries the same confabulation risk
+  // structurally; the dogfeed of 2026-04-30 happened to halt on
+  // plan-stage but the same gap holds here, and a follow-on dogfeed
+  // would surface it the moment a non-trivial spec is asked for.
+  // Assertion bodies live in citation-fence-helpers.ts so a prompt-
+  // contract change lands in ONE file, not N synchronized stage-test
+  // edits.
+  it('SPEC_SYSTEM_PROMPT carries the citation-fence contract', () => {
+    expectCitationFencePrompt(SPEC_SYSTEM_PROMPT);
+  });
+
+  it('runSpec passes the verified-cited-atom-ids set through to the LLM data block', async () => {
+    const host = createMemoryHost();
+    const verifiedIds = ['atom-one', 'atom-two', 'atom-three'] as ReadonlyArray<AtomId>;
+    const captured = await captureStageRunPrompt({
+      stage: specStage,
+      stubOutput: {
+        goal: 'design X',
+        body: 'short body',
+        cited_paths: [],
+        cited_atom_ids: [],
+        alternatives_rejected: [],
+        cost_usd: 0,
+      },
+      stageInput: mkPromptContractStageInput<unknown>({
+        host,
+        principal: 'spec-author',
+        priorOutput: null,
+        verifiedCitedAtomIds: verifiedIds,
+      }),
+    });
+    expectVerifiedCitedAtomIdsForwarded(captured, verifiedIds);
   });
 
   it('audit() returns no findings when every cited atom and path resolves', async () => {
@@ -171,6 +218,7 @@ describe('specStage', () => {
           correlationId: 'corr',
           pipelineId: 'p' as AtomId,
           stageName: 'spec-stage',
+          verifiedCitedAtomIds: [],
         },
       );
       expect(findings?.length).toBe(0);

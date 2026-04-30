@@ -21,6 +21,21 @@ export interface StageInput<T> {
   readonly priorOutput: T;
   readonly pipelineId: AtomId;
   readonly seedAtomIds: ReadonlyArray<AtomId>;
+  /**
+   * Verified citation set the stage's LLM may cite from. The runner
+   * forwards this from RunPipelineOptions; concrete stage adapters
+   * pass it into the LLM `data` block under a stable key
+   * (`verified_cited_atom_ids`) and instruct the LLM in the system
+   * prompt to ground every atom-id citation in this set. Stage audit
+   * functions continue to walk citations against host.atoms.get and
+   * emit critical findings on fabrication; this field is the
+   * positive-grounding signal the LLM needs to succeed (mirrors the
+   * brainstorm-stage `verified_seed_atom_ids` pattern, generalised to
+   * the full pipeline). Default empty when the runner is invoked
+   * without a computed set; stage adapters that depend on a non-empty
+   * grounding contract should fail closed in that case.
+   */
+  readonly verifiedCitedAtomIds: ReadonlyArray<AtomId>;
 }
 
 export interface StageOutput<T> {
@@ -45,6 +60,18 @@ export interface StageContext {
   readonly correlationId: string;
   readonly pipelineId: AtomId;
   readonly stageName: string;
+  /**
+   * Verified citation set the stage's audit() may use to reject
+   * resolvable-but-out-of-set citations. Mirrored from the
+   * StageInput field of the same name; the runner threads it through
+   * unchanged so an audit walks against the same set the LLM was
+   * prompted with. Empty when the runner is invoked without a
+   * computed set; audits that depend on a non-empty grounding
+   * contract should treat the empty case the same way the prompts
+   * do (a citation against an empty set is a citation against
+   * nothing, so resolvability alone may be the audit's only signal).
+   */
+  readonly verifiedCitedAtomIds: ReadonlyArray<AtomId>;
 }
 
 export type RetryStrategy =

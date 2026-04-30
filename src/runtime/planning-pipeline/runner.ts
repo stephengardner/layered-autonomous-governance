@@ -94,6 +94,16 @@ export interface RunPipelineOptions {
    * resume entrypoint passes priorOutput explicitly.
    */
   readonly priorOutput?: unknown;
+  /**
+   * Verified citation set forwarded to every stage's StageInput. The
+   * caller (e.g. a deep-pipeline driver) computes this from the seed
+   * atoms plus the canon atoms applicable at the planning principal's
+   * scope, and the runner threads it through to each stage's
+   * StageInput.verifiedCitedAtomIds without inspecting the contents.
+   * When omitted the runner forwards an empty list; stage adapters
+   * with a non-empty grounding contract must fail closed in that case.
+   */
+  readonly verifiedCitedAtomIds?: ReadonlyArray<AtomId>;
 }
 
 export async function runPipeline(
@@ -113,6 +123,17 @@ export async function runPipeline(
   }
 
   const now = options.now ?? (() => new Date().toISOString() as Time);
+  // Freeze the verified citation set once per run so a stage cannot
+  // mutate the array reference and skew later-stage grounding. The
+  // runner forwards this same frozen reference into every
+  // StageInput.verifiedCitedAtomIds and StageContext.verifiedCitedAtomIds
+  // so the LLM-prompt-side grounding signal and the audit-side check
+  // walk the same set. Defensive copy first (Object.freeze is shallow)
+  // so a mutating caller cannot reach back through the original
+  // options.verifiedCitedAtomIds reference to pollute the frozen view.
+  const verifiedCitedAtomIds = Object.freeze(
+    [...(options.verifiedCitedAtomIds ?? [])],
+  ) as ReadonlyArray<AtomId>;
 
   const pipelineId = `pipeline-${options.correlationId}` as AtomId;
   // First-run vs resume: only seed a fresh pipeline atom when none
@@ -260,6 +281,7 @@ export async function runPipeline(
         priorOutput,
         pipelineId,
         seedAtomIds: options.seedAtomIds,
+        verifiedCitedAtomIds,
       };
       output = await stage.run(stageInput);
     } catch (err) {
@@ -338,6 +360,7 @@ export async function runPipeline(
         correlationId: options.correlationId,
         pipelineId,
         stageName: stage.name,
+        verifiedCitedAtomIds,
       });
       for (const finding of findings) {
         await host.atoms.put(

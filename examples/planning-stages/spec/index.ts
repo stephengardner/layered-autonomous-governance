@@ -96,13 +96,37 @@ export const specPayloadSchema = z.object({
 
 export type SpecPayload = z.infer<typeof specPayloadSchema>;
 
-const SPEC_SYSTEM_PROMPT = `You are the spec stage of a deep-planning pipeline.
+/**
+ * Spec system prompt.
+ *
+ * Exported so the contract-tests can assert on the citation-grounding
+ * language. Mirrors the brainstorm-stage HARD-CONSTRAINT pattern: the
+ * LLM may cite ONLY atom-ids that appear in the verified set passed
+ * via the templated DATA block (data.verified_cited_atom_ids). The
+ * verified set is computed by the runner from the seed atoms plus the
+ * canon atoms applicable at the planning principal's scope; the spec-
+ * stage prompt does not enumerate the set itself, it only constrains
+ * the LLM to cite from it. Without this fence, a model that sees only
+ * "cite verifiable ids" will confabulate plausible-but-invented ids
+ * (the dogfeed of 2026-04-30 surfaced this on plan-stage; spec-stage
+ * is the same shape and gets the same fence so the pattern is uniform
+ * across the pipeline).
+ */
+export const SPEC_SYSTEM_PROMPT = `You are the spec stage of a deep-planning pipeline.
 Synthesize the brainstorm-stage output into a prose-shaped specification:
 state the goal, describe the design with citations to verifiable atom
 ids and repository paths, and capture the alternatives you rejected.
-Cite ONLY atom ids and paths that already exist in the system; an
-unverifiable citation halts the stage. Emit ONLY a payload that matches
-the provided schema; no prose outside the schema fields.`;
+
+HARD CONSTRAINT on atom-id citations: the cited_atom_ids array, and
+any atom-id citation embedded in body or alternatives_rejected, MUST
+contain ONLY atom-ids that appear in data.verified_cited_atom_ids.
+If an atom-id you would cite is not in that set, OMIT the citation
+rather than guess. Inventing or paraphrasing an atom-id outside the
+verified set produces a critical audit finding and halts the stage.
+
+Cite paths that exist in the repository on disk; an unreachable path
+also halts the stage. Emit ONLY a payload that matches the provided
+schema; no prose outside the schema fields.`;
 
 async function runSpec(
   input: StageInput<unknown>,
@@ -147,6 +171,18 @@ async function runSpec(
     {
       pipeline_id: String(input.pipelineId),
       seed_atom_ids: input.seedAtomIds.map(String),
+      // Citation-grounding fence: the LLM is constrained by the
+      // SPEC_SYSTEM_PROMPT to cite ONLY atom-ids that appear in this
+      // array. Computed by the runner's caller (runDeepPipeline) from
+      // the seed atoms plus the canon atoms applicable at the planning
+      // principal's scope, and forwarded through the runner via
+      // RunPipelineOptions.verifiedCitedAtomIds. Empty array means the
+      // caller did not compute a set; the prompt still instructs the
+      // LLM to cite only from this set, so an empty set effectively
+      // forbids atom-id citations entirely. The post-stage auditor
+      // continues to verify each citation against host.atoms.get and
+      // emits a critical finding on fabrication.
+      verified_cited_atom_ids: input.verifiedCitedAtomIds.map(String),
       correlation_id: input.correlationId,
       // Forward the upstream brainstorm-stage payload so the spec
       // synthesises against the open_questions, alternatives_surveyed,
@@ -208,18 +244,77 @@ async function pathExistsInRepo(p: string, repoRoot: string): Promise<boolean> {
   }
 }
 
+/**
+ * Atom-id citation regex used to extract inline `atom:<id>` tokens
+ * from prose fields (body, alternatives_rejected). Mirrors the
+ * brainstorm-stage regex so the auditor catches the same shape of
+ * citation regardless of which prose field the LLM smuggles it into.
+ * Bounded hyphen-count keeps regex cost linear on adversarial input.
+ */
+const ATOM_ID_TOKEN = /\batom:([a-z][a-z0-9]*(?:-[a-z0-9]+){1,15})\b/g;
+
+function extractCitedAtomIds(text: string): ReadonlyArray<string> {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  ATOM_ID_TOKEN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ATOM_ID_TOKEN.exec(text)) !== null) {
+    const id = match[1]!;
+    if (!seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+
 async function auditSpec(
   output: SpecPayload,
   ctx: StageContext,
 ): Promise<ReadonlyArray<AuditFinding>> {
   const findings: AuditFinding[] = [];
   const repoRoot = process.cwd();
-  // Verify every cited atom-id is authoritative: present, untainted,
-  // and not superseded. A non-authoritative citation is treated as
-  // equivalent to a fabricated id because the LLM cited a state that
-  // does not hold under arbitration.
+  // Build the verified-citation set view once. Empty => closure-of-
+  // citations check is skipped (legacy callers including direct
+  // audit() invocations from tests rely on resolvability-only).
+  const verifiedSet = new Set(ctx.verifiedCitedAtomIds.map(String));
+  const enforceVerifiedSet = verifiedSet.size > 0;
+  // Collect every cited atom-id from BOTH the structured field and
+  // the prose fields where the LLM might smuggle a citation past the
+  // structured fence. The HARD-CONSTRAINT block in SPEC_SYSTEM_PROMPT
+  // explicitly bans inline atom-ids in body and alternatives_rejected,
+  // so the audit must walk those fields too; otherwise the prompt
+  // contract is unenforceable. Each prose field contributes its
+  // extracted ids tagged with its source-field label so a finding
+  // points the operator at the right slot.
+  type SpecCitedAtom = {
+    readonly id: string;
+    readonly field:
+      | 'cited_atom_ids'
+      | 'body'
+      | 'alternatives_rejected';
+  };
+  const allCitedAtoms: SpecCitedAtom[] = [];
   for (const id of output.cited_atom_ids) {
-    const atom = await ctx.host.atoms.get(id as AtomId);
+    allCitedAtoms.push({ id, field: 'cited_atom_ids' });
+  }
+  for (const id of extractCitedAtomIds(output.body)) {
+    allCitedAtoms.push({ id, field: 'body' });
+  }
+  for (const alt of output.alternatives_rejected) {
+    for (const id of extractCitedAtomIds(alt.option)) {
+      allCitedAtoms.push({ id, field: 'alternatives_rejected' });
+    }
+    for (const id of extractCitedAtomIds(alt.reason)) {
+      allCitedAtoms.push({ id, field: 'alternatives_rejected' });
+    }
+  }
+  // Verify every collected atom-id is authoritative: present,
+  // untainted, and not superseded. A non-authoritative citation is
+  // treated as equivalent to a fabricated id because the LLM cited a
+  // state that does not hold under arbitration.
+  for (const cited of allCitedAtoms) {
+    const atom = await ctx.host.atoms.get(cited.id as AtomId);
     let reason: string | null = null;
     if (atom === null) {
       reason = 'does not resolve via host.atoms.get';
@@ -233,10 +328,29 @@ async function auditSpec(
         severity: 'critical',
         category: 'fabricated-cited-atom',
         message:
-          `Spec cites atom id "${id}" which ${reason}. Mitigates the `
-          + 'drafter-citation-verification failure mode at the substrate '
-          + 'level.',
-        cited_atom_ids: [id as AtomId],
+          `Spec cites atom id "${cited.id}" in ${cited.field} which `
+          + `${reason}. Mitigates the drafter-citation-verification `
+          + 'failure mode at the substrate level.',
+        cited_atom_ids: [cited.id as AtomId],
+        cited_paths: [],
+      });
+      continue;
+    }
+    // Closure-of-citations: a cited id that resolves but is NOT in
+    // the verified set means the LLM grounded a citation outside the
+    // input contract. Treat as a critical finding identical to
+    // fabrication so the prompt's HARD-CONSTRAINT becomes
+    // audit-enforceable rather than prompt-only.
+    if (enforceVerifiedSet && !verifiedSet.has(cited.id)) {
+      findings.push({
+        severity: 'critical',
+        category: 'non-verified-cited-atom',
+        message:
+          `Spec cites atom id "${cited.id}" in ${cited.field} which `
+          + 'resolves but is NOT in the verified citation set. The spec-'
+          + 'stage citation fence enforces the closure-of-citations '
+          + 'property at the audit layer, not just the prompt layer.',
+        cited_atom_ids: [cited.id as AtomId],
         cited_paths: [],
       });
     }

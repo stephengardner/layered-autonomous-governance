@@ -14,9 +14,18 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { planStage } from '../../../examples/planning-stages/plan/index.js';
+import {
+  PLAN_SYSTEM_PROMPT,
+  planStage,
+} from '../../../examples/planning-stages/plan/index.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
 import type { AtomId, PrincipalId } from '../../../src/types.js';
+import {
+  captureStageRunPrompt,
+  expectCitationFencePrompt,
+  expectVerifiedCitedAtomIdsForwarded,
+  mkPromptContractStageInput,
+} from './citation-fence-helpers.js';
 
 const samplePlan = {
   title: 'design the plan stage',
@@ -101,6 +110,7 @@ describe('planStage', () => {
         correlationId: 'corr',
         pipelineId: 'p' as AtomId,
         stageName: 'plan-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
@@ -154,9 +164,39 @@ describe('planStage', () => {
         correlationId: 'corr',
         pipelineId: 'p' as AtomId,
         stageName: 'plan-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
+  });
+
+  // Substrate-design fix: the plan prompt MUST constrain citations
+  // to the runner-supplied verified set. The dogfeed of 2026-04-30
+  // halted on plan-stage because the prompt said "NEVER invent atom
+  // ids" without giving the LLM a positive grounding signal; the
+  // LLM hallucinated four plausible principle ids in
+  // principles_applied that the auditor caught and surfaced as
+  // critical findings. Assertion bodies live in
+  // citation-fence-helpers.ts so a prompt-contract change lands in
+  // ONE file, not N synchronized stage-test edits.
+  it('PLAN_SYSTEM_PROMPT carries the citation-fence contract', () => {
+    expectCitationFencePrompt(PLAN_SYSTEM_PROMPT);
+  });
+
+  it('runPlan passes the verified-cited-atom-ids set through to the LLM data block', async () => {
+    const host = createMemoryHost();
+    const verifiedIds = ['atom-one', 'atom-two', 'atom-three'] as ReadonlyArray<AtomId>;
+    const captured = await captureStageRunPrompt({
+      stage: planStage,
+      stubOutput: { plans: [samplePlan], cost_usd: 0 },
+      stageInput: mkPromptContractStageInput<unknown>({
+        host,
+        principal: 'plan-author',
+        priorOutput: null,
+        verifiedCitedAtomIds: verifiedIds,
+      }),
+    });
+    expectVerifiedCitedAtomIdsForwarded(captured, verifiedIds);
   });
 
   it('audit() returns no findings when every cited atom resolves', async () => {
@@ -207,6 +247,7 @@ describe('planStage', () => {
         correlationId: 'corr',
         pipelineId: 'p' as AtomId,
         stageName: 'plan-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.length).toBe(0);

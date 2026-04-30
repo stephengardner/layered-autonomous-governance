@@ -171,12 +171,24 @@ async function runBrainstorm(
       // load-bearing key for the prompt's citation-grounding contract
       // is verified_seed_atom_ids below.
       seed_atom_ids: input.seedAtomIds.map(String),
-      // Citation-grounding fence: the LLM is constrained by the
-      // BRAINSTORM_SYSTEM_PROMPT to cite ONLY atom-ids that appear in
-      // this array. Mirrors seed_atom_ids today; the separate name
-      // makes the contract obvious to downstream prompt-edit
-      // reviewers and gives the test suite a stable assertion target.
+      // Citation-grounding fence (brainstorm-narrow): the LLM is
+      // constrained by the BRAINSTORM_SYSTEM_PROMPT to cite ONLY
+      // atom-ids from the seed set. Brainstorm is exploratory and
+      // points the load-bearing citation fence at review-stage; the
+      // narrow seed-only set here keeps the brainstorm fence aligned
+      // with what the post-stage auditor expects (seed-only set is
+      // the resolvable + in-set predicate the brainstorm audit
+      // re-walks).
       verified_seed_atom_ids: input.seedAtomIds.map(String),
+      // Substrate-wide citation set (spec/plan/review fence): a
+      // forward-compat data field carrying the runner-supplied
+      // verified-citation set. Brainstorm prose does not load-bear on
+      // this set (the prompt directs the LLM not to embed atom-id
+      // citations at all and points the fence at review-stage), but
+      // the field is forwarded uniformly across all four stages for
+      // substrate symmetry so an org-ceiling brainstorm-actor that
+      // chooses to cite can ground on the broader set.
+      verified_cited_atom_ids: input.verifiedCitedAtomIds.map(String),
       correlation_id: input.correlationId,
     },
     {
