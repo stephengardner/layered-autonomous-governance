@@ -177,9 +177,10 @@ const ATOMS = [
       + "'commented' (review present, no verdict), 'missing' (CR did not engage). "
       + "(3) On cr_verdict='missing' AND PR age > 15 minutes, the agent MUST take "
       + 'exactly one unsticking action per loop tick, in this preference order: '
-      + '(a) cr-trigger.mjs if LAG_OPS_PAT in env, (b) push an empty commit '
-      + "`git commit --allow-empty -m 'chore: empty-commit to nudge CR (silent-skip recovery)'` "
-      + "to retrigger CR's webhook, (c) surface the gap to operator with the "
+      + '(a) cr-trigger.mjs if LAG_OPS_PAT in env, (b) create AND push an empty commit '
+      + "`git commit --allow-empty -m 'chore: empty-commit to nudge CR (silent-skip recovery)' && git push` "
+      + "to retrigger CR's webhook (the push is what fires the webhook; a local "
+      + 'commit alone does nothing), (c) surface the gap to operator with the '
       + 'pr-status.mjs output and the diagnostics tried. (4) The loop must always '
       + "converge on an action. Sitting in 'queue-buildup discipline' while PRs "
       + 'accumulate is the failure mode this directive prevents. Rationale: '
