@@ -32,6 +32,7 @@ import {
   setRoute,
   useRouteId,
 } from '@/state/router.store';
+import { PlanStateLifecycleStepper } from './PlanStateLifecycleStepper';
 import styles from './PlanLifecycleView.module.css';
 
 /**
@@ -315,6 +316,10 @@ function PlanLifecycleTimeline({ data }: { data: PlanLifecycle }) {
             />
           )}
         </aside>
+      )}
+
+      {data.plan_state_lifecycle && (
+        <PlanStateLifecycleStepper data={data.plan_state_lifecycle} />
       )}
 
       {failure && <FailureCard failure={failure} />}
