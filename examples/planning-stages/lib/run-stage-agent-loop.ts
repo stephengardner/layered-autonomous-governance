@@ -201,7 +201,7 @@ export interface RunStageAgentLoopInput<TOut> {
    */
   readonly redactor: Redactor;
   /**
-   * Replay tier for the agent-loop session. 'permissive' is the
+   * Replay tier for the agent-loop session. 'best-effort' is the
    * indie-floor default; 'strict' captures full canon snapshots.
    */
   readonly replayTier: ReplayTier;
