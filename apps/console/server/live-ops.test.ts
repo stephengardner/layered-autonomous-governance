@@ -455,6 +455,71 @@ describe('listInFlightExecutions', () => {
     expect(out[0]?.dispatched_at).toBe(approvedAt);
     expect(out[0]?.age_seconds).toBe(60);
   });
+
+  /*
+   * Title-on-in-flight regression: the wire used to expose plan_id
+   * only, so the dashboard rendered a 70+ character slug as the
+   * primary text. Operator surfaced this 2026-05-01 ("the page looks
+   * inaccurate"). Title resolution mirrors live-deliberations, so
+   * cover the same three rungs.
+   */
+  it('surfaces plan title from metadata.title for the in-flight row', () => {
+    const atoms: LiveOpsAtom[] = [
+      {
+        id: 'plan-exec-with-title',
+        type: 'plan',
+        layer: 'L1',
+        content: '# fallback content',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 90_000).toISOString(),
+        metadata: {
+          plan_state: 'executing',
+          title: 'Add one-line bullet to README.md',
+          approved_at: new Date(NOW - 60_000).toISOString(),
+        },
+      } as LiveOpsAtom,
+    ];
+    const out = listInFlightExecutions(atoms, NOW);
+    expect(out[0]?.title).toBe('Add one-line bullet to README.md');
+  });
+
+  it('falls back to first content line when metadata.title is absent', () => {
+    const atoms: LiveOpsAtom[] = [
+      {
+        id: 'plan-exec-content-fallback',
+        type: 'plan',
+        layer: 'L1',
+        content: '# Restructure README around 5 newcomer questions\nbody continues',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 90_000).toISOString(),
+        metadata: {
+          plan_state: 'executing',
+          approved_at: new Date(NOW - 60_000).toISOString(),
+        },
+      } as LiveOpsAtom,
+    ];
+    const out = listInFlightExecutions(atoms, NOW);
+    expect(out[0]?.title).toBe('Restructure README around 5 newcomer questions');
+  });
+
+  it('falls back to atom.id when no title and no content resolves', () => {
+    const atoms: LiveOpsAtom[] = [
+      {
+        id: 'plan-exec-id-fallback',
+        type: 'plan',
+        layer: 'L1',
+        content: '',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 90_000).toISOString(),
+        metadata: {
+          plan_state: 'executing',
+          approved_at: new Date(NOW - 60_000).toISOString(),
+        },
+      } as LiveOpsAtom,
+    ];
+    const out = listInFlightExecutions(atoms, NOW);
+    expect(out[0]?.title).toBe('plan-exec-id-fallback');
+  });
 });
 
 describe('listRecentTransitions', () => {
@@ -717,5 +782,181 @@ describe('listPrActivity', () => {
     const out = listPrActivity(atoms, NOW);
     expect(out).toHaveLength(1);
     expect(out[0]?.state).toBe('merged');
+  });
+
+  /*
+   * Title-resolution ladder regression: pr-observation atoms today do
+   * NOT carry pr_title in metadata (the upstream PrReviewStatus shape
+   * predates the field), so the Pulse "PR activity" tile rendered
+   * "(no title)" for every entry until the live-ops aggregator
+   * gained the plan-id / derived_from fallback. Operator surfaced
+   * 2026-05-01 ("PR activity also always says no title").
+   */
+  it('falls back to the plan atom title via metadata.plan_id when pr_title is absent', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'plan-add-readme-pointer',
+        type: 'plan',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 60_000).toISOString(),
+        metadata: { title: 'Add README pointer to design/target-architecture.md' },
+      }),
+      atom({
+        id: 'pr-observation-300',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          pr: { owner: 'stephengardner', repo: 'layered-autonomous-governance', number: 300 },
+          pr_state: 'OPEN',
+          plan_id: 'plan-add-readme-pointer',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.pr_number).toBe(300);
+    expect(out[0]?.title).toBe('Add README pointer to design/target-architecture.md');
+  });
+
+  it('falls back to the plan atom title via provenance.derived_from when plan_id is absent', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'plan-legacy-no-plan-id',
+        type: 'plan',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 60_000).toISOString(),
+        metadata: { title: 'Legacy plan (no metadata.plan_id on observation)' },
+      }),
+      atom({
+        id: 'pr-observation-301',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        provenance: { derived_from: ['plan-legacy-no-plan-id'] },
+        metadata: {
+          kind: 'pr-observation',
+          pr: { owner: 'stephengardner', repo: 'layered-autonomous-governance', number: 301 },
+          pr_state: 'OPEN',
+          /* no plan_id field; older atoms predated it */
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.title).toBe('Legacy plan (no metadata.plan_id on observation)');
+  });
+
+  it('prefers metadata.pr_title over the plan-title fallback when both exist', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'plan-fallback-title',
+        type: 'plan',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 60_000).toISOString(),
+        metadata: { title: 'fallback plan title' },
+      }),
+      atom({
+        id: 'pr-observation-302',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          pr: { owner: 'stephengardner', repo: 'layered-autonomous-governance', number: 302 },
+          pr_state: 'OPEN',
+          pr_title: 'live PR title from GitHub',
+          plan_id: 'plan-fallback-title',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out[0]?.title).toBe('live PR title from GitHub');
+  });
+
+  it('returns null title when no fallback resolves (plan atom missing)', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'pr-observation-303',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          pr: { owner: 'stephengardner', repo: 'layered-autonomous-governance', number: 303 },
+          pr_state: 'OPEN',
+          plan_id: 'plan-does-not-exist',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out[0]?.title).toBeNull();
+  });
+
+  /*
+   * pr_url regression: the Pulse PR-activity tile had no clickable
+   * link to GitHub. Build the URL from `metadata.pr.{owner,repo,number}`
+   * (every observation in the live atom store carries the triple).
+   * Cover both producers: pr-observation atoms and plan-merge-settled
+   * atoms.
+   */
+  it('builds pr_url from metadata.pr.{owner,repo,number} on a pr-observation', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'pr-observation-400',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          pr: { owner: 'stephengardner', repo: 'layered-autonomous-governance', number: 400 },
+          pr_state: 'OPEN',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out[0]?.pr_url).toBe(
+      'https://github.com/stephengardner/layered-autonomous-governance/pull/400',
+    );
+  });
+
+  it('builds pr_url from metadata.pr.{owner,repo,number} on a plan-merge-settled atom', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'plan-merge-settled-401',
+        type: 'plan-merge-settled',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          pr: { owner: 'stephengardner', repo: 'layered-autonomous-governance', number: 401 },
+          target_plan_state: 'succeeded',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out[0]?.pr_url).toBe(
+      'https://github.com/stephengardner/layered-autonomous-governance/pull/401',
+    );
+  });
+
+  it('returns null pr_url when owner or repo is missing on the source atom', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'pr-observation-legacy-no-owner',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          /* legacy: pr_number at top level, no owner/repo */
+          pr_number: 99,
+          pr_state: 'OPEN',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out[0]?.pr_number).toBe(99);
+    expect(out[0]?.pr_url).toBeNull();
   });
 });

@@ -27,6 +27,17 @@ export interface LiveOpsAtom {
   readonly metadata?: Record<string, unknown>;
   readonly taint?: string;
   readonly superseded_by?: ReadonlyArray<string>;
+  /*
+   * Provenance.derived_from is a load-bearing field for the PR-activity
+   * title-resolution ladder: older pr-observation atoms predate the
+   * metadata.plan_id field but still chain via derived_from to a plan
+   * atom whose metadata.title is the operator-meaningful PR title.
+   * Only the fields the helpers narrow are typed; the wider provenance
+   * shape stays opaque.
+   */
+  readonly provenance?: {
+    readonly derived_from?: ReadonlyArray<string>;
+  };
 }
 
 export interface LiveOpsHeartbeat {
@@ -53,6 +64,18 @@ export interface LiveOpsLiveDeliberation {
 
 export interface LiveOpsInFlightExecution {
   readonly plan_id: string;
+  /**
+   * Operator-meaningful plan title (resolved from the plan atom's
+   * metadata.title or first content line, mirroring the deliberation
+   * tile's resolution). Always populated; falls back to atom.id when
+   * no other title resolves so the row label is never empty.
+   *
+   * Pre-fix the In-flight tile rendered the raw plan_id as the
+   * primary text -- a 70+ character slug nobody could read at a
+   * glance. This field surfaces the same operator-meaningful label
+   * the deliberation tile already used.
+   */
+  readonly title: string;
   readonly dispatched_at: string;
   readonly age_seconds: number;
   readonly dispatched_by: string;
@@ -85,6 +108,20 @@ export interface LiveOpsPrActivity {
   readonly title: string | null;
   readonly state: string;
   readonly at: string;
+  /**
+   * Direct link to the GitHub PR. Built from
+   * `metadata.pr.{owner,repo,number}` on the source pr-observation
+   * (or plan-merge-settled) atom -- both producer shapes carry the
+   * triple. Null only when the source atom is missing the owner/repo
+   * fields entirely (older PR observations from the pre-Inbox-V1
+   * era); the UI omits the click target in that case rather than
+   * rendering a broken anchor.
+   *
+   * Pre-fix the PR-activity tile had no link target; clicking a row
+   * did nothing. Operator surfaced this as part of the "no title +
+   * no link" complaint on 2026-05-01.
+   */
+  readonly pr_url: string | null;
 }
 
 export interface LiveOpsSnapshot {

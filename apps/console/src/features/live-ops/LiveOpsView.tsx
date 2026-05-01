@@ -414,6 +414,14 @@ function InFlightExecutionsTile({
 
 function InFlightRow({ plan }: { plan: LiveOpsInFlightExecution }) {
   const href = `/plan-lifecycle/${encodeURIComponent(plan.plan_id)}`;
+  /*
+   * Render the operator-meaningful plan title as the primary text;
+   * fall back to plan_id only when the server emits no title (which
+   * the projection guarantees won't happen because extractPlanTitle
+   * already returns the id as the last-resort, but we keep the
+   * defensive fallback so the UI can never read empty).
+   */
+  const primary = plan.title || plan.plan_id;
   return (
     <li className={styles.row} data-testid="live-ops-in-flight-row" data-plan-id={plan.plan_id}>
       <a
@@ -426,7 +434,7 @@ function InFlightRow({ plan }: { plan: LiveOpsInFlightExecution }) {
           setRoute('plan-lifecycle', plan.plan_id);
         }}
       >
-        <span className={styles.rowPrimary}>{plan.plan_id}</span>
+        <span className={styles.rowPrimary}>{primary}</span>
         <span className={styles.rowSecondary}>
           dispatched {formatAge(plan.age_seconds)} ago by {plan.dispatched_by}
         </span>
@@ -521,14 +529,45 @@ function PrActivityTile({ prs }: { prs: ReadonlyArray<LiveOpsPrActivity> }) {
 }
 
 function PrRow({ pr }: { pr: LiveOpsPrActivity }) {
-  return (
-    <li className={styles.row} data-testid="live-ops-pr-row" data-pr-number={pr.pr_number}>
-      <span className={styles.rowPrimary}>
-        #{pr.pr_number} {pr.title ?? '(no title)'}
-      </span>
+  /*
+   * Primary text: "#<n> <title>" when the title resolves; "#<n>" alone
+   * when no title is reachable (legacy atom missing both pr_title +
+   * plan_id + derived_from). Pre-fix the row always rendered
+   * "(no title)" because pr-observation atoms never carried pr_title;
+   * the server-side ladder now resolves via plan_id / derived_from.
+   *
+   * Click target: pr.pr_url (built from owner/repo/number on the
+   * source atom) opens the GitHub PR in a new tab. Older atoms that
+   * never carried owner/repo emit a null pr_url; in that case we
+   * render the row text without an anchor rather than a broken link.
+   */
+  const titleSuffix = pr.title !== null ? ` ${pr.title}` : '';
+  const primaryText = `#${pr.pr_number}${titleSuffix}`;
+  const inner = (
+    <>
+      <span className={styles.rowPrimary}>{primaryText}</span>
       <span className={styles.rowSecondary}>
         {pr.state} {'\u00B7'} {formatRelative(pr.at)}
       </span>
+    </>
+  );
+  if (pr.pr_url !== null) {
+    return (
+      <li className={styles.row} data-testid="live-ops-pr-row" data-pr-number={pr.pr_number}>
+        <a
+          className={styles.rowLink}
+          href={pr.pr_url}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {inner}
+        </a>
+      </li>
+    );
+  }
+  return (
+    <li className={styles.row} data-testid="live-ops-pr-row" data-pr-number={pr.pr_number}>
+      {inner}
     </li>
   );
 }
