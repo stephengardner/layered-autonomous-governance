@@ -21,7 +21,7 @@
 | `src/runtime/plans/pr-observation-refresh.ts` | Create | Framework module: tick + refresher interface |
 | `test/runtime/plans/pr-observation-refresh.test.ts` | Create | Unit tests for the tick |
 | `src/runtime/actors/pr-landing/pr-observation.ts` | Modify | Atom-id formula gains minute-truncated suffix |
-| `test/actors/pr-landing/pr-observation-id.test.ts` | Modify or create | Tests for the new id formula |
+| `test/actors/pr-observation.test.ts` | Modify | Tests for the new id formula |
 | `scripts/run-pr-landing.mjs` | Modify | runObserveOnly: write fresh atom + supersede prior |
 | `scripts/lib/pr-observation-refresher.mjs` | Create | Deployment-side adapter that spawns run-pr-landing |
 | `scripts/run-approval-cycle.mjs` | Modify | Wire the new tick between plan-approval and plan-reconcile |
