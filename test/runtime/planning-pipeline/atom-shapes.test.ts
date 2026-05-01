@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
+  mkBrainstormOutputAtom,
+  mkDispatchRecordAtom,
   mkPipelineAtom,
   mkPipelineStageEventAtom,
   mkPipelineAuditFindingAtom,
   mkPipelineFailedAtom,
   mkPipelineResumeAtom,
+  mkPlanOutputAtoms,
+  mkReviewReportAtom,
   mkSpecAtom,
+  mkSpecOutputAtom,
+  projectStageOutputForMetadata,
+  serializeStageOutput,
+  MAX_STAGE_OUTPUT_CONTENT,
 } from '../../../src/runtime/planning-pipeline/atom-shapes.js';
 import type { AtomId, PrincipalId, Time } from '../../../src/types.js';
 
@@ -217,5 +225,314 @@ describe('atom id determinism', () => {
     const a = mkPipelineStageEventAtom(args);
     const b = mkPipelineStageEventAtom(args);
     expect(a.id).toBe(b.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage-output mint helpers (substrate-fix in this PR)
+// ---------------------------------------------------------------------------
+
+const STAGE_BASE_INPUT = {
+  pipelineId: 'pipeline-abc' as AtomId,
+  stageName: 'brainstorm-stage',
+  principalId: 'cto-actor' as PrincipalId,
+  correlationId: 'corr-1',
+  now: NOW,
+  derivedFrom: ['pipeline-abc' as AtomId, 'intent-1' as AtomId],
+  value: { open_questions: ['x'], cost_usd: 0 },
+} as const;
+
+describe('mkBrainstormOutputAtom', () => {
+  it('produces a brainstorm-output atom with provenance + metadata', () => {
+    const atom = mkBrainstormOutputAtom(STAGE_BASE_INPUT);
+    expect(atom.type).toBe('brainstorm-output');
+    expect(atom.provenance.derived_from).toEqual([
+      'pipeline-abc',
+      'intent-1',
+    ]);
+    const meta = atom.metadata as Record<string, unknown>;
+    expect(meta.pipeline_id).toBe('pipeline-abc');
+    expect(meta.stage_name).toBe('brainstorm-stage');
+    expect(meta.stage_output).toEqual({ open_questions: ['x'], cost_usd: 0 });
+  });
+
+  it('rejects empty derivedFrom (provenance violation)', () => {
+    expect(() => mkBrainstormOutputAtom({
+      ...STAGE_BASE_INPUT,
+      derivedFrom: [],
+    })).toThrow(/derivedFrom.*non-empty/);
+  });
+
+  it('produces a deterministic id rooted in pipelineId + stage slug + correlationId', () => {
+    const a = mkBrainstormOutputAtom(STAGE_BASE_INPUT);
+    const b = mkBrainstormOutputAtom(STAGE_BASE_INPUT);
+    expect(a.id).toBe(b.id);
+    // Stage slug appears between pipelineId and correlationId so two
+    // stages emitting the same atom_type within one pipeline get
+    // distinct ids (see "stage-id collision avoidance" test below).
+    expect(String(a.id)).toBe('brainstorm-output-pipeline-abc-brainstorm-stage-corr-1');
+  });
+
+  it('avoids id collision when two stages emit the same atom_type within one pipeline', () => {
+    // Two distinct stages can declare atom_type='brainstorm-output'
+    // (e.g. an org-ceiling deployment running two brainstorm variants
+    // back-to-back); the stage-slug component of the id keeps them
+    // from colliding on host.atoms.put.
+    const stageA = mkBrainstormOutputAtom({
+      ...STAGE_BASE_INPUT,
+      stageName: 'brainstorm-stage',
+    });
+    const stageB = mkBrainstormOutputAtom({
+      ...STAGE_BASE_INPUT,
+      stageName: 'brainstorm-stage-org-variant',
+    });
+    expect(stageA.id).not.toBe(stageB.id);
+  });
+});
+
+describe('mkSpecOutputAtom', () => {
+  it('produces a spec-output atom with the declared type', () => {
+    const atom = mkSpecOutputAtom({
+      ...STAGE_BASE_INPUT,
+      stageName: 'spec-stage',
+    });
+    expect(atom.type).toBe('spec-output');
+    expect(String(atom.id)).toBe('spec-output-pipeline-abc-spec-stage-corr-1');
+  });
+
+  it('rejects empty derivedFrom', () => {
+    expect(() => mkSpecOutputAtom({ ...STAGE_BASE_INPUT, derivedFrom: [] }))
+      .toThrow(/derivedFrom.*non-empty/);
+  });
+});
+
+describe('mkReviewReportAtom', () => {
+  it('produces a review-report atom with the declared type', () => {
+    const atom = mkReviewReportAtom({
+      ...STAGE_BASE_INPUT,
+      stageName: 'review-stage',
+      value: { audit_status: 'clean', findings: [], total_bytes_read: 0, cost_usd: 0 },
+    });
+    expect(atom.type).toBe('review-report');
+    const meta = atom.metadata as Record<string, unknown>;
+    expect((meta.stage_output as Record<string, unknown>).audit_status).toBe('clean');
+  });
+
+  it('rejects empty derivedFrom', () => {
+    expect(() => mkReviewReportAtom({ ...STAGE_BASE_INPUT, derivedFrom: [] }))
+      .toThrow(/derivedFrom.*non-empty/);
+  });
+});
+
+describe('mkDispatchRecordAtom', () => {
+  it('produces a dispatch-record atom with the declared type', () => {
+    const atom = mkDispatchRecordAtom({
+      ...STAGE_BASE_INPUT,
+      stageName: 'dispatch-stage',
+      value: {
+        dispatch_status: 'completed',
+        scanned: 1,
+        dispatched: 1,
+        failed: 0,
+        cost_usd: 0,
+      },
+    });
+    expect(atom.type).toBe('dispatch-record');
+    const meta = atom.metadata as Record<string, unknown>;
+    expect((meta.stage_output as Record<string, unknown>).dispatch_status).toBe('completed');
+  });
+
+  it('rejects empty derivedFrom', () => {
+    expect(() => mkDispatchRecordAtom({ ...STAGE_BASE_INPUT, derivedFrom: [] }))
+      .toThrow(/derivedFrom.*non-empty/);
+  });
+});
+
+describe('mkPlanOutputAtoms', () => {
+  // Minimal plan-stage payload that matches the planEntrySchema in
+  // examples/planning-stages/plan/index.ts. Two plans in the same
+  // payload exercise the per-entry-index uniqueness in the deterministic
+  // id format.
+  const TWO_PLAN_PAYLOAD = {
+    plans: [
+      {
+        title: 'first plan',
+        body: 'plan body 1',
+        derived_from: ['intent-1', 'dev-canon-foo'],
+        principles_applied: ['dev-canon-foo'],
+        alternatives_rejected: [{ option: 'alt-x', reason: 'less precise' }],
+        what_breaks_if_revisit: 'nothing material',
+        confidence: 0.85,
+        delegation: {
+          sub_actor_principal_id: 'code-author',
+          reason: 'implements the plan',
+          implied_blast_radius: 'framework',
+        },
+      },
+      {
+        title: 'second plan',
+        body: 'plan body 2',
+        derived_from: ['intent-1'],
+        principles_applied: [],
+        alternatives_rejected: [],
+        what_breaks_if_revisit: 'nothing material',
+        confidence: 0.7,
+        delegation: {
+          sub_actor_principal_id: 'auditor-actor',
+          reason: 'audit-only',
+          implied_blast_radius: 'none',
+        },
+      },
+    ],
+    cost_usd: 0,
+  };
+
+  const PLAN_INPUT = {
+    pipelineId: 'pipeline-abc' as AtomId,
+    principalId: 'cto-actor' as PrincipalId,
+    correlationId: 'corr-1',
+    now: NOW,
+    derivedFrom: ['pipeline-abc' as AtomId, 'spec-output-pipeline-abc-corr-1' as AtomId],
+    value: TWO_PLAN_PAYLOAD,
+  };
+
+  it('mints one plan atom per plans-array entry with type=plan + plan_state=proposed', () => {
+    const atoms = mkPlanOutputAtoms(PLAN_INPUT);
+    expect(atoms.length).toBe(2);
+    expect(atoms[0]!.type).toBe('plan');
+    expect(atoms[0]!.plan_state).toBe('proposed');
+    expect(atoms[1]!.type).toBe('plan');
+    expect(atoms[1]!.plan_state).toBe('proposed');
+  });
+
+  it('chains derived_from with [pipelineId, ...priorOutputs, ...entry.derived_from]', () => {
+    const atoms = mkPlanOutputAtoms(PLAN_INPUT);
+    // First plan cites intent-1 and dev-canon-foo; chain prepends the
+    // runner-supplied derivedFrom to those.
+    expect(atoms[0]!.provenance.derived_from).toEqual([
+      'pipeline-abc',
+      'spec-output-pipeline-abc-corr-1',
+      'intent-1',
+      'dev-canon-foo',
+    ]);
+    expect(atoms[1]!.provenance.derived_from).toEqual([
+      'pipeline-abc',
+      'spec-output-pipeline-abc-corr-1',
+      'intent-1',
+    ]);
+  });
+
+  it('uses a deterministic id including the per-entry index', () => {
+    const a = mkPlanOutputAtoms(PLAN_INPUT);
+    const b = mkPlanOutputAtoms(PLAN_INPUT);
+    expect(a[0]!.id).toBe(b[0]!.id);
+    expect(a[1]!.id).toBe(b[1]!.id);
+    expect(String(a[0]!.id)).toContain('first-plan');
+    expect(String(a[0]!.id)).toContain('-0');
+    expect(String(a[1]!.id)).toContain('second-plan');
+    expect(String(a[1]!.id)).toContain('-1');
+    expect(a[0]!.id).not.toBe(a[1]!.id);
+  });
+
+  it('preserves single-pass plan-atom shape (title in metadata + L1 layer + scope=project)', () => {
+    const atoms = mkPlanOutputAtoms(PLAN_INPUT);
+    const atom = atoms[0]!;
+    expect(atom.layer).toBe('L1');
+    expect(atom.scope).toBe('project');
+    expect(atom.taint).toBe('clean');
+    const meta = atom.metadata as Record<string, unknown>;
+    expect(meta.title).toBe('first plan');
+    expect(meta.principles_applied).toEqual(['dev-canon-foo']);
+    expect(meta.what_breaks_if_revisit).toBe('nothing material');
+    expect(meta.delegation).toEqual({
+      sub_actor_principal_id: 'code-author',
+      reason: 'implements the plan',
+      implied_blast_radius: 'framework',
+    });
+  });
+
+  it('returns [] when value is non-object / missing plans / empty plans', () => {
+    expect(mkPlanOutputAtoms({ ...PLAN_INPUT, value: null })).toEqual([]);
+    expect(mkPlanOutputAtoms({ ...PLAN_INPUT, value: 'not an object' })).toEqual([]);
+    expect(mkPlanOutputAtoms({ ...PLAN_INPUT, value: {} })).toEqual([]);
+    expect(mkPlanOutputAtoms({ ...PLAN_INPUT, value: { plans: [] } })).toEqual([]);
+  });
+
+  it('rejects empty derivedFrom (provenance violation)', () => {
+    expect(() => mkPlanOutputAtoms({ ...PLAN_INPUT, derivedFrom: [] }))
+      .toThrow(/derivedFrom.*non-empty/);
+  });
+});
+
+describe('serializeStageOutput', () => {
+  it('returns the JSON-stringified value for small inputs', () => {
+    const result = serializeStageOutput({ a: 1, b: 'two' });
+    expect(JSON.parse(result)).toEqual({ a: 1, b: 'two' });
+  });
+
+  it('caps at MAX_STAGE_OUTPUT_CONTENT and appends a visible truncation marker', () => {
+    const huge = { x: 'y'.repeat(MAX_STAGE_OUTPUT_CONTENT * 2) };
+    const result = serializeStageOutput(huge);
+    expect(result.length).toBeLessThanOrEqual(MAX_STAGE_OUTPUT_CONTENT);
+    expect(result).toContain('[stage-output truncated');
+  });
+
+  it('returns a typeof marker for non-representable values', () => {
+    // JSON.stringify(undefined) is undefined; the helper must surface
+    // the typeof so audit consumers see why content is empty.
+    expect(serializeStageOutput(undefined)).toContain('typeof=undefined');
+  });
+
+  it('returns an explicit marker for a circular reference', () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(serializeStageOutput(circular)).toBe('[stage-output not JSON-serialisable]');
+  });
+});
+
+describe('projectStageOutputForMetadata', () => {
+  it('round-trips JSON-safe values through JSON.parse so metadata stays structured', () => {
+    const projected = projectStageOutputForMetadata({ a: 1, b: ['x', 'y'] });
+    expect(projected).toEqual({ a: 1, b: ['x', 'y'] });
+  });
+
+  it('returns the marker string for non-serialisable values (no throw)', () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(projectStageOutputForMetadata(circular)).toBe('[stage-output not JSON-serialisable]');
+  });
+
+  it('returns the marker string for unrepresentable values', () => {
+    const projected = projectStageOutputForMetadata(undefined);
+    expect(typeof projected).toBe('string');
+    expect(projected).toContain('typeof=undefined');
+  });
+
+  it('returns the truncation-marker string when the serialized value exceeds the cap', () => {
+    const huge = { x: 'y'.repeat(MAX_STAGE_OUTPUT_CONTENT * 2) };
+    const projected = projectStageOutputForMetadata(huge);
+    // The truncation case bypasses JSON.parse (the truncated string
+    // is no longer valid JSON) and surfaces the marker directly so
+    // audit consumers see the truncation explicitly.
+    expect(typeof projected).toBe('string');
+    expect(projected).toContain('[stage-output truncated');
+  });
+
+  it('mint helpers route metadata.stage_output through the projection (size-cap regression)', () => {
+    // The mint helpers bound metadata via projectStageOutputForMetadata
+    // so a runaway-large LLM emission cannot grow an atom's metadata
+    // field unchecked. Substrate-side guard: even if a stage adapter
+    // emits a > 256KB value, the persisted atom's metadata stays
+    // bounded by the cap.
+    const huge = { x: 'y'.repeat(MAX_STAGE_OUTPUT_CONTENT * 2) };
+    const atom = mkBrainstormOutputAtom({
+      ...STAGE_BASE_INPUT,
+      value: huge,
+    });
+    const meta = atom.metadata as Record<string, unknown>;
+    // The truncation branch produces a string marker; the mint helper
+    // surfaces it under metadata.stage_output as-is.
+    expect(typeof meta.stage_output).toBe('string');
+    expect(meta.stage_output).toContain('[stage-output truncated');
   });
 });
