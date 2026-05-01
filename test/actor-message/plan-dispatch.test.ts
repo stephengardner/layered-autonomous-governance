@@ -517,3 +517,319 @@ describe('runDispatchTick', () => {
     expect(result.scanned).toBe(0);
   });
 });
+
+describe('runDispatchTick state-lifecycle metadata + audit emission', () => {
+  it('stamps executing_at + executing_invoker on the approved -> executing claim and emits a plan.dispatch-executing audit event', async () => {
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+
+    // Block the invoker on a deferred resolver so we can inspect the
+    // plan atom WHILE the sub-actor is mid-flight (i.e. plan_state ===
+    // 'executing'). Without this gate the test could only observe the
+    // terminal state.
+    let resolveInvoker!: (value: InvokeResult) => void;
+    const invokerGate = new Promise<InvokeResult>((resolve) => {
+      resolveInvoker = resolve;
+    });
+    registry.register('auditor-actor' as PrincipalId, async (): Promise<InvokeResult> => invokerGate);
+
+    await host.atoms.put(planAtom('p-exec-meta', {
+      delegation: {
+        sub_actor_principal_id: 'auditor-actor',
+        payload: {},
+        correlation_id: 'corr-exec',
+        escalate_to: 'operator',
+      },
+    }));
+
+    const tickPromise = runDispatchTick(host, registry, {
+      now: () => Date.parse('2026-04-30T09:00:00.000Z'),
+    });
+
+    // Yield enough ticks for runDispatchTick to reach the invoker
+    // await. The claim already landed before invoker is awaited.
+    await new Promise((r) => setImmediate(r));
+
+    const midFlight = await host.atoms.get('p-exec-meta' as AtomId);
+    expect(midFlight!.plan_state).toBe('executing');
+    expect(midFlight!.metadata.executing_at).toBe('2026-04-30T09:00:00.000Z');
+    expect(midFlight!.metadata.executing_invoker).toBe('auditor-actor');
+    // No terminal stamp yet because the invoker has not returned.
+    expect(midFlight!.metadata.terminal_at).toBeUndefined();
+    expect(midFlight!.metadata.terminal_kind).toBeUndefined();
+
+    // Audit-log line for the executing transition is observable
+    // independently of the invoker completing.
+    const executingEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-executing'] },
+      10,
+    );
+    expect(executingEvents.length).toBe(1);
+    expect(executingEvents[0]!.refs.atom_ids).toContain('p-exec-meta');
+    expect(executingEvents[0]!.details.sub_actor_principal_id).toBe('auditor-actor');
+    expect(executingEvents[0]!.details.correlation_id).toBe('corr-exec');
+
+    // Release the invoker so the test does not hang.
+    resolveInvoker({ kind: 'completed', producedAtomIds: [], summary: 'ok' });
+    await tickPromise;
+  });
+
+  it('stamps terminal_at + terminal_kind on the executing -> succeeded transition and emits a plan.dispatch-succeeded audit event', async () => {
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    registry.register('auditor-actor' as PrincipalId, async (_p, corr): Promise<InvokeResult> => ({
+      kind: 'completed',
+      producedAtomIds: [`out-${corr}`],
+      summary: 'work done',
+    }));
+
+    await host.atoms.put(planAtom('p-success-meta', {
+      delegation: {
+        sub_actor_principal_id: 'auditor-actor',
+        payload: {},
+        correlation_id: 'corr-success',
+        escalate_to: 'operator',
+      },
+    }));
+
+    let nowCallCount = 0;
+    // Inject distinct timestamps for the executing claim vs. the terminal
+    // transition so the test can pin which stamp lands on which field.
+    await runDispatchTick(host, registry, {
+      now: () => {
+        nowCallCount += 1;
+        return nowCallCount === 1
+          ? Date.parse('2026-04-30T10:00:00.000Z')
+          : Date.parse('2026-04-30T10:00:05.000Z');
+      },
+    });
+
+    const updated = await host.atoms.get('p-success-meta' as AtomId);
+    expect(updated!.plan_state).toBe('succeeded');
+    // Both stamps land on the final atom: the executing stamp
+    // survives metadata-merge into the terminal write.
+    expect(updated!.metadata.executing_at).toBe('2026-04-30T10:00:00.000Z');
+    expect(updated!.metadata.executing_invoker).toBe('auditor-actor');
+    expect(updated!.metadata.terminal_at).toBe('2026-04-30T10:00:05.000Z');
+    expect(updated!.metadata.terminal_kind).toBe('succeeded');
+    // dispatch_result preserved verbatim for back-compat consumers.
+    const dr = updated!.metadata.dispatch_result as { kind: string; produced_atom_ids: string[] };
+    expect(dr.kind).toBe('completed');
+    expect(dr.produced_atom_ids).toEqual(['out-corr-success']);
+
+    const successEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-succeeded'] },
+      10,
+    );
+    expect(successEvents.length).toBe(1);
+    expect(successEvents[0]!.refs.atom_ids).toContain('p-success-meta');
+    expect(successEvents[0]!.details.summary).toBe('work done');
+    expect(successEvents[0]!.details.produced_atom_ids).toEqual(['out-corr-success']);
+  });
+
+  it('stamps terminal_at + terminal_kind=failed + error_message on a failed dispatch and emits a plan.dispatch-failed audit event', async () => {
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    registry.register('breaks-actor' as PrincipalId, async (): Promise<InvokeResult> => {
+      throw new Error('upstream service unreachable');
+    });
+
+    await host.atoms.put(planAtom('p-fail-meta', {
+      delegation: {
+        sub_actor_principal_id: 'breaks-actor',
+        payload: {},
+        correlation_id: 'corr-fail',
+        escalate_to: 'operator',
+      },
+    }));
+
+    await runDispatchTick(host, registry, {
+      now: () => Date.parse('2026-04-30T11:00:00.000Z'),
+    });
+
+    const updated = await host.atoms.get('p-fail-meta' as AtomId);
+    expect(updated!.plan_state).toBe('failed');
+    expect(updated!.metadata.terminal_at).toBe('2026-04-30T11:00:00.000Z');
+    expect(updated!.metadata.terminal_kind).toBe('failed');
+    expect(updated!.metadata.error_message).toBe('upstream service unreachable');
+    // dispatch_result preserved verbatim for back-compat consumers.
+    const dr = updated!.metadata.dispatch_result as { kind: string; message: string };
+    expect(dr.kind).toBe('error');
+    expect(dr.message).toBe('upstream service unreachable');
+
+    const failedEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-failed'] },
+      10,
+    );
+    expect(failedEvents.length).toBe(1);
+    expect(failedEvents[0]!.refs.atom_ids).toContain('p-fail-meta');
+    expect(failedEvents[0]!.details.error_message).toBe('upstream service unreachable');
+  });
+
+  it('truncates a long error_message to bound the metadata + audit payload', async () => {
+    // The error_message field must not propagate unbounded sub-actor
+    // output (LLM transcripts, full stack traces) into the atom store
+    // or audit log. The truncation marker lets a consumer detect that
+    // the message was clipped.
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    const longMessage = 'X'.repeat(5000);
+    registry.register('breaks-actor' as PrincipalId, async (): Promise<InvokeResult> => {
+      throw new Error(longMessage);
+    });
+
+    await host.atoms.put(planAtom('p-long-error', {
+      delegation: {
+        sub_actor_principal_id: 'breaks-actor',
+        payload: {},
+        correlation_id: 'corr-long',
+        escalate_to: 'operator',
+      },
+    }));
+
+    await runDispatchTick(host, registry);
+    const updated = await host.atoms.get('p-long-error' as AtomId);
+    const errMsg = updated!.metadata.error_message as string;
+    expect(errMsg.length).toBeLessThanOrEqual(1024);
+    expect(errMsg.endsWith('...truncated')).toBe(true);
+    // Original message preserved verbatim in dispatch_result for the
+    // legacy back-compat shape; truncation only applies to the new
+    // top-level error_message field that bounds dashboard payloads.
+    const dr = updated!.metadata.dispatch_result as { message: string };
+    expect(dr.message).toBe(longMessage);
+  });
+
+  it('emits a plan.dispatch-in-flight audit event when invoker returns dispatched (async)', async () => {
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    registry.register('async-actor' as PrincipalId, async (): Promise<InvokeResult> => ({
+      kind: 'dispatched',
+      summary: 'queued for later',
+    }));
+
+    await host.atoms.put(planAtom('p-async', {
+      delegation: {
+        sub_actor_principal_id: 'async-actor',
+        payload: {},
+        correlation_id: 'corr-async',
+        escalate_to: 'operator',
+      },
+    }));
+
+    await runDispatchTick(host, registry);
+
+    const updated = await host.atoms.get('p-async' as AtomId);
+    expect(updated!.plan_state).toBe('executing');
+    // No terminal stamp because the plan stays executing.
+    expect(updated!.metadata.terminal_at).toBeUndefined();
+    expect(updated!.metadata.terminal_kind).toBeUndefined();
+
+    // Two audit events fire on this dispatch path: the executing
+    // claim AND the in-flight hand-off. Both are observable so the
+    // operator can distinguish "claim landed" from "sub-actor accepted
+    // the work asynchronously".
+    const executingEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-executing'] },
+      10,
+    );
+    expect(executingEvents.length).toBe(1);
+    const inFlightEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-in-flight'] },
+      10,
+    );
+    expect(inFlightEvents.length).toBe(1);
+    expect(inFlightEvents[0]!.refs.atom_ids).toContain('p-async');
+    expect(inFlightEvents[0]!.details.summary).toBe('queued for later');
+  });
+
+  it('emits exactly one audit event per terminal transition (no duplicate emission on rerun of an already-terminal plan)', async () => {
+    // Regression guard against the failure mode where a stuck
+    // dispatcher loop emits one audit event per tick instead of one
+    // per transition. Once the plan reaches 'succeeded' the candidate
+    // filter drops it; a second tick must produce zero new audit
+    // events.
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    registry.register('auditor-actor' as PrincipalId, async (): Promise<InvokeResult> => ({
+      kind: 'completed',
+      producedAtomIds: [],
+      summary: 'ok',
+    }));
+
+    await host.atoms.put(planAtom('p-once', {
+      delegation: {
+        sub_actor_principal_id: 'auditor-actor',
+        payload: {},
+        correlation_id: 'corr-once',
+        escalate_to: 'operator',
+      },
+    }));
+
+    await runDispatchTick(host, registry);
+    await runDispatchTick(host, registry); // second tick should no-op
+
+    const successEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-succeeded'] },
+      50,
+    );
+    expect(successEvents.length).toBe(1);
+    const executingEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-executing'] },
+      50,
+    );
+    expect(executingEvents.length).toBe(1);
+  });
+
+  it('full lifecycle: proposed -> approved -> executing -> succeeded with metadata stamps + audit chain at each step', async () => {
+    // End-to-end regression for the full state-transition chain a
+    // dogfeed run produces: an operator-intent + plan land in
+    // 'proposed', the runtime auto-approves to 'approved', the
+    // dispatcher claims to 'executing', the sub-actor returns and
+    // the dispatcher transitions to 'succeeded'. Each transition
+    // adds its own metadata stamps WITHOUT clobbering prior ones.
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    registry.register('auditor-actor' as PrincipalId, async (): Promise<InvokeResult> => ({
+      kind: 'completed',
+      producedAtomIds: ['out-1'],
+      summary: 'lifecycle ok',
+    }));
+
+    // Plan starts in 'proposed' to mirror the dogfeed shape; we then
+    // manually transition it to 'approved' with the prior stamps so
+    // the dispatch tick can pick it up. The auto-approve transition
+    // owns its own audit-log line in src/runtime/actor-message/
+    // intent-approve.ts and is covered separately; here we focus on
+    // the dispatch-side transitions.
+    await host.atoms.put(planAtom('p-lifecycle', {
+      plan_state: 'proposed',
+      delegation: {
+        sub_actor_principal_id: 'auditor-actor',
+        payload: {},
+        correlation_id: 'corr-lifecycle',
+        escalate_to: 'operator',
+      },
+    }));
+    await host.atoms.update('p-lifecycle' as AtomId, {
+      plan_state: 'approved',
+      metadata: {
+        approved_at: '2026-04-30T08:00:00.000Z',
+        approved_via: 'pol-test',
+      },
+    });
+
+    await runDispatchTick(host, registry);
+
+    const final = await host.atoms.get('p-lifecycle' as AtomId);
+    expect(final!.plan_state).toBe('succeeded');
+    // All four lifecycle stamps survive the metadata-merge chain:
+    // approved_* from the upstream auto-approve pass, executing_* from
+    // the dispatcher's claim, terminal_* from the terminal write.
+    expect(final!.metadata.approved_at).toBe('2026-04-30T08:00:00.000Z');
+    expect(final!.metadata.approved_via).toBe('pol-test');
+    expect(final!.metadata.executing_at).toBeDefined();
+    expect(final!.metadata.executing_invoker).toBe('auditor-actor');
+    expect(final!.metadata.terminal_at).toBeDefined();
+    expect(final!.metadata.terminal_kind).toBe('succeeded');
+  });
+});
