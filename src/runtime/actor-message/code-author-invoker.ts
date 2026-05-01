@@ -116,20 +116,17 @@ export interface CodeAuthorExecutorFailure {
   readonly stage: string;
   readonly reason: string;
   /**
-   * Pushed branch name, populated only when the failure happened
-   * AFTER the branch reached the remote (i.e. the apply-branch
-   * step succeeded). Callers use this to recover from transient
-   * pr-creation 5xx errors (e.g. `gh REST pulls create` returns
-   * 504 but the PR is sometimes created server-side anyway): the
-   * dispatch wrapper probes `gh pr list --head <branchName>` and,
-   * if it finds the orphaned PR, re-attaches downstream side-effects
-   * (labels, observe-only pr-landing) instead of leaving the PR
-   * unlabeled and the LAG-auditor gate unfired.
+   * Optional post-push recovery handle: the pushed branch name,
+   * populated only when the failure happened AFTER the branch
+   * reached the remote. Callers that want to detect orphaned
+   * artifacts on the remote (e.g. retry / reconciliation after a
+   * transient PR-creation gateway error) read this to reconcile
+   * downstream side effects.
    *
-   * Optional + omit-when-undefined: failures BEFORE the branch
-   * reaches the remote (drafter, dirty-worktree, push rejected)
-   * have nothing to recover and leave the field absent so a
-   * downstream branch-name probe returns null cleanly.
+   * Failures BEFORE the branch reaches the remote (drafter,
+   * dirty-worktree, push rejected) leave the field undefined so
+   * a downstream consumer that conditions on the field treats
+   * those cases as nothing-to-recover.
    */
   readonly branchName?: string;
 }

@@ -226,11 +226,9 @@ export function buildAgenticCodeAuthorExecutor(
             touchedPaths: agentResult.artifacts?.touchedPaths ?? [],
           };
         } catch (err) {
-          // Surface `branchName` so the dispatch wrapper can probe
-          // for an orphaned PR on transient `gh REST pulls create`
-          // 5xx (e.g. 504 with the PR created server-side anyway).
-          // Symmetric with the diff-based path; see that branchName
-          // comment for the recovery flow rationale.
+          // Surface `branchName` so a downstream caller can detect
+          // and reconcile orphaned remote artifacts. Symmetric with
+          // the diff-based executor's pr-creation failure path.
           return {
             kind: 'error',
             stage: 'agentic/pr-creation',

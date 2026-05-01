@@ -220,11 +220,11 @@ export default async function register(host, registry) {
     const result = await runCodeAuthor(host, payload, correlationId, { executor: wrappedExecutor });
 
     // 504 recovery: when `gh REST pulls create` returns a transient
-    // gateway error (504, 502), the PR is sometimes created server-
+    // gateway error (502, 504), the PR is sometimes created server-
     // side anyway but the gh CLI exits non-zero before reading the
     // response. The wrapper short-circuits to error and the labels
     // step never runs, leaving the PR open without `autonomous-intent`
-    // / `plan-id:<id>` labels and the LAG-auditor gate unfired.
+    // / `plan-id:<id>` labels.
     //
     // Probe `gh pr list --head <branch>` once when (a) the executor
     // failed, (b) it captured a branch name (failure was AFTER the
@@ -233,6 +233,15 @@ export default async function register(host, registry) {
     // success and continue with labels + observe. Anything else
     // falls through to the original error so the dispatcher's error
     // path still surfaces a real failure.
+    //
+    // Auth: route the probe through gh-as.mjs (the same bot-identity
+    // wrapper the labels step uses). buildBotAuthedExecImpl above is
+    // git-only and lets `gh` fall through to ambient CLI auth, which
+    // would attribute the probe to the operator's PAT. The dedicated
+    // ghAuthedExecImpl below mints an installation token through the
+    // same App record + spawns gh with GH_TOKEN set so the probe runs
+    // under the dispatch bot.
+    const ghAuthedExecImpl = buildGhAuthedExecImpl({ tokenCache });
     let recoveredFromGatewayError = false;
     if (
       result.kind === 'error'
@@ -245,7 +254,7 @@ export default async function register(host, registry) {
         branch: capturedBranchName,
         owner,
         repo,
-        execImpl,
+        execImpl: ghAuthedExecImpl,
       });
       if (probed !== null) {
         console.error(
@@ -434,5 +443,34 @@ function buildBotAuthedExecImpl({ tokenCache, repoOwner, repoName }) {
       callerEnv: options.env ?? {},
     });
     return execa(file, invocation.args, { ...options, env: invocation.env });
+  };
+}
+
+/**
+ * Build an `execImpl` for `gh` invocations that mints an
+ * installation token from the same App record and exposes it via
+ * GH_TOKEN so the gh CLI authenticates as the dispatch bot rather
+ * than falling through to the operator's ambient CLI auth. Non-gh
+ * commands pass through unchanged so a caller can compose this
+ * with arbitrary execImpl shapes without surprising side effects.
+ *
+ * Token reuse is delegated to the same InstallationTokenCache
+ * instance buildBotAuthedExecImpl uses, so a dispatch tick that
+ * fires both git ops AND a recovery probe pays for one token mint.
+ */
+function buildGhAuthedExecImpl({ tokenCache }) {
+  return async (file, args, options = {}) => {
+    if (file !== 'gh') {
+      return execa(file, args, options);
+    }
+    const token = await tokenCache.get();
+    const env = {
+      ...process.env,
+      ...(options.env ?? {}),
+      // GH_TOKEN beats the gh CLI's stored host config; the gh
+      // binary uses it verbatim for both REST + GraphQL surfaces.
+      GH_TOKEN: token.token,
+    };
+    return execa(file, args, { ...options, env });
   };
 }
