@@ -26,7 +26,7 @@ import {
 // only the workflow trigger marker. The chosen layout is:
 //   plan-id:<head>-<hash>   where head = first PLAN_ID_LABEL_HEAD chars
 //                            and  hash = first PLAN_ID_LABEL_HASH hex chars
-const PLAN_ID_LABEL_PREFIX = 'plan-id:';
+export const PLAN_ID_LABEL_PREFIX = 'plan-id:';
 const PLAN_ID_LABEL_MAX = 50;
 const PLAN_ID_LABEL_HASH = 12;
 // Reserve room for prefix + '-' separator + hash so the truncated

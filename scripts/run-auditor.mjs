@@ -20,9 +20,11 @@ import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { classifyDiffBlastRadius, computeVerdict } from './lib/auditor.mjs';
-import { parsePlanIdFromPrBody, truncatePlanIdLabel } from './lib/autonomous-dispatch-exec.mjs';
-
-const PLAN_ID_LABEL_PREFIX = 'plan-id:';
+import {
+  PLAN_ID_LABEL_PREFIX,
+  parsePlanIdFromPrBody,
+  truncatePlanIdLabel,
+} from './lib/autonomous-dispatch-exec.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
