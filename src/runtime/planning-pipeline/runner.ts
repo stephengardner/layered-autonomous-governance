@@ -534,7 +534,35 @@ export async function runPipeline(
     // list short-circuit in runPipelinePlanAutoApproval makes the call
     // a no-op for non-plan stages without a separate stage-name check.
     if (persistedPlanAtomIds.length > 0) {
-      await runPipelinePlanAutoApproval(host, persistedPlanAtomIds, { now });
+      // Wrap in try/catch so a host-side rejection (e.g. AtomStore
+      // contention on the plan_state update) routes through the
+      // runner's failure path. Without this the rejection bypasses
+      // emitStageEvent + failPipeline and leaves the pipeline in
+      // pipeline_state='running' with no terminal atom; the operator
+      // would see the plan-stage as still mid-flight indefinitely.
+      // The cause string is prefixed so an audit consumer can
+      // distinguish "stage threw" from "auto-approve threw".
+      try {
+        await runPipelinePlanAutoApproval(host, persistedPlanAtomIds, { now });
+      } catch (err) {
+        const cause = err instanceof Error ? err.message : String(err);
+        await emitStageEvent(
+          stage.name,
+          'exit-failure',
+          durationMs,
+          output.cost_usd,
+          stageOutputAtomId,
+        );
+        return await failPipeline(
+          host,
+          pipelineId,
+          options,
+          now,
+          stage.name,
+          `plan-auto-approve-failed: ${cause}`,
+          i,
+        );
+      }
     }
 
     // Prefer the runner-minted stage-output atom id over output.atom_id

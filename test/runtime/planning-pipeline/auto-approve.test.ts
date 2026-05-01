@@ -280,6 +280,58 @@ describe('evaluatePipelinePlanAutoApproval (pure)', () => {
     }
   });
 
+  it('rejects when intent has no expires_at metadata (fail-closed)', () => {
+    const intentNoExpiry: Atom = {
+      ...intentAtom('intent-1'),
+      metadata: {
+        trust_envelope: {
+          max_blast_radius: 'tooling',
+          min_plan_confidence: 0.55,
+          allowed_sub_actors: ['code-author'],
+        },
+        // Note: NO expires_at field
+      },
+    };
+    const plan = planAtom('plan-1', 'intent-1');
+    const verdict = evaluatePipelinePlanAutoApproval({
+      plan,
+      intent: intentNoExpiry,
+      intentApprovePolicy: HAPPY_INTENT_APPROVE_POLICY,
+      intentCreationPolicy: HAPPY_INTENT_CREATION_POLICY,
+      nowMs: NOW_MS,
+    });
+    expect(verdict.kind).toBe('rejected');
+    if (verdict.kind === 'rejected') {
+      expect(verdict.reason).toBe('expired-intent');
+    }
+  });
+
+  it('rejects when intent has malformed expires_at (fail-closed)', () => {
+    const intentBadExpiry: Atom = {
+      ...intentAtom('intent-1'),
+      metadata: {
+        trust_envelope: {
+          max_blast_radius: 'tooling',
+          min_plan_confidence: 0.55,
+          allowed_sub_actors: ['code-author'],
+        },
+        expires_at: 'not-a-date',
+      },
+    };
+    const plan = planAtom('plan-1', 'intent-1');
+    const verdict = evaluatePipelinePlanAutoApproval({
+      plan,
+      intent: intentBadExpiry,
+      intentApprovePolicy: HAPPY_INTENT_APPROVE_POLICY,
+      intentCreationPolicy: HAPPY_INTENT_CREATION_POLICY,
+      nowMs: NOW_MS,
+    });
+    expect(verdict.kind).toBe('rejected');
+    if (verdict.kind === 'rejected') {
+      expect(verdict.reason).toBe('expired-intent');
+    }
+  });
+
   it('rejects an intent from a non-whitelisted principal', () => {
     const intent = intentAtom('intent-1', { principal_id: 'rogue-bot' });
     const plan = planAtom('plan-1', 'intent-1');
@@ -702,6 +754,37 @@ describe('runPipelinePlanAutoApproval', () => {
     );
     expect(result.notEligible).toBe(1);
     expect(result.approved).toBe(0);
+  });
+
+  it('does not approve a plan superseded between candidate-pickup and the claim read', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom());
+    await host.atoms.put(intentCreationPolicyAtom());
+    await host.atoms.put(intentAtom('intent-1'));
+    // Pre-supersede the plan: a peer revoked it before this tick ran.
+    // The claim read MUST notice and skip rather than revive the
+    // revoked atom by stamping plan_state='approved'.
+    await host.atoms.put({
+      ...planAtom('plan-1', 'intent-1'),
+      superseded_by: ['plan-2' as AtomId],
+    });
+
+    const result = await runPipelinePlanAutoApproval(
+      host,
+      ['plan-1' as AtomId],
+      { now: () => NOW_ISO },
+    );
+    // Initial filter catches the supersession at first read; it counts
+    // as notEligible. The second-read guard at claim time backstops the
+    // race window; this test exercises the upfront filter, and the
+    // claim-time guard is exercised by the runner integration tests
+    // (the substrate cannot create a real pickup-then-supersede race
+    // without an external concurrent writer).
+    expect(result.notEligible).toBe(1);
+    expect(result.approved).toBe(0);
+
+    const plan = await host.atoms.get('plan-1' as AtomId);
+    expect(plan?.plan_state).toBe('proposed');
   });
 
   it('approves multiple plans in a single call', async () => {

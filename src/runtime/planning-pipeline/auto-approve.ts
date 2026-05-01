@@ -168,8 +168,16 @@ export function evaluatePipelinePlanAutoApproval(
   if (intent.taint !== 'clean') {
     return { kind: 'rejected', reason: 'tainted-intent', intentId: intent.id };
   }
+  // Fail-closed expiry check: missing or malformed metadata.expires_at
+  // is treated the same as expired. The autonomous-intent contract is
+  // "fresh non-expired intent authorizes approval"; a falsy/non-string
+  // expires_at, or one that does not parse to a finite ms timestamp,
+  // breaks that gate and must reject. Without this, an intent atom
+  // missing the field could authorize approval indefinitely.
   const expiresRaw = (intent.metadata as Record<string, unknown>)?.expires_at;
-  if (typeof expiresRaw === 'string' && Date.parse(expiresRaw) < nowMs) {
+  const expiresMs =
+    typeof expiresRaw === 'string' ? Date.parse(expiresRaw) : Number.NaN;
+  if (!Number.isFinite(expiresMs) || expiresMs < nowMs) {
     return { kind: 'rejected', reason: 'expired-intent', intentId: intent.id };
   }
   if (!intentCreationPolicy.allowed_principal_ids.includes(String(intent.principal_id))) {
@@ -452,9 +460,19 @@ export async function runPipelinePlanAutoApproval(
     // concurrent ticks (a peer single-pass intent tick could approve
     // the same plan in the same moment). The interface lacks true
     // compare-and-swap so the claim is best-effort; file/memory adapters
-    // serialize calls in practice. Mirrors intent-approve.ts.
+    // serialize calls in practice. Mirrors intent-approve.ts. The
+    // superseded_by check is repeated here because a peer writer can
+    // revoke (supersede) the plan between candidate-collection and the
+    // claim read; without this guard, an approval could revive a
+    // revoked atom by stamping plan_state='approved' over the
+    // supersession.
     const latest = await host.atoms.get(plan.id);
-    if (latest === null || latest.plan_state !== 'proposed' || latest.taint !== 'clean') {
+    if (
+      latest === null
+      || latest.plan_state !== 'proposed'
+      || latest.taint !== 'clean'
+      || latest.superseded_by.length > 0
+    ) {
       notEligible++;
       continue;
     }

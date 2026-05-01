@@ -1116,6 +1116,85 @@ describe('runPipeline', () => {
       expect(events[0]?.details['source']).toBe('planning-pipeline');
     });
 
+    it('routes auto-approval errors through failPipeline so the pipeline reaches a terminal state', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['plan-stage']);
+      await seedAutoApprovePolicies(host);
+      await seedOperatorIntent(host, 'intent-throw');
+
+      // Make host.atoms.update throw on the auto-approve transition so
+      // the runner's try/catch is exercised. The stage output has
+      // already been persisted by the time auto-approval runs, so the
+      // throw must NOT leave the pipeline stuck in 'running' with no
+      // pipeline-failed atom.
+      const realUpdate = host.atoms.update.bind(host.atoms);
+      let updateAttempts = 0;
+      vi.spyOn(host.atoms, 'update').mockImplementation(async (id, patch) => {
+        // Allow pipeline-state transitions to proceed; only block the
+        // plan-stage's plan_state -> approved transition.
+        if (
+          patch.plan_state === 'approved'
+          && String(id).startsWith('plan-')
+        ) {
+          updateAttempts++;
+          throw new Error('forced auto-approve failure for test');
+        }
+        return realUpdate(id, patch);
+      });
+
+      const stages: ReadonlyArray<PlanningStage> = [
+        {
+          name: 'plan-stage',
+          async run() {
+            return {
+              value: {
+                plans: [{
+                  title: 'throwing plan',
+                  body: 'plan body',
+                  derived_from: ['intent-throw'],
+                  principles_applied: [],
+                  alternatives_rejected: [],
+                  what_breaks_if_revisit: 'nothing',
+                  confidence: 0.9,
+                  delegation: {
+                    sub_actor_principal_id: 'code-author',
+                    reason: 'implements',
+                    implied_blast_radius: 'tooling',
+                  },
+                }],
+                cost_usd: 0,
+              },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'plan',
+            };
+          },
+        },
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-auto-approve-throw',
+        seedAtomIds: ['intent-throw' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      // Auto-approve threw; runner routed through failPipeline.
+      expect(result.kind).toBe('failed');
+      if (result.kind !== 'failed') return;
+      expect(result.failedStageName).toBe('plan-stage');
+      expect(result.cause).toContain('plan-auto-approve-failed');
+      // The auto-approve attempt was actually made (substrate reached
+      // the update call before throwing).
+      expect(updateAttempts).toBeGreaterThan(0);
+      // Pipeline atom transitioned to a terminal failed state, not stuck in 'running'.
+      const pipelineAtom = await host.atoms.get(result.pipelineId);
+      expect(pipelineAtom?.pipeline_state).toBe('failed');
+      // pipeline-failed atom written for audit walks.
+      const failedAtoms = await host.atoms.query({ type: ['pipeline-failed'] }, 10);
+      expect(failedAtoms.atoms.length).toBe(1);
+    });
+
     it('does not auto-approve when a critical audit finding halts the stage', async () => {
       const host = createMemoryHost();
       await seedPauseNeverPolicies(host, ['plan-stage']);
