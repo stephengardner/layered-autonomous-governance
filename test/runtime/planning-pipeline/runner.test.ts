@@ -698,6 +698,112 @@ describe('runPipeline', () => {
       expect(meta.stage_name).toBe('legal-review');
     });
 
+    it('seeds priorOutputAtomIds from options on resume so the upstream chain survives', async () => {
+      // When a pipeline is resumed mid-walk, the resume entrypoint
+      // passes the already-written upstream stage-output atom ids via
+      // options.priorOutputAtomIds so the first newly-persisted stage
+      // captures the full chain. Without this seed, a resumed plan
+      // atom's derived_from would only chain to the pipelineId, losing
+      // the upstream brainstorm-output / spec-output / etc. links.
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['plan-stage']);
+      const upstreamAtomId = 'spec-output-pipeline-corr-resume-from-plan-spec-stage-corr-resume-from-plan' as AtomId;
+      const stages: ReadonlyArray<PlanningStage> = [
+        // Stages 0-1 (brainstorm + spec) skipped because resume starts
+        // at plan-stage; the dispatch + review stages aren't included
+        // either to keep the test tight.
+        {
+          name: 'brainstorm-stage',
+          async run() {
+            return { value: {}, cost_usd: 0, duration_ms: 0, atom_type: 'brainstorm-output' };
+          },
+        },
+        {
+          name: 'spec-stage',
+          async run() {
+            return { value: {}, cost_usd: 0, duration_ms: 0, atom_type: 'spec-output' };
+          },
+        },
+        {
+          name: 'plan-stage',
+          async run() {
+            return {
+              value: {
+                plans: [{
+                  title: 'resumed plan',
+                  body: 'plan body',
+                  derived_from: ['intent-1'],
+                  principles_applied: [],
+                  alternatives_rejected: [],
+                  what_breaks_if_revisit: 'nothing',
+                  confidence: 0.9,
+                  delegation: {
+                    sub_actor_principal_id: 'code-author',
+                    reason: 'implements',
+                    implied_blast_radius: 'framework',
+                  },
+                }],
+                cost_usd: 0,
+              },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'plan',
+            };
+          },
+        },
+      ];
+      // Pre-seed the pipeline atom (resume requires the pipeline atom
+      // to already exist; no resume entrypoint hydration here, the
+      // test seeds it inline).
+      await host.atoms.put({
+        schema_version: 1,
+        id: 'pipeline-corr-resume-from-plan' as AtomId,
+        content: 'test fixture',
+        type: 'pipeline',
+        layer: 'L0',
+        provenance: {
+          kind: 'agent-observed',
+          source: { tool: 'test-fixture' },
+          derived_from: ['intent-1' as AtomId],
+        },
+        confidence: 1,
+        created_at: NOW,
+        last_reinforced_at: NOW,
+        expires_at: null,
+        supersedes: [],
+        superseded_by: [],
+        scope: 'project',
+        signals: {
+          agrees_with: [],
+          conflicts_with: [],
+          validation_status: 'unchecked',
+          last_validated_at: null,
+        },
+        principal_id: 'cto-actor' as PrincipalId,
+        taint: 'clean',
+        metadata: { mode: 'substrate-deep', started_at: NOW, current_stage_index: 1 },
+        pipeline_state: 'hil-paused',
+      });
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-resume-from-plan',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+        resumeFromStage: 'plan-stage',
+        priorOutputAtomIds: [upstreamAtomId],
+      });
+      expect(result.kind).toBe('completed');
+      // The plan atom's derived_from must include the upstream
+      // spec-output atom id passed in via options.priorOutputAtomIds,
+      // not just the pipelineId.
+      const planPage = await host.atoms.query({ type: ['plan'] }, 100);
+      expect(planPage.atoms.length).toBe(1);
+      const planAtom = planPage.atoms[0]!;
+      expect(planAtom.provenance.derived_from).toContain(upstreamAtomId);
+    });
+
     it('writes the stage-output atom even on critical-audit-halt so the operator can inspect it', async () => {
       const host = createMemoryHost();
       const stages: ReadonlyArray<PlanningStage> = [

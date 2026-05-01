@@ -11,6 +11,7 @@ import {
   mkReviewReportAtom,
   mkSpecAtom,
   mkSpecOutputAtom,
+  projectStageOutputForMetadata,
   serializeStageOutput,
   MAX_STAGE_OUTPUT_CONTENT,
 } from '../../../src/runtime/planning-pipeline/atom-shapes.js';
@@ -262,11 +263,30 @@ describe('mkBrainstormOutputAtom', () => {
     })).toThrow(/derivedFrom.*non-empty/);
   });
 
-  it('produces a deterministic id rooted in pipelineId + correlationId', () => {
+  it('produces a deterministic id rooted in pipelineId + stage slug + correlationId', () => {
     const a = mkBrainstormOutputAtom(STAGE_BASE_INPUT);
     const b = mkBrainstormOutputAtom(STAGE_BASE_INPUT);
     expect(a.id).toBe(b.id);
-    expect(String(a.id)).toBe('brainstorm-output-pipeline-abc-corr-1');
+    // Stage slug appears between pipelineId and correlationId so two
+    // stages emitting the same atom_type within one pipeline get
+    // distinct ids (see "stage-id collision avoidance" test below).
+    expect(String(a.id)).toBe('brainstorm-output-pipeline-abc-brainstorm-stage-corr-1');
+  });
+
+  it('avoids id collision when two stages emit the same atom_type within one pipeline', () => {
+    // Two distinct stages can declare atom_type='brainstorm-output'
+    // (e.g. an org-ceiling deployment running two brainstorm variants
+    // back-to-back); the stage-slug component of the id keeps them
+    // from colliding on host.atoms.put.
+    const stageA = mkBrainstormOutputAtom({
+      ...STAGE_BASE_INPUT,
+      stageName: 'brainstorm-stage',
+    });
+    const stageB = mkBrainstormOutputAtom({
+      ...STAGE_BASE_INPUT,
+      stageName: 'brainstorm-stage-org-variant',
+    });
+    expect(stageA.id).not.toBe(stageB.id);
   });
 });
 
@@ -277,7 +297,7 @@ describe('mkSpecOutputAtom', () => {
       stageName: 'spec-stage',
     });
     expect(atom.type).toBe('spec-output');
-    expect(String(atom.id)).toBe('spec-output-pipeline-abc-corr-1');
+    expect(String(atom.id)).toBe('spec-output-pipeline-abc-spec-stage-corr-1');
   });
 
   it('rejects empty derivedFrom', () => {
@@ -467,5 +487,52 @@ describe('serializeStageOutput', () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;
     expect(serializeStageOutput(circular)).toBe('[stage-output not JSON-serialisable]');
+  });
+});
+
+describe('projectStageOutputForMetadata', () => {
+  it('round-trips JSON-safe values through JSON.parse so metadata stays structured', () => {
+    const projected = projectStageOutputForMetadata({ a: 1, b: ['x', 'y'] });
+    expect(projected).toEqual({ a: 1, b: ['x', 'y'] });
+  });
+
+  it('returns the marker string for non-serialisable values (no throw)', () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(projectStageOutputForMetadata(circular)).toBe('[stage-output not JSON-serialisable]');
+  });
+
+  it('returns the marker string for unrepresentable values', () => {
+    const projected = projectStageOutputForMetadata(undefined);
+    expect(typeof projected).toBe('string');
+    expect(projected).toContain('typeof=undefined');
+  });
+
+  it('returns the truncation-marker string when the serialized value exceeds the cap', () => {
+    const huge = { x: 'y'.repeat(MAX_STAGE_OUTPUT_CONTENT * 2) };
+    const projected = projectStageOutputForMetadata(huge);
+    // The truncation case bypasses JSON.parse (the truncated string
+    // is no longer valid JSON) and surfaces the marker directly so
+    // audit consumers see the truncation explicitly.
+    expect(typeof projected).toBe('string');
+    expect(projected).toContain('[stage-output truncated');
+  });
+
+  it('mint helpers route metadata.stage_output through the projection (size-cap regression)', () => {
+    // The mint helpers bound metadata via projectStageOutputForMetadata
+    // so a runaway-large LLM emission cannot grow an atom's metadata
+    // field unchecked. Substrate-side guard: even if a stage adapter
+    // emits a > 256KB value, the persisted atom's metadata stays
+    // bounded by the cap.
+    const huge = { x: 'y'.repeat(MAX_STAGE_OUTPUT_CONTENT * 2) };
+    const atom = mkBrainstormOutputAtom({
+      ...STAGE_BASE_INPUT,
+      value: huge,
+    });
+    const meta = atom.metadata as Record<string, unknown>;
+    // The truncation branch produces a string marker; the mint helper
+    // surfaces it under metadata.stage_output as-is.
+    expect(typeof meta.stage_output).toBe('string');
+    expect(meta.stage_output).toContain('[stage-output truncated');
   });
 });

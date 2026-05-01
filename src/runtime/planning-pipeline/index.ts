@@ -34,6 +34,9 @@ export {
   mkReviewReportAtom,
   mkDispatchRecordAtom,
   mkPlanOutputAtoms,
+  serializeStageOutput,
+  projectStageOutputForMetadata,
+  MAX_STAGE_OUTPUT_CONTENT,
   PIPELINE_STATE_VALUES,
 } from './atom-shapes.js';
 export type {

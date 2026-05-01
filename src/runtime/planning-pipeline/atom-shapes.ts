@@ -462,12 +462,50 @@ export interface MkStageOutputAtomBaseInput {
 }
 
 /**
+ * Project a StageOutput.value into a JSON-safe form for embedding in
+ * atom metadata. The value flows through serializeStageOutput first so
+ * the size cap + circular-reference + non-serialisable fallbacks all
+ * apply uniformly to metadata. JSON-serialisable values round-trip
+ * through JSON.parse so the metadata stays a structured object (and
+ * audit consumers can query nested fields without re-parsing); fallback
+ * markers stay as the bare string the serialiser returned, which is
+ * itself JSON-safe.
+ *
+ * Without this projection, embedding the raw value bypasses the size
+ * cap an adversarial / runaway LLM emission would otherwise grow
+ * unchecked through metadata. Atom storage adapters that JSON-encode
+ * the metadata field on persist would also fail outright on a circular
+ * value; the projection's marker fallback keeps writes proceeding.
+ *
+ * Exported so the runner's generic-stage-output fallback path uses the
+ * same projection rather than re-declaring it (extracted at N=2 per
+ * the duplication-floor canon).
+ */
+export function projectStageOutputForMetadata(value: unknown): unknown {
+  const serialized = serializeStageOutput(value);
+  if (
+    serialized === '[stage-output not JSON-serialisable]'
+    || serialized.startsWith('[stage-output not representable:')
+    || serialized.includes('[stage-output truncated')
+  ) {
+    // Fallback markers are bare strings; embed them as-is so audit
+    // consumers see the marker directly under metadata.stage_output.
+    return serialized;
+  }
+  // serializeStageOutput already validated JSON.stringify succeeded,
+  // so JSON.parse cannot throw on the projected string.
+  return JSON.parse(serialized);
+}
+
+/**
  * Local helper: build the metadata block shared by every
  * stage-output atom. The pipeline_id + stage_name + stage_output
  * keys are load-bearing for the dispatch-stage's planFilter and for
  * audit consumers; runner-supplied fields take precedence over any
  * collision in extraMetadata so a stage adapter cannot accidentally
- * shadow them.
+ * shadow them. stage_output is always passed through
+ * projectStageOutputForMetadata so the serialise hard-cap +
+ * circular-reference fallback apply to metadata writes too.
  */
 function buildStageOutputMetadata(
   input: MkStageOutputAtomBaseInput,
@@ -476,7 +514,7 @@ function buildStageOutputMetadata(
     ...(input.extraMetadata ?? {}),
     pipeline_id: input.pipelineId,
     stage_name: input.stageName,
-    stage_output: input.value,
+    stage_output: projectStageOutputForMetadata(input.value),
   };
 }
 
@@ -499,16 +537,35 @@ function requireNonEmptyDerivedFrom(
 }
 
 /**
+ * Slugify a stage name for inclusion in deterministic atom ids.
+ * Mirrors the slugifyPlanTitle helper below; the same kebab-cased,
+ * lowercase shape keeps stage-output ids parseable from the id alone.
+ */
+function slugifyStageName(stageName: string): string {
+  return stageName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+/**
  * Build the deterministic id used by every stage-output mint helper.
- * Format: `<typePrefix>-<pipelineId>-<correlationId>` so two writes
- * for the same pipeline + correlation collide rather than create
- * siblings.
+ * Format: `<typePrefix>-<pipelineId>-<stageSlug>-<correlationId>`.
+ *
+ * Including the stage slug ensures per-stage uniqueness when an
+ * org-ceiling deployment registers two stages whose adapters declare
+ * the SAME atom_type (e.g. two different review-stage variants both
+ * emitting 'review-report'); without the stage slug the second stage's
+ * id would collide with the first. Within a single stage, two writes
+ * for the same {pipelineId, stageName, correlationId} collide rather
+ * than create siblings (idempotent put on resume).
  */
 function stageOutputAtomId(
   typePrefix: string,
   input: MkStageOutputAtomBaseInput,
 ): AtomId {
-  return `${typePrefix}-${input.pipelineId}-${input.correlationId}` as AtomId;
+  const stageSlug = slugifyStageName(input.stageName);
+  return `${typePrefix}-${input.pipelineId}-${stageSlug}-${input.correlationId}` as AtomId;
 }
 
 // ---------------------------------------------------------------------------

@@ -54,6 +54,7 @@ import {
   mkPlanOutputAtoms,
   mkReviewReportAtom,
   mkSpecOutputAtom,
+  projectStageOutputForMetadata,
   serializeStageOutput,
 } from './atom-shapes.js';
 import {
@@ -95,11 +96,28 @@ export interface RunPipelineOptions {
    * Optional priorOutput hydration for the resumeFromStage path. When
    * resuming mid-pipeline, the caller supplies the prior stage's
    * StageOutput.value so the named stage's StageInput.priorOutput is
-   * not silently `null`. Stage output persistence as typed atoms is a
-   * forward follow-up (see plan "Out of scope"); until that lands, the
-   * resume entrypoint passes priorOutput explicitly.
+   * not silently `null`. Stage outputs ARE persisted as typed atoms
+   * in the substrate; the resume entrypoint reads the prior stage's
+   * output atom and passes its value via this option, keeping the
+   * resume contract independent of the persistence shape.
    */
   readonly priorOutput?: unknown;
+  /**
+   * Optional prior stage-output atom-id chain for the resumeFromStage
+   * path. When a pipeline is resumed mid-walk, the resume entrypoint
+   * MUST pass the chain of stage-output atom ids written by the
+   * already-completed upstream stages so the first newly-persisted
+   * stage's derived_from chain captures the full upstream lineage.
+   * Without this, resumed runs lose the upstream stage-output
+   * provenance link and the dispatch-stage's planFilter (or any
+   * audit walk) cannot reconstruct the full pipeline chain from a
+   * resumed plan atom alone.
+   *
+   * Defaults to empty (the runner walks the whole pipeline freshly);
+   * the resume entrypoint is the canonical caller that supplies a
+   * non-empty chain.
+   */
+  readonly priorOutputAtomIds?: ReadonlyArray<AtomId>;
   /**
    * Verified citation set forwarded to every stage's StageInput. The
    * caller (e.g. a deep-pipeline driver) computes this from the seed
@@ -226,7 +244,15 @@ export async function runPipeline(
   // Indie-floor consumers querying for a specific stage's output by id
   // get the full chain in one read; org-ceiling consumers querying by
   // pipeline_id metadata get the same set without walking provenance.
-  const priorOutputAtomIds: AtomId[] = [];
+  //
+  // Resume path: seeded from options.priorOutputAtomIds so a resumed
+  // pipeline's first newly-persisted stage carries the upstream chain
+  // already written by the completed stages. Defensive copy via
+  // spread so a mutating caller cannot reach back through the
+  // original options reference and skew downstream chains.
+  const priorOutputAtomIds: AtomId[] = [
+    ...(options.priorOutputAtomIds ?? []),
+  ];
   let totalCostUsd = 0;
 
   for (let i = startIdx; i < stages.length; i++) {
@@ -723,7 +749,10 @@ function mkGenericStageOutputAtom(input: {
     metadata: {
       pipeline_id: input.pipelineId,
       stage_name: input.stageName,
-      stage_output: input.value,
+      // Project the value through the same JSON-safety + size-cap
+      // helper the typed mints use; embedding the raw value here
+      // would bypass the cap for custom-stage atoms.
+      stage_output: projectStageOutputForMetadata(input.value),
       generic_stage_output: true,
     },
   };
