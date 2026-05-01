@@ -100,6 +100,38 @@ export interface PlanLifecycleFailure {
   readonly fix_hint: string | null;
 }
 
+/*
+ * Focused four-step plan_state lifecycle (proposed -> approved ->
+ * executing -> terminal). Mirrors the projection in
+ * apps/console/server/plan-state-lifecycle.ts; the union types are
+ * duplicated here intentionally so the console layer does not import
+ * from the server module (read-only frontend, distinct release
+ * cadence).
+ */
+export type PlanStateLifecycleStepKind =
+  | 'proposed'
+  | 'approved'
+  | 'executing'
+  | 'terminal';
+
+export type PlanStateLifecycleStepStatus =
+  | 'reached'
+  | 'pending'
+  | 'skipped';
+
+export interface PlanStateLifecycleStep {
+  readonly kind: PlanStateLifecycleStepKind;
+  readonly status: PlanStateLifecycleStepStatus;
+  readonly at: string | null;
+  readonly by: string | null;
+  readonly terminal_kind: 'succeeded' | 'failed' | null;
+  readonly error_message: string | null;
+}
+
+export interface PlanStateLifecycle {
+  readonly steps: ReadonlyArray<PlanStateLifecycleStep>;
+}
+
 export interface PlanLifecycle {
   readonly plan: PlanLifecyclePlan | null;
   readonly intent: PlanLifecycleIntent | null;
@@ -109,6 +141,11 @@ export interface PlanLifecycle {
   readonly settled: PlanLifecycleSettled | null;
   readonly failure: PlanLifecycleFailure | null;
   readonly transitions: ReadonlyArray<PlanLifecycleTransition>;
+  /*
+   * The focused plan_state timeline. Always present when `plan` is
+   * present; null when the plan atom was not found.
+   */
+  readonly plan_state_lifecycle: PlanStateLifecycle | null;
 }
 
 export async function getPlanLifecycle(

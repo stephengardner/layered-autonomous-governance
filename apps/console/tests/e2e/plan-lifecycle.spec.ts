@@ -79,6 +79,52 @@ test.describe('plan lifecycle', () => {
     }
   });
 
+  test('plan-state-lifecycle stepper renders four steps with status attributes', async ({ page }) => {
+    /*
+     * Asserts the focused four-step plan_state stepper (proposed ->
+     * approved -> executing -> terminal) renders for any plan opened
+     * from the list, with correctly attributed status and kind data
+     * on every row. This is the e2e contract that closes the loop on
+     * the unit-tested projection -- we don't assert which steps are
+     * reached vs pending here (depends on the fixture plan), only
+     * that the substrate-shape is honoured: four rows, each carries
+     * data-step-kind in the canonical set, each carries a status from
+     * the canonical set.
+     */
+    await page.goto('/plan-lifecycle');
+    const firstRow = page.locator('[data-testid="plan-lifecycle-row"]').first();
+    await firstRow.waitFor({ state: 'visible', timeout: 10_000 });
+    await firstRow.click();
+
+    const stepper = page.getByTestId('plan-state-lifecycle');
+    await expect(stepper).toBeVisible({ timeout: 10_000 });
+
+    const steps = page.locator('[data-testid="plan-state-lifecycle-step"]');
+    await expect(steps).toHaveCount(4);
+
+    const expectedKinds = ['proposed', 'approved', 'executing', 'terminal'];
+    const allowedStatuses = new Set(['reached', 'pending', 'skipped']);
+
+    for (let i = 0; i < 4; i++) {
+      const step = steps.nth(i);
+      const kind = await step.getAttribute('data-step-kind');
+      expect(kind, `step ${i} should expose its kind`).toBe(expectedKinds[i]);
+      const status = await step.getAttribute('data-step-status');
+      expect(status, `step ${i} should expose a recognized status`).toBeTruthy();
+      expect(
+        allowedStatuses.has(status!),
+        `step ${i} status='${status}' should be in {reached,pending,skipped}`,
+      ).toBe(true);
+    }
+
+    // Proposed always reaches because the atom existing IS the
+    // proposed transition; pin that contract here so a regression
+    // surfaces with a clear failure rather than as a silently wrong
+    // step status downstream.
+    const proposed = steps.nth(0);
+    await expect(proposed).toHaveAttribute('data-step-status', 'reached');
+  });
+
   test('focused timeline lists every chain phase for a merged plan', async ({ page, request }) => {
     /*
      * Pick a merged-plan fixture dynamically rather than pinning a
