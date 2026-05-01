@@ -37,12 +37,23 @@
  *   node scripts/backfill-stranded-executing-plans.mjs --dry-run
  */
 
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const REPO_ROOT = resolve(process.cwd());
 const ATOMS_DIR = join(REPO_ROOT, '.lag', 'atoms');
 const DRY_RUN = process.argv.includes('--dry-run');
+
+function ensureAtomsDir() {
+  if (!existsSync(ATOMS_DIR)) {
+    console.error(`[backfill] atoms directory not found: ${ATOMS_DIR}`);
+    console.error(
+      '[backfill] run this script from the repo root with an initialized .lag store, '
+      + 'or set the cwd to a directory containing .lag/atoms/ before invoking.',
+    );
+    process.exit(1);
+  }
+}
 
 function parsePrNumberFromSummary(summary) {
   if (typeof summary !== 'string') return null;
@@ -54,6 +65,7 @@ function parsePrNumberFromSummary(summary) {
 }
 
 function loadPlanFiles() {
+  ensureAtomsDir();
   const entries = readdirSync(ATOMS_DIR, { withFileTypes: true });
   const planFiles = entries
     .filter((d) => d.isFile() && d.name.startsWith('plan-') && d.name.endsWith('.json'))
