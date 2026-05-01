@@ -488,3 +488,5 @@ GitHub Actions CI runs typecheck, build, default test suite, and a quickstart sm
 ## License
 
 MIT. See `LICENSE`.
+
+- [Target architecture](design/target-architecture.md)
