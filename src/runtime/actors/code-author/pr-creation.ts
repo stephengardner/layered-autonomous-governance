@@ -360,22 +360,32 @@ export async function buildEmbeddedAtomSnapshots(
   host: Host,
   plan: Atom,
 ): Promise<ReadonlyArray<EmbeddedAtomSnapshot>> {
-  const snapshots: EmbeddedAtomSnapshot[] = [];
-  // Plan first so the auditor's primary lookup hits a snapshot
-  // before walking the provenance chain. Order is not load-
-  // bearing for the parser (parseEmbeddedAtomFromPrBody scans
-  // every block looking for the requested id) but the rendered
-  // body reads more naturally with the plan above its provenance.
-  snapshots.push({ id: String(plan.id), json: serializeAtom(plan) });
+  // Walk the provenance chain FIRST and only emit snapshots when
+  // an operator-intent is actually reachable. Seeding the list
+  // with the plan up-front would emit a carrier section on every
+  // code-author PR (intent-driven or not), widening the body
+  // surface beyond the auditor path this carrier exists for and
+  // contradicting the function's documented "intent-driven only"
+  // contract. The auditor's "no operator-intent in provenance"
+  // exit covers the non-intent case; emitting nothing here keeps
+  // the body shape clean for those PRs.
   const derivedFrom = plan.provenance?.derived_from ?? [];
   for (const refId of derivedFrom) {
     const candidate = await host.atoms.get(refId);
     if (candidate?.type === 'operator-intent') {
-      snapshots.push({ id: String(candidate.id), json: serializeAtom(candidate) });
-      break;
+      // Plan first so the auditor's primary lookup hits a
+      // snapshot before walking provenance; intent second so the
+      // rendered body reads top-down (plan -> its provenance).
+      // Order is not load-bearing for the parser
+      // (parseEmbeddedAtomFromPrBody scans every block by id)
+      // but improves readability for human reviewers.
+      return [
+        { id: String(plan.id), json: serializeAtom(plan) },
+        { id: String(candidate.id), json: serializeAtom(candidate) },
+      ];
     }
   }
-  return snapshots;
+  return [];
 }
 
 /**

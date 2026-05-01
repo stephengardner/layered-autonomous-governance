@@ -388,27 +388,28 @@ describe('buildEmbeddedAtomSnapshots', () => {
     expect(JSON.parse(out[1].json).type).toBe('operator-intent');
   });
 
-  it('returns only the plan snapshot when no operator-intent is in derived_from', async () => {
-    // Plans that are not intent-driven do not need a carrier
-    // intent entry; the auditor's "no operator-intent in
-    // provenance" branch covers the rest of the case.
+  it('emits no snapshots for a plan with no operator-intent in derived_from', async () => {
+    // Plans that are not intent-driven do not get an embedded
+    // carrier section: the auditor's "no operator-intent in
+    // provenance" exit covers the non-intent case, and emitting
+    // an empty list keeps the body surface narrow (per CR
+    // finding: every code-author PR was getting a carrier
+    // before, contradicting the function's intent-driven contract).
     const plan = makeAtom('plan-1', 'plan', []);
     const host = makeHost([plan]);
     const out = await buildEmbeddedAtomSnapshots(host, plan);
-    expect(out.length).toBe(1);
-    expect(out[0].id).toBe('plan-1');
+    expect(out.length).toBe(0);
   });
 
-  it('skips a missing intent reference (atom store returns null) without throwing', async () => {
+  it('emits no snapshots when the intent reference is unreachable (atom store returns null)', async () => {
     // The dispatch flow may run on a host where the operator-intent
     // atom was reaped or relocated; building snapshots must not
-    // throw, just emit the plan-only carrier and let the auditor's
-    // not-found path handle the rest.
+    // throw and must not emit a half-carrier (plan with no intent),
+    // which the auditor would treat as a non-intent plan anyway.
     const plan = makeAtom('plan-1', 'plan', ['intent-missing']);
     const host = makeHost([plan]);
     const out = await buildEmbeddedAtomSnapshots(host, plan);
-    expect(out.length).toBe(1);
-    expect(out[0].id).toBe('plan-1');
+    expect(out.length).toBe(0);
   });
 
   it('round-trips: render -> parse via the script-side helper recovers the atom', async () => {
