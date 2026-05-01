@@ -847,4 +847,337 @@ describe('runPipeline', () => {
       expect(brainstormAtoms.atoms.length).toBe(1);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // plan-stage auto-approval (runPipelinePlanAutoApproval wire-up)
+  // ---------------------------------------------------------------------------
+  describe('plan-stage auto-approval', () => {
+    /**
+     * Seed the canonical pol-plan-autonomous-intent-approve and
+     * pol-operator-intent-creation atoms so the auto-approval helper
+     * has a non-empty allowlist + a principal whitelist. Without these
+     * the helper short-circuits to notEligible and the integration test
+     * cannot verify the wire-up.
+     */
+    async function seedAutoApprovePolicies(host: MemoryHost): Promise<void> {
+      await host.atoms.put({
+        schema_version: 1,
+        id: 'pol-plan-autonomous-intent-approve' as AtomId,
+        content: 'intent-approve policy fixture',
+        type: 'directive',
+        layer: 'L3',
+        provenance: { kind: 'operator-seeded', source: { tool: 'test-fixture' }, derived_from: [] },
+        confidence: 1,
+        created_at: NOW,
+        last_reinforced_at: NOW,
+        expires_at: null,
+        supersedes: [],
+        superseded_by: [],
+        scope: 'project',
+        signals: { agrees_with: [], conflicts_with: [], validation_status: 'unchecked', last_validated_at: null },
+        principal_id: 'operator' as PrincipalId,
+        taint: 'clean',
+        metadata: {
+          policy: {
+            subject: 'plan-autonomous-intent-approve',
+            allowed_sub_actors: ['code-author'],
+          },
+        },
+      });
+      await host.atoms.put({
+        schema_version: 1,
+        id: 'pol-operator-intent-creation' as AtomId,
+        content: 'intent-creation policy fixture',
+        type: 'directive',
+        layer: 'L3',
+        provenance: { kind: 'operator-seeded', source: { tool: 'test-fixture' }, derived_from: [] },
+        confidence: 1,
+        created_at: NOW,
+        last_reinforced_at: NOW,
+        expires_at: null,
+        supersedes: [],
+        superseded_by: [],
+        scope: 'project',
+        signals: { agrees_with: [], conflicts_with: [], validation_status: 'unchecked', last_validated_at: null },
+        principal_id: 'operator' as PrincipalId,
+        taint: 'clean',
+        metadata: {
+          policy: {
+            subject: 'operator-intent-creation',
+            allowed_principal_ids: ['operator-principal'],
+          },
+        },
+      });
+    }
+
+    /**
+     * Seed an operator-intent atom whose trust envelope authorizes the
+     * plan-stage emission shape used by the test fixtures below
+     * (sub_actor_principal_id: 'code-author', implied_blast_radius:
+     * 'tooling').
+     */
+    async function seedOperatorIntent(host: MemoryHost, intentId: string): Promise<void> {
+      const FUTURE_EXPIRY = new Date(Date.parse(NOW) + 24 * 60 * 60 * 1000).toISOString() as Time;
+      await host.atoms.put({
+        schema_version: 1,
+        id: intentId as AtomId,
+        content: 'autonomous-solve fixture intent',
+        type: 'operator-intent',
+        layer: 'L1',
+        provenance: { kind: 'operator-seeded', source: { tool: 'test-fixture' }, derived_from: [] },
+        confidence: 1,
+        created_at: NOW,
+        last_reinforced_at: NOW,
+        expires_at: null,
+        supersedes: [],
+        superseded_by: [],
+        scope: 'project',
+        signals: { agrees_with: [], conflicts_with: [], validation_status: 'unchecked', last_validated_at: null },
+        principal_id: 'operator-principal' as PrincipalId,
+        taint: 'clean',
+        metadata: {
+          trust_envelope: {
+            min_plan_confidence: 0.55,
+            max_blast_radius: 'tooling',
+            allowed_sub_actors: ['code-author'],
+          },
+          expires_at: FUTURE_EXPIRY,
+        },
+      });
+    }
+
+    it('transitions plan_state proposed -> approved when the seed-intent envelope authorizes', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['plan-stage']);
+      await seedAutoApprovePolicies(host);
+      await seedOperatorIntent(host, 'intent-pipeline-approve');
+
+      const stages: ReadonlyArray<PlanningStage> = [
+        {
+          name: 'plan-stage',
+          async run() {
+            return {
+              value: {
+                plans: [{
+                  title: 'auto-approvable plan',
+                  body: 'plan body',
+                  derived_from: ['intent-pipeline-approve'],
+                  principles_applied: [],
+                  alternatives_rejected: [],
+                  what_breaks_if_revisit: 'nothing',
+                  confidence: 0.9,
+                  delegation: {
+                    sub_actor_principal_id: 'code-author',
+                    reason: 'implements',
+                    implied_blast_radius: 'tooling',
+                  },
+                }],
+                cost_usd: 0,
+              },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'plan',
+            };
+          },
+        },
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-auto-approve',
+        seedAtomIds: ['intent-pipeline-approve' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('completed');
+
+      // The plan atom emerges as 'approved', not 'proposed'.
+      const plans = await host.atoms.query({ type: ['plan'] }, 100);
+      expect(plans.atoms.length).toBe(1);
+      const planAtom = plans.atoms[0]!;
+      expect(planAtom.plan_state).toBe('approved');
+      const meta = planAtom.metadata as Record<string, unknown>;
+      expect(meta['approved_via']).toBe('pol-plan-autonomous-intent-approve');
+      expect(meta['approved_intent_id']).toBe('intent-pipeline-approve');
+
+      // Audit event recorded.
+      const events = await host.auditor.query({ kind: ['plan.approved-by-intent'] }, 10);
+      expect(events.length).toBe(1);
+      expect(events[0]?.details['source']).toBe('planning-pipeline');
+    });
+
+    it('leaves plan_state proposed when no operator-intent is seeded (not-eligible)', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['plan-stage']);
+      await seedAutoApprovePolicies(host);
+      // No seedOperatorIntent: the plan's derived_from references
+      // 'intent-1' but no operator-intent atom is in the store, so
+      // the auto-approval helper treats the plan as not-eligible.
+      const stages: ReadonlyArray<PlanningStage> = [
+        {
+          name: 'plan-stage',
+          async run() {
+            return {
+              value: {
+                plans: [{
+                  title: 'plan without intent',
+                  body: 'plan body',
+                  derived_from: ['intent-missing'],
+                  principles_applied: [],
+                  alternatives_rejected: [],
+                  what_breaks_if_revisit: 'nothing',
+                  confidence: 0.9,
+                  delegation: {
+                    sub_actor_principal_id: 'code-author',
+                    reason: 'implements',
+                    implied_blast_radius: 'tooling',
+                  },
+                }],
+                cost_usd: 0,
+              },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'plan',
+            };
+          },
+        },
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-no-intent',
+        seedAtomIds: ['intent-missing' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('completed');
+
+      const plans = await host.atoms.query({ type: ['plan'] }, 100);
+      expect(plans.atoms.length).toBe(1);
+      // Plan stays proposed because no operator-intent could be located.
+      expect(plans.atoms[0]!.plan_state).toBe('proposed');
+    });
+
+    it('leaves plan_state proposed when the envelope mismatches', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['plan-stage']);
+      await seedAutoApprovePolicies(host);
+      await seedOperatorIntent(host, 'intent-mismatch');
+
+      // Plan delegates to a sub-actor NOT in the envelope's allowed
+      // list (envelope allows code-author; plan requests plan-dispatcher).
+      const stages: ReadonlyArray<PlanningStage> = [
+        {
+          name: 'plan-stage',
+          async run() {
+            return {
+              value: {
+                plans: [{
+                  title: 'mismatch plan',
+                  body: 'plan body',
+                  derived_from: ['intent-mismatch'],
+                  principles_applied: [],
+                  alternatives_rejected: [],
+                  what_breaks_if_revisit: 'nothing',
+                  confidence: 0.9,
+                  delegation: {
+                    sub_actor_principal_id: 'plan-dispatcher',
+                    reason: 'mismatched delegation',
+                    implied_blast_radius: 'tooling',
+                  },
+                }],
+                cost_usd: 0,
+              },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'plan',
+            };
+          },
+        },
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-mismatch',
+        seedAtomIds: ['intent-mismatch' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('completed');
+
+      const plans = await host.atoms.query({ type: ['plan'] }, 100);
+      expect(plans.atoms.length).toBe(1);
+      // Envelope mismatched on sub-actor, so plan stays proposed and
+      // the auditor logs a 'plan.skipped-by-intent' event.
+      expect(plans.atoms[0]!.plan_state).toBe('proposed');
+
+      const events = await host.auditor.query({ kind: ['plan.skipped-by-intent'] }, 10);
+      expect(events.length).toBe(1);
+      expect(events[0]?.details['source']).toBe('planning-pipeline');
+    });
+
+    it('does not auto-approve when a critical audit finding halts the stage', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['plan-stage']);
+      await seedAutoApprovePolicies(host);
+      await seedOperatorIntent(host, 'intent-critical-halt');
+
+      const stages: ReadonlyArray<PlanningStage> = [
+        {
+          name: 'plan-stage',
+          async run() {
+            return {
+              value: {
+                plans: [{
+                  title: 'critical-halt plan',
+                  body: 'plan body',
+                  derived_from: ['intent-critical-halt'],
+                  principles_applied: [],
+                  alternatives_rejected: [],
+                  what_breaks_if_revisit: 'nothing',
+                  confidence: 0.9,
+                  delegation: {
+                    sub_actor_principal_id: 'code-author',
+                    reason: 'implements',
+                    implied_blast_radius: 'tooling',
+                  },
+                }],
+                cost_usd: 0,
+              },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'plan',
+            };
+          },
+          async audit() {
+            return [
+              {
+                severity: 'critical',
+                category: 'forced-test-finding',
+                message: 'forced critical for halt-before-approve test',
+                cited_atom_ids: [],
+                cited_paths: [],
+              },
+            ];
+          },
+        },
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-critical-halt',
+        seedAtomIds: ['intent-critical-halt' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('failed');
+
+      const plans = await host.atoms.query({ type: ['plan'] }, 100);
+      expect(plans.atoms.length).toBe(1);
+      // Critical finding halted before auto-approval, so plan stays proposed.
+      expect(plans.atoms[0]!.plan_state).toBe('proposed');
+      const events = await host.auditor.query({ kind: ['plan.approved-by-intent'] }, 10);
+      expect(events.length).toBe(0);
+    });
+  });
 });

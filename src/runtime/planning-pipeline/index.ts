@@ -67,3 +67,14 @@ export type {
   PipelineDefaultModePolicyResult,
   PipelineStageCostCapPolicyResult,
 } from './policy.js';
+
+export {
+  evaluatePipelinePlanAutoApproval,
+  runPipelinePlanAutoApproval,
+} from './auto-approve.js';
+export type {
+  PlanAutoApprovalEvaluation,
+  PlanAutoApprovalEvaluatorInput,
+  RunPipelinePlanAutoApprovalOptions,
+  RunPipelinePlanAutoApprovalResult,
+} from './auto-approve.js';
