@@ -469,17 +469,26 @@ export function buildDiffBasedCodeAuthorExecutor(
           draft,
         });
       } catch (err) {
+        // Surface `branchName` on pr-creation failures: the branch
+        // already reached the remote (apply-branch succeeded before
+        // this catch), so a downstream caller can detect orphaned
+        // remote artifacts and reconcile them. Failures earlier in
+        // the chain (drafter, dirty-worktree, push rejected) omit
+        // the field so a consumer that conditions on it treats
+        // those as nothing-to-recover.
         if (err instanceof PrCreationError) {
           return {
             kind: 'error',
             stage: `pr-creation/${err.reason}`,
             reason: `${err.message} (stage=${err.stage})`,
+            branchName: gitResult.branchName,
           };
         }
         return {
           kind: 'error',
           stage: 'pr-creation/unexpected',
           reason: err instanceof Error ? err.message : String(err),
+          branchName: gitResult.branchName,
         };
       }
 

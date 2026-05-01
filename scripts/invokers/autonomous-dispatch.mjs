@@ -62,7 +62,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildAuthedGitInvocation,
+  isTransientPrCreationGatewayError,
   parseRepoSlug,
+  probeOrphanedPrByBranch,
   truncatePlanIdLabel,
 } from '../lib/autonomous-dispatch-exec.mjs';
 
@@ -143,6 +145,12 @@ export default async function register(host, registry) {
     repoOwner: owner,
     repoName: repo,
   });
+  // Construct the gh-authed shim once at register time alongside
+  // execImpl so per-dispatch ticks reuse the same closure rather
+  // than re-allocating on every invocation. The closure captures
+  // `tokenCache` only; the token mint inside is still lazy + cached
+  // so the shape mirrors the existing execImpl pattern.
+  const ghAuthedExecImpl = buildGhAuthedExecImpl({ tokenCache });
 
   // Construct a GitWorktreeProvider rooted at the operator's primary
   // checkout. Each dispatch acquires a fresh `<repoDir>/.worktrees/agentic/<id>`
@@ -189,12 +197,27 @@ export default async function register(host, registry) {
   registry.register('code-author', async (payload, correlationId) => {
     let capturedPrNumber = null;
     let capturedPlanId = null;
+    let capturedBranchName = null;
+    let capturedFailureReason = null;
     const wrappedExecutor = {
       async execute(inputs) {
         capturedPlanId = String(inputs.plan.id);
         const execResult = await defaultExecutor.execute(inputs);
         if (execResult.kind === 'dispatched') {
           capturedPrNumber = execResult.prNumber;
+        } else if (execResult.kind === 'error') {
+          // Branch name is populated by the executor only on
+          // failures AFTER the branch reached the remote (i.e.
+          // pr-creation/* stages). Capture it so the post-result
+          // 504-recovery path can probe `gh pr list --head <branch>`
+          // for an orphaned PR the gh CLI reported as failed but
+          // GitHub created server-side anyway.
+          if (typeof execResult.branchName === 'string' && execResult.branchName.length > 0) {
+            capturedBranchName = execResult.branchName;
+          }
+          if (typeof execResult.reason === 'string') {
+            capturedFailureReason = execResult.reason;
+          }
         }
         return execResult;
       },
@@ -202,7 +225,62 @@ export default async function register(host, registry) {
 
     const result = await runCodeAuthor(host, payload, correlationId, { executor: wrappedExecutor });
 
-    if (result.kind === 'dispatched' && capturedPrNumber !== null && capturedPlanId !== null) {
+    // 504 recovery: when `gh REST pulls create` returns a transient
+    // gateway error (502, 504), the PR is sometimes created server-
+    // side anyway but the gh CLI exits non-zero before reading the
+    // response. The wrapper short-circuits to error and the labels
+    // step never runs, leaving the PR open without `autonomous-intent`
+    // / `plan-id:<id>` labels.
+    //
+    // Probe `gh pr list --head <branch>` once when (a) the executor
+    // failed, (b) it captured a branch name (failure was AFTER the
+    // branch reached the remote), and (c) the failure reason
+    // matches the transient 5xx shape. Treat an exact-one-match as
+    // success and continue with labels + observe. Anything else
+    // falls through to the original error so the dispatcher's error
+    // path still surfaces a real failure.
+    //
+    // Auth: route the probe through ghAuthedExecImpl (built at
+    // register time). buildBotAuthedExecImpl is git-only and lets
+    // `gh` fall through to ambient CLI auth, which would attribute
+    // the probe to the operator's PAT. ghAuthedExecImpl mints an
+    // installation token through the same App record + spawns gh
+    // with GH_TOKEN set so the probe runs under the dispatch bot.
+    let recoveredFromGatewayError = false;
+    if (
+      result.kind === 'error'
+      && capturedPrNumber === null
+      && capturedBranchName !== null
+      && capturedFailureReason !== null
+      && isTransientPrCreationGatewayError(capturedFailureReason)
+    ) {
+      const probed = await probeOrphanedPrByBranch({
+        branch: capturedBranchName,
+        owner,
+        repo,
+        execImpl: ghAuthedExecImpl,
+      });
+      if (probed !== null) {
+        console.error(
+          `[autonomous-dispatch] recovered from transient pr-creation gateway error: `
+          + `branch=${capturedBranchName} probed PR #${probed.number} ${probed.htmlUrl}. `
+          + `Continuing with labels + observe.`,
+        );
+        capturedPrNumber = probed.number;
+        recoveredFromGatewayError = true;
+      } else {
+        console.error(
+          `[autonomous-dispatch] transient pr-creation gateway error AND no orphaned PR `
+          + `on head=${capturedBranchName}; treating as a real create failure.`,
+        );
+      }
+    }
+
+    const labelEligible = (result.kind === 'dispatched' || recoveredFromGatewayError)
+      && capturedPrNumber !== null
+      && capturedPlanId !== null;
+
+    if (labelEligible) {
       const plan = await host.atoms.get(capturedPlanId);
       const intentId = plan ? await findIntentInProvenance(host, plan) : null;
       if (intentId) {
@@ -257,6 +335,21 @@ export default async function register(host, registry) {
         const cause = err instanceof Error ? err.message : String(err);
         console.error(`[autonomous-dispatch] WARNING: failed to observe PR #${capturedPrNumber} after dispatch: ${cause}. Plan ${capturedPlanId} will stay at plan_state='executing' until pr-landing is run manually.`);
       }
+    }
+
+    if (recoveredFromGatewayError && capturedPrNumber !== null) {
+      // The executor returned `error` but the orphaned-PR probe
+      // recovered the dispatched PR. Promote the result to
+      // `dispatched` so the dispatcher treats the run as success
+      // (plan stays in `executing` until pr-landing closes it,
+      // matching the normal happy path) instead of flipping the
+      // plan to `failed`.
+      return {
+        kind: 'dispatched',
+        summary:
+          `code-author dispatched plan ${capturedPlanId} as PR #${capturedPrNumber} `
+          + `(recovered from transient gh REST pulls create gateway error)`,
+      };
     }
     return result;
   });
@@ -354,5 +447,34 @@ function buildBotAuthedExecImpl({ tokenCache, repoOwner, repoName }) {
       callerEnv: options.env ?? {},
     });
     return execa(file, invocation.args, { ...options, env: invocation.env });
+  };
+}
+
+/**
+ * Build an `execImpl` for `gh` invocations that mints an
+ * installation token from the same App record and exposes it via
+ * GH_TOKEN so the gh CLI authenticates as the dispatch bot rather
+ * than falling through to the operator's ambient CLI auth. Non-gh
+ * commands pass through unchanged so a caller can compose this
+ * with arbitrary execImpl shapes without surprising side effects.
+ *
+ * Token reuse is delegated to the same InstallationTokenCache
+ * instance buildBotAuthedExecImpl uses, so a dispatch tick that
+ * fires both git ops AND a recovery probe pays for one token mint.
+ */
+function buildGhAuthedExecImpl({ tokenCache }) {
+  return async (file, args, options = {}) => {
+    if (file !== 'gh') {
+      return execa(file, args, options);
+    }
+    const token = await tokenCache.get();
+    const env = {
+      ...process.env,
+      ...(options.env ?? {}),
+      // GH_TOKEN beats the gh CLI's stored host config; the gh
+      // binary uses it verbatim for both REST + GraphQL surfaces.
+      GH_TOKEN: token.token,
+    };
+    return execa(file, args, { ...options, env });
   };
 }

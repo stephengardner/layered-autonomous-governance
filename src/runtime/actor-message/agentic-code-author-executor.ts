@@ -226,7 +226,15 @@ export function buildAgenticCodeAuthorExecutor(
             touchedPaths: agentResult.artifacts?.touchedPaths ?? [],
           };
         } catch (err) {
-          return { kind: 'error', stage: 'agentic/pr-creation', reason: errorMessage(err) };
+          // Surface `branchName` so a downstream caller can detect
+          // and reconcile orphaned remote artifacts. Symmetric with
+          // the diff-based executor's pr-creation failure path.
+          return {
+            kind: 'error',
+            stage: 'agentic/pr-creation',
+            reason: errorMessage(err),
+            branchName,
+          };
         }
       } finally {
         // 6. Always release the workspace, even on throw. Swallow any
