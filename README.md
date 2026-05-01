@@ -488,3 +488,7 @@ GitHub Actions CI runs typecheck, build, default test suite, and a quickstart sm
 ## License
 
 MIT. See `LICENSE`.
+
+## See also
+
+- [design/host-interface.md](design/host-interface.md)
