@@ -60,6 +60,7 @@ import type {
   StageOutput,
 } from '../../../src/runtime/planning-pipeline/index.js';
 import type { AtomId } from '../../../src/types.js';
+import { buildJudgeSchema } from '../lib/zod-to-judge-schema.js';
 
 /** Maximum entries per cited-id list; mirrors MAX_CITED_LIST in atom-shapes. */
 const MAX_LIST = 256;
@@ -129,6 +130,31 @@ export const planPayloadSchema = z.object({
 });
 
 export type PlanPayload = z.infer<typeof planPayloadSchema>;
+
+/**
+ * JSON-schema shape passed to host.llm.judge. Derived mechanically
+ * from `planPayloadSchema` via the shared `buildJudgeSchema` helper,
+ * so a new bounded field added to the zod schema produces a bounded
+ * JSON-schema field with no second edit. The helper covers the
+ * supported zod surface (object/string/number/boolean/enum/array
+ * with min and max bounds, plus optional/nullable/effects wrappers)
+ * and throws on anything outside it; that throw is the substrate
+ * signal that a stage adopted a new zod shape and the helper must be
+ * extended rather than worked around.
+ *
+ * The parity test in test/examples/planning-stages/schema-parity.test.ts
+ * walks both schemas to assert agreement on every bounded field, so a
+ * helper-level regression that loosens the JSON-schema produces a
+ * single-test failure pointing at the forgotten field. Dogfeed-7
+ * (pipeline-cto-1777614599370-8xgy3p) halted at plan-stage because
+ * what_breaks_if_revisit was 500+ chars under a JSON-schema with no
+ * maxLength; the helper-derived schema enforces the bound.
+ *
+ * Exported for the parity test; the runStage function below references
+ * this same constant so a single edit lands in both the LLM-time fence
+ * and the parity assertion.
+ */
+export const PLAN_JUDGE_SCHEMA = buildJudgeSchema(planPayloadSchema);
 
 /**
  * Plan system prompt.
@@ -203,75 +229,10 @@ async function runPlan(
   // per-principal LLM tool-policy atom and forwarding via LlmOptions;
   // this module does not hardcode tool-policy.
   const result = await input.host.llm.judge<PlanPayload>(
-    // JsonSchema shape; the runtime validation runs against
-    // planPayloadSchema in the runner via stage.outputSchema.
-    {
-      type: 'object',
-      properties: {
-        plans: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              title: { type: 'string' },
-              body: { type: 'string' },
-              derived_from: { type: 'array', items: { type: 'string' } },
-              principles_applied: {
-                type: 'array',
-                items: { type: 'string' },
-              },
-              alternatives_rejected: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    option: { type: 'string' },
-                    reason: { type: 'string' },
-                  },
-                  required: ['option', 'reason'],
-                },
-              },
-              what_breaks_if_revisit: { type: 'string' },
-              confidence: { type: 'number' },
-              delegation: {
-                type: 'object',
-                properties: {
-                  sub_actor_principal_id: { type: 'string' },
-                  reason: { type: 'string' },
-                  implied_blast_radius: {
-                    type: 'string',
-                    enum: [
-                      'none',
-                      'docs',
-                      'tooling',
-                      'framework',
-                      'l3-canon-proposal',
-                    ],
-                  },
-                },
-                required: [
-                  'sub_actor_principal_id',
-                  'reason',
-                  'implied_blast_radius',
-                ],
-              },
-            },
-            required: [
-              'title',
-              'body',
-              'derived_from',
-              'principles_applied',
-              'alternatives_rejected',
-              'what_breaks_if_revisit',
-              'confidence',
-              'delegation',
-            ],
-          },
-        },
-        cost_usd: { type: 'number' },
-      },
-      required: ['plans', 'cost_usd'],
-    },
+    // PLAN_JUDGE_SCHEMA mirrors the zod planPayloadSchema's bounds at
+    // the LLM-time fence. See the constant declaration for the parity
+    // contract and the dogfeed-7 evidence that motivated the bounds.
+    PLAN_JUDGE_SCHEMA,
     PLAN_SYSTEM_PROMPT,
     {
       pipeline_id: String(input.pipelineId),

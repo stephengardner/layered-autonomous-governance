@@ -52,6 +52,7 @@ import type {
   StageOutput,
 } from '../../../src/runtime/planning-pipeline/index.js';
 import type { AtomId } from '../../../src/types.js';
+import { buildJudgeSchema } from '../lib/zod-to-judge-schema.js';
 
 /** Maximum entries per list field; mirrors MAX_CITED_LIST in atom-shapes. */
 const MAX_LIST = 256;
@@ -97,6 +98,26 @@ export const specPayloadSchema = z.object({
 export type SpecPayload = z.infer<typeof specPayloadSchema>;
 
 /**
+ * JSON-schema shape passed to host.llm.judge. Derived mechanically
+ * from `specPayloadSchema` via the shared `buildJudgeSchema` helper,
+ * so a new bounded field added to the zod schema produces a bounded
+ * JSON-schema field with no second edit. The helper covers the
+ * supported zod surface (object/string/number/boolean/enum/array
+ * with min and max bounds, plus optional/nullable/effects wrappers)
+ * and throws on anything outside it; that throw is the substrate
+ * signal that a stage adopted a new zod shape and the helper must be
+ * extended rather than worked around.
+ *
+ * The parity test in test/examples/planning-stages/schema-parity.test.ts
+ * walks both schemas to assert agreement on every bounded field.
+ *
+ * Exported for the parity test; the runStage function below references
+ * this same constant so a single edit lands in both the LLM-time
+ * fence and the parity assertion.
+ */
+export const SPEC_JUDGE_SCHEMA = buildJudgeSchema(specPayloadSchema);
+
+/**
  * Spec system prompt.
  *
  * Exported so the contract-tests can assert on the citation-grounding
@@ -136,37 +157,10 @@ async function runSpec(
   // per-principal LLM tool-policy atom and forwarding via LlmOptions;
   // this module does not hardcode tool-policy.
   const result = await input.host.llm.judge<SpecPayload>(
-    // JsonSchema shape; the runtime validation runs against
-    // specPayloadSchema in the runner via stage.outputSchema.
-    {
-      type: 'object',
-      properties: {
-        goal: { type: 'string' },
-        body: { type: 'string' },
-        cited_paths: { type: 'array', items: { type: 'string' } },
-        cited_atom_ids: { type: 'array', items: { type: 'string' } },
-        alternatives_rejected: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              option: { type: 'string' },
-              reason: { type: 'string' },
-            },
-            required: ['option', 'reason'],
-          },
-        },
-        cost_usd: { type: 'number' },
-      },
-      required: [
-        'goal',
-        'body',
-        'cited_paths',
-        'cited_atom_ids',
-        'alternatives_rejected',
-        'cost_usd',
-      ],
-    },
+    // SPEC_JUDGE_SCHEMA mirrors the zod specPayloadSchema's bounds at
+    // the LLM-time fence. See the constant declaration for the parity
+    // contract.
+    SPEC_JUDGE_SCHEMA,
     SPEC_SYSTEM_PROMPT,
     {
       pipeline_id: String(input.pipelineId),
