@@ -20,6 +20,11 @@ import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { classifyDiffBlastRadius, computeVerdict } from './lib/auditor.mjs';
+import {
+  PLAN_ID_LABEL_PREFIX,
+  parsePlanIdFromPrBody,
+  truncatePlanIdLabel,
+} from './lib/autonomous-dispatch-exec.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
@@ -41,11 +46,47 @@ async function main() {
     process.exit(2);
   }
   const host = await createFileHost({ rootDir: STATE_DIR });
-  const plan = await host.atoms.get(args.plan);
+  // The `--plan` argv comes from the workflow's `split(":")[1]` of
+  // the `plan-id:<id>` label. When the original plan id exceeds
+  // GitHub's 50-char label limit, autonomous-dispatch.mjs writes a
+  // truncated label of the form `plan-id:<head>-<sha-12>` and the
+  // direct atom lookup fails. The PR body's machine-parseable
+  // provenance footer carries the full plan id verbatim; fall back
+  // to that as the canonical source. The label is the workflow
+  // trigger marker, the body footer is the carrier.
+  let resolvedPlanId = args.plan;
+  let plan = await host.atoms.get(resolvedPlanId);
   if (!plan || plan.type !== 'plan') {
-    console.error(`[auditor] plan atom ${args.plan} not found or wrong type`);
+    const fromBody = await readPlanIdFromPrBody(args.pr);
+    // Round-trip guard: only accept the body-derived plan id if its
+    // truncatePlanIdLabel form matches the workflow-supplied label
+    // token (`args.plan`). Without this gate, a malicious PR-body
+    // edit could redirect the auditor at an unrelated plan whose
+    // envelope happens to permit the diff. Symmetric with how the
+    // dispatch-side label was minted from the plan id, so a body
+    // value that did not originate from the same plan cannot pass.
+    if (fromBody && fromBody !== resolvedPlanId) {
+      const expectedToken = truncatePlanIdLabel(fromBody).slice(PLAN_ID_LABEL_PREFIX.length);
+      if (expectedToken !== args.plan) {
+        console.error(
+          `[auditor] PR body plan_id does not round-trip to the triggering label token; `
+          + `label=${args.plan} body=${fromBody} expected-from-body=${expectedToken}. `
+          + 'Refusing the fallback to avoid auditing the wrong plan.',
+        );
+        process.exit(2);
+      }
+      console.log(`[auditor] label-derived plan id ${resolvedPlanId} did not resolve; using PR body footer plan id ${fromBody}`);
+      resolvedPlanId = fromBody;
+      plan = await host.atoms.get(resolvedPlanId);
+    }
+  }
+  if (!plan || plan.type !== 'plan') {
+    console.error(`[auditor] plan atom ${resolvedPlanId} not found or wrong type`);
     process.exit(2);
   }
+  // Re-bind args.plan so the rest of the script uses the resolved
+  // id verbatim (verdict atom id, derived_from chain, log lines).
+  args.plan = resolvedPlanId;
   const derivedFrom = plan.provenance?.derived_from ?? [];
   let intentId = null;
   for (const refId of derivedFrom) {
@@ -120,6 +161,33 @@ async function main() {
   console.log(`[auditor] LAG-auditor status posted: ${state}`);
 
   process.exit(verdict === 'pass' ? 0 : 1);
+}
+
+/**
+ * Read the PR body via `gh pr view` and delegate to the pure
+ * parsePlanIdFromPrBody helper to extract the canonical plan id.
+ * Returns null only when the body has no machine-parseable footer
+ * (legitimate "no fallback available" signal that lets the caller
+ * surface the original "plan atom not found" diagnostic without
+ * masking it).
+ *
+ * Rethrows on `gh` failures with context (auth / network / API
+ * errors). Collapsing those into null would make a transient
+ * GitHub outage look like a missing footer and silently disable
+ * the truncated-label fallback path; the caller should see the
+ * underlying error instead. The auditor's outer main().catch
+ * surfaces the rethrown error and exits non-zero so CI flags the
+ * failure rather than emitting a misleading "plan not found".
+ */
+async function readPlanIdFromPrBody(prNumber) {
+  let stdout;
+  try {
+    ({ stdout } = await execa('gh', ['pr', 'view', String(prNumber), '--json', 'body', '--jq', '.body']));
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(`[auditor] failed to read PR #${prNumber} body for plan-id fallback: ${cause}`);
+  }
+  return parsePlanIdFromPrBody(stdout ?? '');
 }
 
 main().catch((err) => {

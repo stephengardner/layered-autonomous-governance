@@ -63,6 +63,7 @@ import { fileURLToPath } from 'node:url';
 import {
   buildAuthedGitInvocation,
   parseRepoSlug,
+  truncatePlanIdLabel,
 } from '../lib/autonomous-dispatch-exec.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -212,12 +213,20 @@ export default async function register(host, registry) {
           // from elsewhere via LAG_REPO_DIR. A relative path here
           // would silently swallow into the catch below and disable
           // the LAG-auditor label flow without operator visibility.
+          //
+          // Cap the `plan-id:` label name at GitHub's 50-char limit
+          // via truncatePlanIdLabel; long pipeline-generated plan
+          // ids overflow that limit and the API returns 422, leaving
+          // the LAG-auditor gate unfired. The full plan id remains
+          // discoverable via the PR body's machine-parseable
+          // provenance footer.
+          const planIdLabel = truncatePlanIdLabel(capturedPlanId);
           await execa('node', [
             GH_AS_PATH, role,
             'api', `repos/${owner}/${repo}/issues/${capturedPrNumber}/labels`,
             '-X', 'POST',
             '-f', 'labels[]=autonomous-intent',
-            '-f', `labels[]=plan-id:${capturedPlanId}`,
+            '-f', `labels[]=${planIdLabel}`,
           ], { stdio: 'inherit', cwd: repoDir });
         } catch (err) {
           const cause = err instanceof Error ? err.message : String(err);

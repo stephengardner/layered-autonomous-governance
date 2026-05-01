@@ -3,10 +3,36 @@
 // them without firing the script's CLI side effects, mirroring the
 // pattern landed for git-as-push-auth.mjs.
 
+import { createHash } from 'node:crypto';
 import {
   buildPushEnv,
   buildReadOnlyEnv,
 } from './git-as-push-auth.mjs';
+
+// GitHub label names are capped at 50 characters. Plan-atom ids in
+// this codebase routinely exceed that (e.g. 91 chars for pipeline-
+// generated plans like
+// `plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-0`).
+// A naive `plan-id:<full-id>` label hits HTTP 422 and the LAG-auditor
+// gate never fires on the autonomous PR.
+//
+// The truncated form keeps the `plan-id:` prefix (the workflow's
+// `select(.name | startswith("plan-id:"))` filter relies on it),
+// preserves the human-readable head of the plan id, and appends a
+// short sha-256 hex digest so two plans whose ids share a long
+// prefix (multi-task plans differ only at the trailing index) do not
+// collide on the same label. The auditor uses the full plan id from
+// the PR body's machine-parseable provenance footer; the label is
+// only the workflow trigger marker. The chosen layout is:
+//   plan-id:<head>-<hash>   where head = first PLAN_ID_LABEL_HEAD chars
+//                            and  hash = first PLAN_ID_LABEL_HASH hex chars
+export const PLAN_ID_LABEL_PREFIX = 'plan-id:';
+const PLAN_ID_LABEL_MAX = 50;
+const PLAN_ID_LABEL_HASH = 12;
+// Reserve room for prefix + '-' separator + hash so the truncated
+// label is exactly PLAN_ID_LABEL_MAX chars on the truncate path.
+const PLAN_ID_LABEL_HEAD =
+  PLAN_ID_LABEL_MAX - PLAN_ID_LABEL_PREFIX.length - 1 - PLAN_ID_LABEL_HASH;
 
 /**
  * Parse a `GH_REPO=owner/repo` env value.
@@ -25,6 +51,80 @@ export function parseRepoSlug(slug) {
   const [owner, repo] = parts;
   if (!owner || !repo) return null;
   return { owner, repo };
+}
+
+/**
+ * Parse the `plan_id` field out of a PR body's machine-parseable
+ * provenance footer (a YAML block emitted by buildPrBody in
+ * src/runtime/actors/code-author/pr-creation.ts):
+ *
+ *   ```yaml
+ *   plan_id: "<full-plan-atom-id>"
+ *   observation_atom_id: "..."
+ *   commit_sha: "..."
+ *   ```
+ *
+ * Returns the unescaped plan id string when present, otherwise null.
+ * The auditor falls back to this when the workflow-supplied label-
+ * derived id can't be resolved against the atom store (because
+ * truncatePlanIdLabel had to shorten it to fit GitHub's 50-char
+ * label limit). The label is the workflow trigger marker, the body
+ * footer is the canonical machine-readable carrier.
+ *
+ * The regex is anchored to a line beginning so a stray `plan_id`
+ * mention in surrounding prose can't shadow the YAML field. Strict
+ * JSON.parse on the captured group rejects malformed escapes
+ * instead of silently returning a half-decoded string.
+ */
+export function parsePlanIdFromPrBody(body) {
+  if (typeof body !== 'string' || body.length === 0) return null;
+  // Negated class excludes raw `\n` so the match cannot span lines
+  // and pull in a closing quote from a sibling YAML field. The
+  // canonical buildPrBody output emits `JSON.stringify(planId)`,
+  // which already escapes any literal newline in the id as `\\n`,
+  // so a newline reaching this regex is a malformed body and the
+  // safer behaviour is no-match -> null.
+  const match = /^plan_id:\s*"((?:[^"\\\n]|\\.)*)"\s*$/m.exec(body);
+  if (!match) return null;
+  try {
+    return JSON.parse(`"${match[1]}"`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the GitHub label name for a plan id, capped at 50 chars.
+ *
+ * Returns `plan-id:<id>` when the full id fits, otherwise
+ * `plan-id:<head>-<hash>` where head = the first PLAN_ID_LABEL_HEAD
+ * characters of the plan id and hash = the first PLAN_ID_LABEL_HASH
+ * hex digits of `sha256(planId)`. The combined truncated form is
+ * exactly PLAN_ID_LABEL_MAX characters so the GitHub Issues API
+ * accepts it. The hash component avoids collisions when two plan
+ * ids share a long prefix (e.g. multi-task plans whose ids differ
+ * only at the trailing index suffix).
+ *
+ * The full plan id remains available to consumers via the PR body's
+ * machine-parseable provenance footer (`plan_id: "<full-id>"`); the
+ * label here is the workflow-trigger marker, not the canonical
+ * carrier. See .github/workflows/pr-landing.yml lag-auditor job.
+ *
+ * Throws on non-string or empty input rather than emitting a
+ * malformed label that would silently route the PR through an
+ * unconfigured auditor path.
+ */
+export function truncatePlanIdLabel(planId) {
+  if (typeof planId !== 'string' || planId.length === 0) {
+    throw new Error(
+      `[autonomous-dispatch] truncatePlanIdLabel: planId must be a non-empty string, got ${typeof planId}`,
+    );
+  }
+  const full = `${PLAN_ID_LABEL_PREFIX}${planId}`;
+  if (full.length <= PLAN_ID_LABEL_MAX) return full;
+  const head = planId.slice(0, PLAN_ID_LABEL_HEAD);
+  const hash = createHash('sha256').update(planId).digest('hex').slice(0, PLAN_ID_LABEL_HASH);
+  return `${PLAN_ID_LABEL_PREFIX}${head}-${hash}`;
 }
 
 /**
