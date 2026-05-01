@@ -21,10 +21,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   buildAuthedGitInvocation,
   looksLikeGitPush,
+  parsePlanIdFromPrBody,
   parseRepoSlug,
+  truncatePlanIdLabel,
 } from '../../scripts/lib/autonomous-dispatch-exec.mjs';
 
 const TOKEN = 'ghs_test_installation_token_0123456789';
@@ -65,6 +68,151 @@ describe('parseRepoSlug', () => {
     expect(parseRepoSlug(undefined)).toBe(null);
     expect(parseRepoSlug(null)).toBe(null);
     expect(parseRepoSlug(42 as unknown as string)).toBe(null);
+  });
+});
+
+describe('truncatePlanIdLabel', () => {
+  // Pipeline-generated plan id observed in dogfeed-9 + dogfeed-11
+  // (2026-05-01): 91 chars long, overruns GitHub's 50-char label
+  // limit when prefixed with `plan-id:`.
+  const LONG_PLAN_ID =
+    'plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-0';
+
+  it('returns the full label when the plan id fits within 50 chars', () => {
+    // Short legacy plan id (cto-actor + YYYYMMDDHHmmss form, 75
+    // chars including the .json suffix => atom id is 70 chars).
+    // 'plan-id:' + 'plan-x' => 14 chars: well under the cap.
+    expect(truncatePlanIdLabel('plan-x')).toBe('plan-id:plan-x');
+  });
+
+  it('returns the full label when the combined length is exactly 50', () => {
+    // 50-char total: 'plan-id:' (8) + plan id of length 42.
+    const fortyTwoChars = 'a'.repeat(42);
+    const out = truncatePlanIdLabel(fortyTwoChars);
+    expect(out.length).toBe(50);
+    expect(out).toBe(`plan-id:${fortyTwoChars}`);
+  });
+
+  it('truncates a plan id that overruns the 50-char limit by one byte', () => {
+    // 51-char total: triggers the truncate path even though the
+    // overflow is minimal. Hash-suffix shape becomes the canonical
+    // form whenever truncation fires.
+    const fortyThreeChars = 'b'.repeat(43);
+    const out = truncatePlanIdLabel(fortyThreeChars);
+    expect(out.length).toBe(50);
+    expect(out.startsWith('plan-id:')).toBe(true);
+    // Exactly 12 hex chars at the tail, separated by '-'.
+    expect(/-[0-9a-f]{12}$/.test(out)).toBe(true);
+  });
+
+  it('truncates the dogfeed-9/-11 pipeline plan id to 50 chars', () => {
+    const out = truncatePlanIdLabel(LONG_PLAN_ID);
+    expect(out.length).toBe(50);
+    expect(out.startsWith('plan-id:')).toBe(true);
+    // Hash digest tail is the first 12 hex digits of sha256(planId).
+    const expectedHash = createHash('sha256').update(LONG_PLAN_ID).digest('hex').slice(0, 12);
+    expect(out.endsWith(`-${expectedHash}`)).toBe(true);
+  });
+
+  it('preserves the human-readable head of the plan id on truncation', () => {
+    const out = truncatePlanIdLabel(LONG_PLAN_ID);
+    // First 29 chars of the plan id appear right after `plan-id:`.
+    // 50 - 8 (prefix) - 1 ('-') - 12 (hash) = 29.
+    expect(out.slice(8, 8 + 29)).toBe(LONG_PLAN_ID.slice(0, 29));
+  });
+
+  it('disambiguates two plan ids that share a long prefix (multi-task plans)', () => {
+    // Multi-task plans differ only at the trailing index suffix:
+    // first-prefix truncation alone would collide on the same
+    // 50-char label. The sha-256 digest tail is the
+    // collision-avoidance mechanism the auditor relies on.
+    const a =
+      'plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-0';
+    const b =
+      'plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-1';
+    const labelA = truncatePlanIdLabel(a);
+    const labelB = truncatePlanIdLabel(b);
+    expect(labelA).not.toBe(labelB);
+    expect(labelA.length).toBe(50);
+    expect(labelB.length).toBe(50);
+  });
+
+  it('is deterministic: the same plan id always maps to the same label', () => {
+    const out1 = truncatePlanIdLabel(LONG_PLAN_ID);
+    const out2 = truncatePlanIdLabel(LONG_PLAN_ID);
+    expect(out1).toBe(out2);
+  });
+
+  it('throws on empty input', () => {
+    expect(() => truncatePlanIdLabel('')).toThrow();
+  });
+
+  it('throws on non-string input', () => {
+    expect(() => truncatePlanIdLabel(undefined as unknown as string)).toThrow();
+    expect(() => truncatePlanIdLabel(null as unknown as string)).toThrow();
+    expect(() => truncatePlanIdLabel(42 as unknown as string)).toThrow();
+  });
+});
+
+describe('parsePlanIdFromPrBody', () => {
+  // Mirrors the YAML footer buildPrBody emits in
+  // src/runtime/actors/code-author/pr-creation.ts:218-221.
+  const FOOTER_BODY = [
+    '## Why',
+    '',
+    'Some prose explaining the change.',
+    '',
+    '## Machine-parseable provenance footer',
+    '',
+    '```yaml',
+    'plan_id: "plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-0"',
+    'observation_atom_id: "obs-12345"',
+    'commit_sha: "abc1234567890"',
+    '```',
+  ].join('\n');
+
+  it('extracts the full plan id from a buildPrBody-shaped footer', () => {
+    expect(parsePlanIdFromPrBody(FOOTER_BODY)).toBe(
+      'plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-0',
+    );
+  });
+
+  it('returns null when no plan_id field is present', () => {
+    expect(parsePlanIdFromPrBody('## Why\n\nNo footer here.\n')).toBe(null);
+  });
+
+  it('returns null on null/undefined/non-string input', () => {
+    expect(parsePlanIdFromPrBody(undefined)).toBe(null);
+    expect(parsePlanIdFromPrBody(null)).toBe(null);
+    expect(parsePlanIdFromPrBody('')).toBe(null);
+    expect(parsePlanIdFromPrBody(42 as unknown as string)).toBe(null);
+  });
+
+  it('does not match a `plan_id` mention in surrounding prose (line-anchored)', () => {
+    // A prose line like `the plan_id: "fake"` (note leading whitespace
+    // / non-line-start position) must not capture; the YAML field is
+    // anchored to a line beginning with multiline-flag.
+    const body = 'See plan_id: "fake-id" in the prose.\nOther content.\n';
+    expect(parsePlanIdFromPrBody(body)).toBe(null);
+  });
+
+  it('handles JSON-escaped characters (\\" \\\\ \\n) symmetrically with JSON.stringify', () => {
+    // buildPrBody uses JSON.stringify on the plan id, so the parser
+    // must handle the symmetric decode: an embedded quote round-trips
+    // through escape -> capture -> JSON.parse. A plan id with literal
+    // unusual chars is unlikely in practice but the contract is
+    // 'parses what JSON.stringify produced'.
+    const weirdId = 'plan-with-"quote"-and-\\backslash';
+    const body = `plan_id: ${JSON.stringify(weirdId)}\nobservation_atom_id: "x"\n`;
+    expect(parsePlanIdFromPrBody(body)).toBe(weirdId);
+  });
+
+  it('returns null on a malformed quoted value (missing closing quote)', () => {
+    // Anchored regex requires the closing quote; a malformed line
+    // returns null rather than emitting a half-decoded id that the
+    // auditor would then fail to look up.
+    const body = 'plan_id: "missing-end-quote\nobservation_atom_id: "x"\n';
+    expect(parsePlanIdFromPrBody(body)).toBe(null);
   });
 });
 

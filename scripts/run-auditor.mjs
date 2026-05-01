@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { classifyDiffBlastRadius, computeVerdict } from './lib/auditor.mjs';
+import { parsePlanIdFromPrBody } from './lib/autonomous-dispatch-exec.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
@@ -41,11 +42,31 @@ async function main() {
     process.exit(2);
   }
   const host = await createFileHost({ rootDir: STATE_DIR });
-  const plan = await host.atoms.get(args.plan);
+  // The `--plan` argv comes from the workflow's `split(":")[1]` of
+  // the `plan-id:<id>` label. When the original plan id exceeds
+  // GitHub's 50-char label limit, autonomous-dispatch.mjs writes a
+  // truncated label of the form `plan-id:<head>-<sha-12>` and the
+  // direct atom lookup fails. The PR body's machine-parseable
+  // provenance footer carries the full plan id verbatim; fall back
+  // to that as the canonical source. The label is the workflow
+  // trigger marker, the body footer is the carrier.
+  let resolvedPlanId = args.plan;
+  let plan = await host.atoms.get(resolvedPlanId);
   if (!plan || plan.type !== 'plan') {
-    console.error(`[auditor] plan atom ${args.plan} not found or wrong type`);
+    const fromBody = await readPlanIdFromPrBody(args.pr);
+    if (fromBody && fromBody !== resolvedPlanId) {
+      console.log(`[auditor] label-derived plan id ${resolvedPlanId} did not resolve; using PR body footer plan id ${fromBody}`);
+      resolvedPlanId = fromBody;
+      plan = await host.atoms.get(resolvedPlanId);
+    }
+  }
+  if (!plan || plan.type !== 'plan') {
+    console.error(`[auditor] plan atom ${resolvedPlanId} not found or wrong type`);
     process.exit(2);
   }
+  // Re-bind args.plan so the rest of the script uses the resolved
+  // id verbatim (verdict atom id, derived_from chain, log lines).
+  args.plan = resolvedPlanId;
   const derivedFrom = plan.provenance?.derived_from ?? [];
   let intentId = null;
   for (const refId of derivedFrom) {
@@ -120,6 +141,24 @@ async function main() {
   console.log(`[auditor] LAG-auditor status posted: ${state}`);
 
   process.exit(verdict === 'pass' ? 0 : 1);
+}
+
+/**
+ * Read the PR body via `gh pr view` and delegate to the pure
+ * parsePlanIdFromPrBody helper to extract the canonical plan id.
+ * Returns null on any failure (gh spawn error, missing footer,
+ * json parse fail) so the caller falls back to the original argv
+ * plan id unchanged. Treating absence as null (not throw) keeps
+ * the auditor back-compatible with PRs whose body predates the
+ * footer convention or was rewritten by a later edit.
+ */
+async function readPlanIdFromPrBody(prNumber) {
+  try {
+    const { stdout } = await execa('gh', ['pr', 'view', String(prNumber), '--json', 'body', '--jq', '.body']);
+    return parsePlanIdFromPrBody(stdout ?? '');
+  } catch {
+    return null;
+  }
 }
 
 main().catch((err) => {
