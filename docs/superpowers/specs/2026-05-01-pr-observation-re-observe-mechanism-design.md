@@ -70,7 +70,7 @@ The tick does NOT:
 
 Per-tick the reconciler runs AFTER refresh in the approval-cycle ordering, so a refresh that surfaces a terminal state in the same tick is picked up by the reconciler immediately:
 
-```
+```text
 0. intent-approve
 1. auto-approve
 2. plan-approval

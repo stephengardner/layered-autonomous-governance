@@ -36,11 +36,14 @@ describe('validateRefreshArgs', () => {
     expect(() => validateRefreshArgs({ pr: { owner: 'a', number: 1 }, plan_id: 'p' })).toThrow();
   });
 
-  it('rejects non-positive or non-finite number', () => {
+  it('rejects non-positive, non-finite, or fractional number', () => {
     expect(() => validateRefreshArgs({ pr: { owner: 'a', repo: 'b', number: 0 }, plan_id: 'p' })).toThrow();
     expect(() => validateRefreshArgs({ pr: { owner: 'a', repo: 'b', number: -1 }, plan_id: 'p' })).toThrow();
     expect(() => validateRefreshArgs({ pr: { owner: 'a', repo: 'b', number: NaN }, plan_id: 'p' })).toThrow();
     expect(() => validateRefreshArgs({ pr: { owner: 'a', repo: 'b', number: 'one' }, plan_id: 'p' })).toThrow();
+    // Fractional PR numbers are not real GitHub IDs; reject before the
+    // adapter spawns run-pr-landing. CR finding (PR #277).
+    expect(() => validateRefreshArgs({ pr: { owner: 'a', repo: 'b', number: 1.5 }, plan_id: 'p' })).toThrow();
   });
 
   it('rejects empty or non-string plan_id', () => {

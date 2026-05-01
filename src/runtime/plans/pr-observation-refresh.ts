@@ -102,6 +102,15 @@ export async function readPrObservationFreshnessMs(host: Host): Promise<number> 
       // older bootstrap shape readable while the named-field shape is
       // canonical going forward.
       const fresh = policy['freshness_ms'] ?? policy['value'];
+      // Explicit disable sentinel: a deployment that observes via a
+      // webhook (or never wants polling) sets the policy value to
+      // 'Infinity' (string, since JSON cannot encode the literal).
+      // Returning POSITIVE_INFINITY makes the freshness-window check
+      // (now - observed_at < freshness) ALWAYS true, so every
+      // observation is counted as 'fresh' and the tick effectively
+      // becomes a no-op for that deployment without a code path
+      // change.
+      if (fresh === 'Infinity') return Number.POSITIVE_INFINITY;
       if (typeof fresh !== 'number' || !Number.isFinite(fresh) || fresh <= 0) continue;
       return fresh;
     }
@@ -113,13 +122,18 @@ export async function readPrObservationFreshnessMs(host: Host): Promise<number> 
 function isPrRef(value: unknown): value is PrRef {
   if (value === null || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
+  // PR numbers are integer GitHub IDs. Number.isInteger is safer than
+  // Number.isFinite alone: a fractional `number` (e.g. 1.5 from a
+  // malformed payload) would otherwise pass the finite check and reach
+  // the refresher, where the spawn would either silently round or
+  // return a 404 from the GitHub API.
   return (
     typeof v['owner'] === 'string'
     && (v['owner'] as string).length > 0
     && typeof v['repo'] === 'string'
     && (v['repo'] as string).length > 0
     && typeof v['number'] === 'number'
-    && Number.isFinite(v['number'] as number)
+    && Number.isInteger(v['number'] as number)
     && (v['number'] as number) > 0
   );
 }

@@ -83,6 +83,17 @@ describe('readPrObservationFreshnessMs', () => {
     await host.atoms.put({ ...a, taint: 'tainted' });
     expect(await readPrObservationFreshnessMs(host)).toBe(DEFAULT_FRESHNESS_MS);
   });
+
+  it('returns POSITIVE_INFINITY when the policy value is the explicit "Infinity" sentinel', async () => {
+    // A deployment that observes via webhook and never wants polling
+    // sets the policy to 'Infinity' (string, since JSON cannot encode
+    // the literal). The reader returns Number.POSITIVE_INFINITY so
+    // every observation passes the (now - observed_at < freshness)
+    // check and the tick effectively becomes a no-op.
+    const host = createMemoryHost();
+    await host.atoms.put(policyAtom('pol-disabled', 'Infinity'));
+    expect(await readPrObservationFreshnessMs(host)).toBe(Number.POSITIVE_INFINITY);
+  });
 });
 
 const T_OLD = '2026-05-01T00:00:00.000Z' as Time;
@@ -255,6 +266,17 @@ describe('runPlanObservationRefreshTick', () => {
     await host.atoms.put(obsAtom('o1', { pr: { owner: 'foo' } }));
     const r = await runPlanObservationRefreshTick(host, makeRefresher(), { now: nowFn });
     expect(r.skipped['pr-malformed']).toBe(1);
+  });
+
+  it('skips when pr.number is fractional (CR finding: integer-only)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(planAtom('p1', 'executing'));
+    await host.atoms.put(
+      obsAtom('o1', { pr: { owner: 'foo', repo: 'bar', number: 1.5 } }),
+    );
+    const r = await runPlanObservationRefreshTick(host, makeRefresher(), { now: nowFn });
+    expect(r.skipped['pr-malformed']).toBe(1);
+    expect(r.refreshed).toBe(0);
   });
 
   it('counts refresh failures and continues to next observation', async () => {

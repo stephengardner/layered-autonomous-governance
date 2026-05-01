@@ -1001,7 +1001,7 @@ Build + run a dry pass against the .lag dir to verify the wiring loads:
 Run: `npm run build && node scripts/run-approval-cycle.mjs --root-dir .lag --once --llm memory`
 
 Expected log lines (in order):
-```
+```text
 [approval-cycle] intent-approve     scanned=N approved=N
 [approval-cycle] auto-approve       scanned=N approved=N
 [approval-cycle] plan-approval      ...

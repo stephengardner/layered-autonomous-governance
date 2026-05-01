@@ -44,7 +44,12 @@ export function validateRefreshArgs(args) {
   if (typeof pr.repo !== 'string' || pr.repo.length === 0) {
     throw new Error('refresh: pr.repo must be a non-empty string');
   }
-  if (typeof pr.number !== 'number' || !Number.isFinite(pr.number) || pr.number <= 0) {
+  if (
+    typeof pr.number !== 'number'
+    || !Number.isFinite(pr.number)
+    || !Number.isInteger(pr.number)
+    || pr.number <= 0
+  ) {
     throw new Error(`refresh: pr.number must be a positive integer (got ${String(pr.number)})`);
   }
   if (typeof plan_id !== 'string' || plan_id.length === 0) {
