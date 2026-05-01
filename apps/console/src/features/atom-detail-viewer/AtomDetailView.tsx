@@ -11,8 +11,11 @@ import {
   ErrorState,
   LoadingState,
 } from '@/components/state-display/StateDisplay';
-import { listReferencers, type CanonAtom } from '@/services/canon.service';
-import { getAtomById, type AnyAtom } from '@/services/atoms.service';
+import {
+  getAtomById,
+  listReferencers,
+  type AnyAtom,
+} from '@/services/atoms.service';
 import { atomTypeTone } from '@/features/atom-type-tones/tones';
 import {
   routeForAtomId,
@@ -106,7 +109,25 @@ function AtomDetailBody({ atom }: { atom: AnyAtom }) {
       <FocusBanner
         label="Atom"
         id={atom.id}
-        onClear={() => setRoute('activities')}
+        onClear={() => {
+          /*
+           * Route the "back to native view" affordance to the atom's
+           * native surface (canon -> /canon/<id>, plan -> /plans/<id>,
+           * pipeline -> /pipelines/<id>, activities -> /activities/<id>,
+           * etc.) when one exists. routeForAtomId returns 'atom' as
+           * the generic-fallback bucket, which would leave the
+           * operator on the same /atom/<id> page they are already
+           * viewing -- not a "clear" -- so we treat that as the "no
+           * native view" case and send them to the activity feed
+           * (id-less) where focus mode handles arbitrary atom ids.
+           */
+          const native = routeForAtomId(atom.id);
+          if (native === 'atom') {
+            setRoute('activities');
+          } else {
+            setRoute(native, atom.id);
+          }
+        }}
       />
 
       <div className={styles.head}>
@@ -202,14 +223,35 @@ function AtomDetailBody({ atom }: { atom: AnyAtom }) {
 
       <Renderer atom={atom} />
 
-      <DerivedFromBlock atom={atom} />
-      <SupersedesBlock atom={atom} />
-      <SupersededByBlock atom={atom} />
+      <RefList
+        title="Derived from"
+        items={atom.provenance?.derived_from ?? []}
+        testId="atom-detail-derived-from"
+      />
+      <RefList
+        title="Supersedes"
+        items={atom.supersedes ?? []}
+        testId="atom-detail-supersedes"
+      />
+      <RefList
+        title="Superseded by"
+        items={atom.superseded_by ?? []}
+        testId="atom-detail-superseded-by"
+      />
       <SignalsBlock atom={atom} />
       <ReferencedByBlock atomId={atom.id} />
 
       <div className={styles.actionsRow}>
-        <CopyLinkButton href={routeHref(routeForAtomId(atom.id), atom.id)} />
+        {/*
+          The share button copies the actual page permalink the
+          operator is viewing (`/atom/<id>`), not a route-rewriting
+          variant. Earlier this called routeHref(routeForAtomId(...))
+          which could yield `/canon/<id>` or `/plans/<id>` from the
+          atom-detail page, surfacing a different surface than the
+          one the user shared from. Hardcoding the 'atom' route keeps
+          the link semantics aligned with the page.
+        */}
+        <CopyLinkButton href={routeHref('atom', atom.id)} />
         <RawJson value={atom} testId={`atom-detail-raw-json`} />
       </div>
     </section>
@@ -236,59 +278,58 @@ function oneLineSummary(atom: AnyAtom): string | null {
   return null;
 }
 
-function DerivedFromBlock({ atom }: { atom: AnyAtom }) {
-  const derived = atom.provenance?.derived_from ?? [];
-  if (derived.length === 0) return null;
-  return (
-    <Section
-      title={`Derived from (${derived.length})`}
-      testId="atom-detail-derived-from"
-    >
-      <ul className={styles.refList}>
-        {derived.map((id) => (
-          <li key={id} className={styles.refItem}>
-            <AtomRef id={id} />
-          </li>
-        ))}
-      </ul>
-    </Section>
+/*
+ * RefList: Section + ul of AtomRef chips for any "list of atom ids"
+ * block (derived_from, supersedes, superseded_by, agrees_with,
+ * conflicts_with, referenced_by). Renders nothing when the list is
+ * empty so callers unconditionally pass the array. Title gets a count
+ * appended so the header reads "Derived from (3)" without each caller
+ * doing the math.
+ *
+ * `inline=true` renders an h4 + ul WITHOUT the surrounding Section
+ * chrome so SignalsBlock can stack two RefLists under one Signals
+ * heading without nesting two Section borders.
+ *
+ * Per canon `dev-dry-extract-at-second-duplication`: the original
+ * AtomDetailView shipped four near-identical copies of the same
+ * {Section + ul.refList + map(li > AtomRef)} markup; this extraction
+ * collapses them into one helper so future additions (e.g.
+ * plan.delegated_to, signals.endorses) inherit the same shape +
+ * test-id convention without copy-paste drift.
+ */
+function RefList({
+  title,
+  items,
+  testId,
+  inline,
+}: {
+  readonly title: string;
+  readonly items: ReadonlyArray<string>;
+  readonly testId?: string;
+  readonly inline?: boolean;
+}) {
+  if (items.length === 0) return null;
+  const titleWithCount = `${title} (${items.length})`;
+  const list = (
+    <ul className={styles.refList}>
+      {items.map((id) => (
+        <li key={id} className={styles.refItem}>
+          <AtomRef id={id} />
+        </li>
+      ))}
+    </ul>
   );
-}
-
-function SupersedesBlock({ atom }: { atom: AnyAtom }) {
-  const supersedes = atom.supersedes ?? [];
-  if (supersedes.length === 0) return null;
+  if (inline) {
+    return (
+      <div {...(testId ? { 'data-testid': testId } : {})}>
+        <h4 className={styles.attrLabel}>{titleWithCount}</h4>
+        {list}
+      </div>
+    );
+  }
   return (
-    <Section
-      title={`Supersedes (${supersedes.length})`}
-      testId="atom-detail-supersedes"
-    >
-      <ul className={styles.refList}>
-        {supersedes.map((id) => (
-          <li key={id} className={styles.refItem}>
-            <AtomRef id={id} />
-          </li>
-        ))}
-      </ul>
-    </Section>
-  );
-}
-
-function SupersededByBlock({ atom }: { atom: AnyAtom }) {
-  const supersededBy = atom.superseded_by ?? [];
-  if (supersededBy.length === 0) return null;
-  return (
-    <Section
-      title={`Superseded by (${supersededBy.length})`}
-      testId="atom-detail-superseded-by"
-    >
-      <ul className={styles.refList}>
-        {supersededBy.map((id) => (
-          <li key={id} className={styles.refItem}>
-            <AtomRef id={id} />
-          </li>
-        ))}
-      </ul>
+    <Section title={titleWithCount} {...(testId ? { testId } : {})}>
+      {list}
     </Section>
   );
 }
@@ -299,26 +340,18 @@ function SignalsBlock({ atom }: { atom: AnyAtom }) {
   if (agreesWith.length === 0 && conflictsWith.length === 0) return null;
   return (
     <Section title="Signals" testId="atom-detail-signals">
-      {agreesWith.length > 0 && (
-        <div data-testid="atom-detail-agrees-with">
-          <h4 className={styles.attrLabel}>{`Agrees with (${agreesWith.length})`}</h4>
-          <ul className={styles.refList}>
-            {agreesWith.map((id) => (
-              <li key={id} className={styles.refItem}><AtomRef id={id} /></li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {conflictsWith.length > 0 && (
-        <div data-testid="atom-detail-conflicts-with">
-          <h4 className={styles.attrLabel}>{`Conflicts with (${conflictsWith.length})`}</h4>
-          <ul className={styles.refList}>
-            {conflictsWith.map((id) => (
-              <li key={id} className={styles.refItem}><AtomRef id={id} /></li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <RefList
+        title="Agrees with"
+        items={agreesWith}
+        testId="atom-detail-agrees-with"
+        inline
+      />
+      <RefList
+        title="Conflicts with"
+        items={conflictsWith}
+        testId="atom-detail-conflicts-with"
+        inline
+      />
     </Section>
   );
 }
@@ -329,20 +362,21 @@ function ReferencedByBlock({ atomId }: { atomId: string }) {
     queryFn: ({ signal }) => listReferencers(atomId, signal),
     staleTime: 30_000,
   });
-  const refs: ReadonlyArray<CanonAtom> = query.data ?? [];
+  /*
+   * `listReferencers` returns the wider `AnyAtom[]` so non-canon
+   * referencers (plans, pipeline outputs, intents, observations,
+   * pr-fix-observations, ...) surface here instead of being silently
+   * filtered. Earlier this typed the result as `CanonAtom[]` and
+   * imported `listReferencers` from canon.service.ts, which hid every
+   * non-L3 referencer from the operator's view.
+   */
+  const refs: ReadonlyArray<AnyAtom> = query.data ?? [];
   if (query.isPending || refs.length === 0) return null;
   return (
-    <Section
-      title={`Referenced by (${refs.length})`}
+    <RefList
+      title="Referenced by"
+      items={refs.map((a) => a.id)}
       testId="atom-detail-referenced-by"
-    >
-      <ul className={styles.refList}>
-        {refs.map((a: CanonAtom) => (
-          <li key={a.id} className={styles.refItem}>
-            <AtomRef id={a.id} />
-          </li>
-        ))}
-      </ul>
-    </Section>
+    />
   );
 }

@@ -516,13 +516,20 @@ async function handleActorActivityStream(params: {
  * so this endpoint exposes the full atom shape from the in-memory index
  * (the canonical projection per arch-atomstore-source-of-truth).
  *
+ * Hot-path lookup: the index is keyed by `${id}.json` so id->atom is
+ * O(1). The readAllAtoms() linear-scan fallback only runs in the
+ * narrow startup window before primeAtomIndex resolves, preserving
+ * first-request correctness without paying O(N) on the steady state.
+ *
  * Returns null when the id is unknown so the caller can render a
  * targeted "atom not found" empty state rather than a generic 5xx.
  */
 async function handleAtomGet(id: string): Promise<Atom | null> {
+  if (atomIndexPrimed) {
+    return atomIndex.get(`${id}.json`) ?? null;
+  }
   const all = await readAllAtoms();
-  const found = all.find((a) => a.id === id);
-  return found ?? null;
+  return all.find((a) => a.id === id) ?? null;
 }
 
 /*

@@ -16,7 +16,7 @@
     color-mix(in srgb, var(--surface-overlay) 35%, transparent) 0%,
     transparent 45%
   );
-  border: 1px solid var(--border-subtle);
+  border: var(--stroke-hairline) solid var(--border-subtle);
   border-radius: var(--radius-md);
 }
 
@@ -34,7 +34,7 @@
   letter-spacing: 0.08em;
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-pill);
-  border: 1px solid currentColor;
+  border: var(--stroke-hairline) solid currentColor;
   background: color-mix(in srgb, currentColor 12%, transparent);
 }
 
@@ -101,25 +101,25 @@
 .statusPill[data-variant="danger"] {
   background: color-mix(in srgb, var(--status-danger) 15%, transparent);
   color: var(--status-danger);
-  border: 1px solid color-mix(in srgb, var(--status-danger) 35%, transparent);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-danger) 35%, transparent);
 }
 
 .statusPill[data-variant="warning"] {
   background: color-mix(in srgb, var(--status-warning) 15%, transparent);
   color: var(--status-warning);
-  border: 1px solid color-mix(in srgb, var(--status-warning) 35%, transparent);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-warning) 35%, transparent);
 }
 
 .statusPill[data-variant="info"] {
   background: color-mix(in srgb, var(--status-info) 15%, transparent);
   color: var(--status-info);
-  border: 1px solid color-mix(in srgb, var(--status-info) 35%, transparent);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-info) 35%, transparent);
 }
 
 .statusPill[data-variant="success"] {
   background: color-mix(in srgb, var(--status-success) 15%, transparent);
   color: var(--status-success);
-  border: 1px solid color-mix(in srgb, var(--status-success) 35%, transparent);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-success) 35%, transparent);
 }
 
 .section {
@@ -128,7 +128,7 @@
   gap: var(--space-3);
   padding: var(--space-5) var(--space-6);
   background: var(--surface-base);
-  border: 1px solid var(--border-subtle);
+  border: var(--stroke-hairline) solid var(--border-subtle);
   border-radius: var(--radius-md);
 }
 
@@ -224,7 +224,7 @@
   padding: var(--space-3) var(--space-4);
   background: var(--surface-raised);
   border-radius: var(--radius-sm);
-  border-left: 2px solid var(--border-strong);
+  border-left: var(--stroke-rail) solid var(--border-strong);
 }
 
 .optionTitle {
@@ -268,5 +268,5 @@
   align-items: center;
   gap: var(--space-2);
   padding-top: var(--space-3);
-  border-top: 1px dashed var(--border-subtle);
+  border-top: var(--stroke-hairline) dashed var(--border-subtle);
 }

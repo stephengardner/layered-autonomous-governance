@@ -70,3 +70,27 @@ export async function getAtomById(
     throw err;
   }
 }
+
+/**
+ * Reverse refs - every atom (ANY type, not just canon) whose
+ * provenance.derived_from, supersedes, superseded_by, or
+ * metadata.source_plan points AT `id`. The substrate handler at
+ * `/api/atoms.references` returns any-shape atoms; this is the
+ * atom-wide projection the generic atom-detail viewer needs so plans,
+ * pipeline outputs, intents, observations, and other non-canon
+ * referencers all surface under "Referenced by".
+ *
+ * The L3-canon-narrowed sibling lives in `canon.service.ts` for
+ * canon-only views (CanonViewer's reverse-link block); this version
+ * is the wider type.
+ */
+export async function listReferencers(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ReadonlyArray<AnyAtom>> {
+  return transport.call<ReadonlyArray<AnyAtom>>(
+    'atoms.references',
+    { id },
+    signal ? { signal } : undefined,
+  );
+}

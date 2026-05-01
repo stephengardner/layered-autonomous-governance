@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getAtomById } from './atoms.service';
+import { getAtomById, listReferencers } from './atoms.service';
 import { transport } from './transport';
 
 /*
@@ -73,5 +73,68 @@ describe('getAtomById', () => {
     err.name = 'http-500';
     vi.spyOn(transport, 'call').mockRejectedValue(err);
     await expect(getAtomById('plan-abc')).rejects.toThrow(/http-500/);
+  });
+});
+
+/*
+ * `listReferencers` (atoms.service variant) wraps transport.call('atoms.references').
+ * Distinct from the canon-narrowed sibling in canon.service.ts: this version
+ * returns AnyAtom[] so non-canon referencers (plans, pipeline outputs,
+ * intents, observations, pr-fix-observations) surface in the generic
+ * atom-detail viewer's "Referenced by" block.
+ */
+describe('listReferencers (atom-wide)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns the referencers array from the transport call', async () => {
+    const refs = [
+      {
+        id: 'plan-abc',
+        type: 'plan',
+        layer: 'L1' as const,
+        content: 'plan body',
+        principal_id: 'cto-actor',
+        confidence: 0.85,
+        created_at: '2026-04-29T00:00:00Z',
+      },
+      {
+        id: 'pr-fix-observation-xyz',
+        type: 'pr-fix-observation',
+        layer: 'L0' as const,
+        content: 'observed PR state',
+        principal_id: 'pr-fix-actor',
+        confidence: 0.9,
+        created_at: '2026-04-29T01:00:00Z',
+      },
+    ];
+    const mock = vi.spyOn(transport, 'call').mockResolvedValue(refs);
+    const out = await listReferencers('canon-target-id');
+    expect(out).toHaveLength(2);
+    expect(out[0]?.type).toBe('plan');
+    expect(out[1]?.type).toBe('pr-fix-observation');
+    expect(mock).toHaveBeenCalledWith(
+      'atoms.references',
+      { id: 'canon-target-id' },
+      undefined,
+    );
+  });
+
+  it('passes the abort signal through to transport when provided', async () => {
+    const ctrl = new AbortController();
+    const mock = vi.spyOn(transport, 'call').mockResolvedValue([]);
+    await listReferencers('atom-id', ctrl.signal);
+    expect(mock).toHaveBeenCalledWith(
+      'atoms.references',
+      { id: 'atom-id' },
+      { signal: ctrl.signal },
+    );
+  });
+
+  it('returns an empty list when no referencers exist', async () => {
+    vi.spyOn(transport, 'call').mockResolvedValue([]);
+    const out = await listReferencers('orphan-atom');
+    expect(out).toEqual([]);
   });
 });
