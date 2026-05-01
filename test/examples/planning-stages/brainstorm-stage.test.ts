@@ -66,6 +66,22 @@ async function seedPipelineAtom(
   });
 }
 
+/**
+ * Default StageContext grounding fields the brainstorm-stage audit()
+ * tests pass when they do not exercise a citation, sub-actor, or
+ * operator-intent fence. Centralised at N=2 per the duplication-floor
+ * canon: the three fields appear at six audit() callsites in this
+ * file, so a contract change (e.g. a new field on StageContext) lands
+ * in ONE constant rather than six synchronized literal edits. Tests
+ * that exercise a fence override individual fields by listing them
+ * AFTER the spread.
+ */
+const STAGE_CTX_GROUNDING_DEFAULTS = {
+  verifiedCitedAtomIds: [] as ReadonlyArray<AtomId>,
+  verifiedSubActorPrincipalIds: [] as ReadonlyArray<PrincipalId>,
+  operatorIntentContent: '',
+};
+
 describe('brainstormStage', () => {
   it('exports a PlanningStage with name "brainstorm-stage"', () => {
     expect(brainstormStage.name).toBe('brainstorm-stage');
@@ -93,9 +109,7 @@ describe('brainstormStage', () => {
         correlationId: 'corr',
         pipelineId,
         stageName: 'brainstorm-stage',
-        verifiedCitedAtomIds: [],
-        verifiedSubActorPrincipalIds: [],
-        operatorIntentContent: '',
+        ...STAGE_CTX_GROUNDING_DEFAULTS,
       },
     );
     expect(findings?.some(
@@ -128,9 +142,7 @@ describe('brainstormStage', () => {
           correlationId: 'corr',
           pipelineId: 'p-missing' as AtomId,
           stageName: 'brainstorm-stage',
-          verifiedCitedAtomIds: [],
-          verifiedSubActorPrincipalIds: [],
-          operatorIntentContent: '',
+          ...STAGE_CTX_GROUNDING_DEFAULTS,
         },
       ),
     ).rejects.toThrow(/pipeline atom .* not found/);
@@ -156,9 +168,7 @@ describe('brainstormStage', () => {
           correlationId: 'corr',
           pipelineId,
           stageName: 'brainstorm-stage',
-          verifiedCitedAtomIds: [],
-          verifiedSubActorPrincipalIds: [],
-          operatorIntentContent: '',
+          ...STAGE_CTX_GROUNDING_DEFAULTS,
         },
       ),
     ).rejects.toThrow(/empty provenance.derived_from/);
@@ -342,9 +352,7 @@ describe('brainstormStage', () => {
         correlationId: 'corr',
         pipelineId,
         stageName: 'brainstorm-stage',
-        verifiedCitedAtomIds: [],
-        verifiedSubActorPrincipalIds: [],
-        operatorIntentContent: '',
+        ...STAGE_CTX_GROUNDING_DEFAULTS,
       },
     );
     expect(findings?.length).toBeGreaterThan(0);
@@ -373,9 +381,7 @@ describe('brainstormStage', () => {
         correlationId: 'corr',
         pipelineId,
         stageName: 'brainstorm-stage',
-        verifiedCitedAtomIds: [],
-        verifiedSubActorPrincipalIds: [],
-        operatorIntentContent: '',
+        ...STAGE_CTX_GROUNDING_DEFAULTS,
       },
     );
     expect(findings?.length).toBe(0);
@@ -402,9 +408,7 @@ describe('brainstormStage', () => {
         correlationId: 'corr',
         pipelineId,
         stageName: 'brainstorm-stage',
-        verifiedCitedAtomIds: [],
-        verifiedSubActorPrincipalIds: [],
-        operatorIntentContent: '',
+        ...STAGE_CTX_GROUNDING_DEFAULTS,
       },
     );
     expect(findings?.length).toBe(0);
