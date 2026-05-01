@@ -61,6 +61,7 @@ import {
   readPipelineStageCostCapPolicy,
   readPipelineStageHilPolicy,
 } from './policy.js';
+import { runPipelinePlanAutoApproval } from './auto-approve.js';
 
 /**
  * Bound on the number of stages a single pipeline run may walk.
@@ -410,8 +411,9 @@ export async function runPipeline(
     // is an AtomStore-side problem the substrate already routes
     // through failPipeline.
     let stageOutputAtomId: AtomId | undefined;
+    let persistedPlanAtomIds: ReadonlyArray<AtomId> = [];
     try {
-      stageOutputAtomId = await persistStageOutput(
+      const persisted = await persistStageOutput(
         host,
         stage.name,
         output.atom_type,
@@ -424,6 +426,8 @@ export async function runPipeline(
           derivedFrom: [pipelineId, ...priorOutputAtomIds],
         },
       );
+      stageOutputAtomId = persisted.anchorId;
+      persistedPlanAtomIds = persisted.planAtomIds;
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
       await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
@@ -517,6 +521,50 @@ export async function runPipeline(
       return { kind: 'hil-paused', pipelineId, stageName: stage.name };
     }
 
+    // Auto-approval pass: for plan-stage emits, evaluate each new plan
+    // atom against its seed operator-intent's trust envelope and the
+    // pol-plan-autonomous-intent-approve policy. Plans whose envelope
+    // matches transition proposed -> approved in place so the dispatch-
+    // stage's planFilter (which requires plan_state === 'approved') can
+    // pick them up. Mirrors the single-pass autonomous-intent flow.
+    //
+    // Runs AFTER critical-finding halt + HIL pause checks: a stage that
+    // hit either gate has already returned, so reaching this point
+    // means the audit + pause policy authorized advancement. The empty-
+    // list short-circuit in runPipelinePlanAutoApproval makes the call
+    // a no-op for non-plan stages without a separate stage-name check.
+    if (persistedPlanAtomIds.length > 0) {
+      // Wrap in try/catch so a host-side rejection (e.g. AtomStore
+      // contention on the plan_state update) routes through the
+      // runner's failure path. Without this the rejection bypasses
+      // emitStageEvent + failPipeline and leaves the pipeline in
+      // pipeline_state='running' with no terminal atom; the operator
+      // would see the plan-stage as still mid-flight indefinitely.
+      // The cause string is prefixed so an audit consumer can
+      // distinguish "stage threw" from "auto-approve threw".
+      try {
+        await runPipelinePlanAutoApproval(host, persistedPlanAtomIds, { now });
+      } catch (err) {
+        const cause = err instanceof Error ? err.message : String(err);
+        await emitStageEvent(
+          stage.name,
+          'exit-failure',
+          durationMs,
+          output.cost_usd,
+          stageOutputAtomId,
+        );
+        return await failPipeline(
+          host,
+          pipelineId,
+          options,
+          now,
+          stage.name,
+          `plan-auto-approve-failed: ${cause}`,
+          i,
+        );
+      }
+    }
+
     // Prefer the runner-minted stage-output atom id over output.atom_id
     // when emitting the exit-success event so the event chain points at
     // the canonical persisted atom. Stage adapters that legacy-set
@@ -583,11 +631,26 @@ export async function runPipeline(
  * 'brainstorm-output' to land in the typed branch, or any other type
  * string to land in the generic branch.
  *
- * Returns the atom id of the persisted atom (or for plan-stage, the
- * id of the last plan atom written, since plan-stage emits multiple
- * plan atoms whose collective derived_from chain anchors at any of
- * them; downstream stages only need a single id to start their walk).
+ * Returns a record containing the chain-anchor atom id (the id used
+ * for the next stage's derived_from chain) plus, for the plan-stage,
+ * the full set of plan atom ids written. The auto-approval helper in
+ * the runner's main loop iterates the plan atom ids per atom; for
+ * non-plan stages the planAtomIds field is an empty array so callers
+ * branch on stage shape without re-deriving the kind from the atom
+ * type string.
  */
+interface PersistStageOutputResult {
+  /** Chain anchor for priorOutputAtomIds; the id used in next stage's derived_from. */
+  readonly anchorId: AtomId;
+  /**
+   * Full set of plan atom ids written by the plan-stage; empty array
+   * for every other stage shape. The runner threads this into
+   * runPipelinePlanAutoApproval so the autonomous-intent envelope can
+   * transition each newly-emitted plan from proposed -> approved.
+   */
+  readonly planAtomIds: ReadonlyArray<AtomId>;
+}
+
 async function persistStageOutput(
   host: Host,
   stageName: string,
@@ -600,7 +663,7 @@ async function persistStageOutput(
     now: Time;
     derivedFrom: ReadonlyArray<AtomId>;
   },
-): Promise<AtomId> {
+): Promise<PersistStageOutputResult> {
   const baseInput = {
     pipelineId: ctx.pipelineId,
     stageName,
@@ -614,12 +677,12 @@ async function persistStageOutput(
     case 'brainstorm-output': {
       const atom = mkBrainstormOutputAtom(baseInput);
       await host.atoms.put(atom);
-      return atom.id;
+      return { anchorId: atom.id, planAtomIds: [] };
     }
     case 'spec-output': {
       const atom = mkSpecOutputAtom(baseInput);
       await host.atoms.put(atom);
-      return atom.id;
+      return { anchorId: atom.id, planAtomIds: [] };
     }
     case 'plan': {
       // The plan-stage emits a payload with a `plans` array; mint
@@ -647,33 +710,37 @@ async function persistStageOutput(
         // plans and the runner's gating logic surfaces the gap.
         const fallback = mkGenericStageOutputAtom(baseInput);
         await host.atoms.put(fallback);
-        return fallback.id;
+        return { anchorId: fallback.id, planAtomIds: [] };
       }
       // Persist all plan atoms; return the LAST id as the chain
-      // anchor for the next stage. priorOutputAtomIds gets exactly
-      // one id per stage so downstream chains stay bounded; the
-      // additional plan atoms are findable via metadata.pipeline_id
-      // (which all of them carry).
+      // anchor for the next stage AND the full id list so the
+      // runner's auto-approval pass evaluates every plan emit, not
+      // just the chain anchor. priorOutputAtomIds keeps exactly one
+      // anchor per stage so downstream chains stay bounded; the
+      // remaining plan atoms are still findable via metadata.pipeline_id
+      // (and now via the explicit return field).
+      const planAtomIds: AtomId[] = [];
       let lastId: AtomId | undefined;
       for (const planAtom of planAtoms) {
         await host.atoms.put(planAtom);
+        planAtomIds.push(planAtom.id);
         lastId = planAtom.id;
       }
       // mkPlanOutputAtoms returns ReadonlyArray<Atom> with at least
       // one entry guaranteed by the empty-check above, so lastId is
       // always defined. The non-null assertion mirrors the assertion
       // pattern used elsewhere in this file (stages[i]!).
-      return lastId!;
+      return { anchorId: lastId!, planAtomIds };
     }
     case 'review-report': {
       const atom = mkReviewReportAtom(baseInput);
       await host.atoms.put(atom);
-      return atom.id;
+      return { anchorId: atom.id, planAtomIds: [] };
     }
     case 'dispatch-record': {
       const atom = mkDispatchRecordAtom(baseInput);
       await host.atoms.put(atom);
-      return atom.id;
+      return { anchorId: atom.id, planAtomIds: [] };
     }
     default: {
       // Custom stages (legal-review, security-threat-model,
@@ -683,7 +750,7 @@ async function persistStageOutput(
       // to the runner.
       const atom = mkGenericStageOutputAtom(baseInput);
       await host.atoms.put(atom);
-      return atom.id;
+      return { anchorId: atom.id, planAtomIds: [] };
     }
   }
 }
