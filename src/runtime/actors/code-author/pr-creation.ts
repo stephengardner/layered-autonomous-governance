@@ -178,27 +178,18 @@ export interface PrBodyInputs {
   readonly modelUsed: string;
   readonly touchedPaths: ReadonlyArray<string>;
   /**
-   * Optional per-atom JSON snapshots embedded in collapsible
-   * `<details>` blocks at the end of the body. Each entry's `id` is
-   * used as the section anchor and as a round-trip integrity guard
-   * the consumer (run-auditor.mjs on a CI runner with no
-   * .lag/atoms/) can validate before trusting the embedded payload.
+   * Optional per-atom JSON snapshots emitted as collapsible
+   * `<details>` blocks at the end of the body. Each entry's `id`
+   * is rendered in the section anchor and is the round-trip
+   * integrity guard a downstream consumer can validate before
+   * trusting the embedded payload (the parsed JSON's `id` field
+   * must equal the lookup id).
    *
-   * Why embedded JSON: the LAG-auditor workflow runs on GitHub
-   * Actions runners that have no access to the .lag/atoms/ directory
-   * (git-ignored, local-only) and no named tunnel back to the
-   * operator's API surface. Without an embedded snapshot the
-   * auditor exits with `plan atom not found`, leaving the
-   * autonomous-intent merge gate stuck. Embedding the plan +
-   * operator-intent snapshots in the PR body makes the body itself
-   * the carrier per the same convention the existing `plan_id:`
-   * footer uses; the auditor parses these blocks via a pure helper
-   * in scripts/lib/autonomous-dispatch-exec.mjs.
-   *
-   * Optional so existing callers (tests, ad-hoc PRs) keep their
-   * current body shape; callers that drive the autonomous-intent
-   * flow should populate this with the plan + the
-   * operator-intent atom found in plan.provenance.derived_from.
+   * The body becomes a carrier for governance state a downstream
+   * observer can parse without reaching back to the producing
+   * host's atom store. Optional so callers that do not need a
+   * carrier keep their current body shape; callers that need
+   * one populate this with whatever atoms the consumer expects.
    */
   readonly embeddedAtoms?: ReadonlyArray<EmbeddedAtomSnapshot>;
 }
@@ -215,18 +206,14 @@ export interface EmbeddedAtomSnapshot {
 
 const PLAN_CONTENT_CAP = 4000;
 /**
- * Cap on each embedded atom JSON so a pathological atom (a plan with
- * megabytes of content interpolation) cannot blow past GitHub's PR
- * body length limit (65536 chars for the description field on the
- * REST API). Plan + intent atoms in this codebase typically run
- * 2-4kB; the 16kB cap leaves room for a few additional snapshots
- * before the body limit becomes a concern. Truncation rather than
- * fail-closed: the auditor falls back to label / footer matching
- * when the snapshot is unparseable, so a truncated payload degrades
- * gracefully to the existing not-found path. The truncation marker
- * deliberately produces unparseable JSON so the parser surfaces a
- * clear "malformed JSON" diagnostic rather than silently using a
- * half-cropped atom.
+ * Cap on each embedded atom JSON so a pathological atom cannot
+ * blow past GitHub's PR body length limit (65536 chars for the
+ * description field on the REST API). The 16kB per-atom ceiling
+ * leaves room for several snapshots before the body limit
+ * becomes a concern. Truncation rather than fail-closed because
+ * the truncation marker deliberately produces unparseable JSON,
+ * which makes the parser surface a clear "malformed JSON"
+ * diagnostic rather than silently using a half-cropped atom.
  */
 const EMBEDDED_ATOM_JSON_CAP = 16_384;
 /**
@@ -236,7 +223,7 @@ const EMBEDDED_ATOM_JSON_CAP = 16_384;
  * AND a deployment that processes both the old + new shape during
  * the rollout window.
  */
-export const EMBEDDED_ATOMS_HEADING = '## Embedded atom snapshots (LAG-auditor carrier)';
+export const EMBEDDED_ATOMS_HEADING = '## Embedded atom snapshots';
 
 export function renderPrBody(inputs: PrBodyInputs): string {
   // Compute the trimmed plan once so the length check and the slice
@@ -279,11 +266,12 @@ export function renderPrBody(inputs: PrBodyInputs): string {
   lines.push(`commit_sha: ${JSON.stringify(inputs.commitSha)}`);
   lines.push('```');
   // Embedded-atom block: rendered last so the carrier is at the
-  // body tail where the parser anchors. Each snapshot lives inside
-  // a collapsible <details> with the atom id on the summary line so
-  // the auditor's regex can scope its parse to a specific atom.
-  // Skipped entirely when no snapshots are passed (existing callers
-  // keep their current body shape; the section is purely opt-in).
+  // body tail where downstream parsers anchor. Each snapshot
+  // lives inside a collapsible <details> with the atom id on the
+  // summary line so a consumer can scope its parse to a specific
+  // atom. Skipped entirely when no snapshots are passed; existing
+  // callers keep their current body shape because the section is
+  // purely opt-in.
   const snapshots = inputs.embeddedAtoms ?? [];
   if (snapshots.length > 0) {
     lines.push('');
@@ -337,48 +325,35 @@ export function renderEmbeddedAtomBlock(snap: EmbeddedAtomSnapshot): string {
 }
 
 /**
- * Build the embedded-atom snapshot list for an autonomous-intent
- * PR: walks `plan.provenance.derived_from` to find the operator-
- * intent atom and ships {plan, intent} as the embedded carrier.
+ * Build a snapshot pair {plan, ancestor} suitable for the
+ * `embeddedAtoms` field on renderPrBody: walks
+ * `plan.provenance.derived_from` looking for an atom of
+ * `ancestorType`; when found, returns both serialized.
  *
- * Returns an empty array when the plan has no operator-intent in
- * its provenance chain. The auditor's "no operator-intent in
- * provenance" branch covers the rest of that case (intent-driven
- * audit gate only applies to intent-driven plans), so emitting an
- * empty list here is the right semantics: a plan that is not
- * intent-driven does not need carrier snapshots, and an empty
- * `embeddedAtoms` array on renderPrBody skips the section
- * entirely.
+ * Returns an empty array when no provenance ancestor of the
+ * requested type is reachable. Callers consume the empty list
+ * by skipping the embedded-atoms section entirely (renderPrBody
+ * does this automatically), keeping the body shape clean for
+ * plans that do not need a carrier.
  *
- * Why this lives in pr-creation.ts: the snapshot list is a PR-
- * body concern (it is consumed via the renderPrBody
- * `embeddedAtoms` field) and centralizing the chain-walk here
- * means the agentic + diff-based executor sites both call one
- * function rather than duplicating the walk.
+ * Centralized here so multiple executors that emit the same
+ * snapshot pair share one chain-walk rather than duplicating it.
  */
 export async function buildEmbeddedAtomSnapshots(
   host: Host,
   plan: Atom,
+  ancestorType: string = 'operator-intent',
 ): Promise<ReadonlyArray<EmbeddedAtomSnapshot>> {
-  // Walk the provenance chain FIRST and only emit snapshots when
-  // an operator-intent is actually reachable. Seeding the list
-  // with the plan up-front would emit a carrier section on every
-  // code-author PR (intent-driven or not), widening the body
-  // surface beyond the auditor path this carrier exists for and
-  // contradicting the function's documented "intent-driven only"
-  // contract. The auditor's "no operator-intent in provenance"
-  // exit covers the non-intent case; emitting nothing here keeps
-  // the body shape clean for those PRs.
   const derivedFrom = plan.provenance?.derived_from ?? [];
   for (const refId of derivedFrom) {
     const candidate = await host.atoms.get(refId);
-    if (candidate?.type === 'operator-intent') {
-      // Plan first so the auditor's primary lookup hits a
-      // snapshot before walking provenance; intent second so the
-      // rendered body reads top-down (plan -> its provenance).
-      // Order is not load-bearing for the parser
-      // (parseEmbeddedAtomFromPrBody scans every block by id)
-      // but improves readability for human reviewers.
+    if (candidate?.type === ancestorType) {
+      // Plan first so a downstream consumer's primary lookup
+      // hits a snapshot before walking provenance; ancestor
+      // second so the rendered body reads top-down (plan ->
+      // its provenance). Order is not load-bearing for the
+      // parser (which scans every block by id) but improves
+      // readability for human reviewers.
       return [
         { id: String(plan.id), json: serializeAtom(plan) },
         { id: String(candidate.id), json: serializeAtom(candidate) },
@@ -416,8 +391,9 @@ function sortedKeysReplacer(_key: string, value: unknown): unknown {
 
 function capEmbeddedJson(raw: string): string {
   if (raw.length <= EMBEDDED_ATOM_JSON_CAP) return raw;
-  // Append an unparseable trailer so the parser fails loudly rather
-  // than silently using a half-cropped atom. The auditor's
-  // not-found fallback path then surfaces the underlying issue.
+  // Append an unparseable trailer so the parser fails loudly
+  // rather than silently using a half-cropped atom. The
+  // consumer's not-found fallback path then surfaces the
+  // underlying issue.
   return `${raw.slice(0, EMBEDDED_ATOM_JSON_CAP)}\n/* truncated at ${EMBEDDED_ATOM_JSON_CAP} chars */`;
 }

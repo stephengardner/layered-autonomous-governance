@@ -110,7 +110,7 @@ export function parsePlanIdFromPrBody(body) {
  * can promote it into the dist/ output (or a JSON manifest) once
  * we have a bigger reason to do that work.
  */
-export const EMBEDDED_ATOMS_HEADING = '## Embedded atom snapshots (LAG-auditor carrier)';
+export const EMBEDDED_ATOMS_HEADING = '## Embedded atom snapshots';
 
 /**
  * Parse an atom JSON snapshot embedded in a PR body's

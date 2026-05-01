@@ -436,14 +436,14 @@ export function buildDiffBasedCodeAuthorExecutor(
         };
       }
 
-      // Embed plan + operator-intent atom snapshots in the body
-      // so the LAG-auditor workflow on a CI runner (no
-      // .lag/atoms/ disk access, no named tunnel back to the
-      // operator's API surface) can resolve the atoms it needs
-      // from the carrier the dispatch signed into the PR. See
-      // pr-creation.ts:buildEmbeddedAtomSnapshots and
-      // scripts/lib/autonomous-dispatch-exec.mjs:parseEmbeddedAtomFromPrBody
-      // for the consumer-side parser + integrity check.
+      // Embed plan + provenance ancestor atom snapshots in the
+      // body so a downstream consumer that cannot reach this
+      // host's atom store can still resolve the atoms via the
+      // carrier the dispatch wrote into the PR. The default
+      // ancestor type (`operator-intent`) matches the substrate's
+      // intent-driven-plan vocabulary; deployments that key their
+      // audit chain on a different ancestor pass an alternate
+      // type through buildEmbeddedAtomSnapshots.
       const embeddedAtoms = await buildEmbeddedAtomSnapshots(config.host, plan);
       let prResult;
       try {
