@@ -66,8 +66,12 @@ export function makeStubAdapter(opts: {
     },
     async run(input: AgentLoopInput): Promise<AgentLoopResult> {
       recorder.lastInput = input;
+      // Use crypto.randomBytes for the session-id suffix even in test
+      // fixtures: keeps the security profile uniform across the codebase
+      // and silences CodeQL's insecure-randomness check on test code.
+      const { randomBytes } = await import('node:crypto');
       const sessionId =
-        `agent-session-${input.correlationId}-${Math.random().toString(36).slice(2, 8)}` as AtomId;
+        `agent-session-${input.correlationId}-${randomBytes(4).toString('hex')}` as AtomId;
       const sessionAtom: Atom = {
         schema_version: 1,
         id: sessionId,
