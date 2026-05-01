@@ -21,15 +21,34 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
+  EMBEDDED_ATOMS_HEADING,
   buildAuthedGitInvocation,
+  isTransientPrCreationGatewayError,
   looksLikeGitPush,
+  parseEmbeddedAtomFromPrBody,
+  parsePlanIdFromPrBody,
   parseRepoSlug,
+  probeOrphanedPrByBranch,
+  truncatePlanIdLabel,
 } from '../../scripts/lib/autonomous-dispatch-exec.mjs';
 
 const TOKEN = 'ghs_test_installation_token_0123456789';
 const OWNER = 'stephengardner';
 const REPO = 'layered-autonomous-governance';
+
+// Pipeline-generated plan id observed in dogfeed-9 + dogfeed-11
+// (2026-05-01): 91 chars long, overruns GitHub's 50-char label
+// limit when prefixed with `plan-id:`. Lifted to module scope so
+// every fixture using the same id flows through one source of
+// truth (per dev-extract-at-n-equals-2 canon).
+const LONG_PLAN_ID =
+  'plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-0';
+// Sibling plan from the same multi-task pipeline; differs only at
+// the trailing index suffix. Used to exercise hash-suffix collision
+// avoidance.
+const LONG_PLAN_ID_NEXT = LONG_PLAN_ID.replace(/-0$/, '-1');
 
 describe('parseRepoSlug', () => {
   it('returns owner/repo for "owner/repo"', () => {
@@ -65,6 +84,301 @@ describe('parseRepoSlug', () => {
     expect(parseRepoSlug(undefined)).toBe(null);
     expect(parseRepoSlug(null)).toBe(null);
     expect(parseRepoSlug(42 as unknown as string)).toBe(null);
+  });
+});
+
+describe('truncatePlanIdLabel', () => {
+  it('returns the full label when the plan id fits within 50 chars', () => {
+    // Short legacy plan id (cto-actor + YYYYMMDDHHmmss form, 75
+    // chars including the .json suffix => atom id is 70 chars).
+    // 'plan-id:' + 'plan-x' => 14 chars: well under the cap.
+    expect(truncatePlanIdLabel('plan-x')).toBe('plan-id:plan-x');
+  });
+
+  it('returns the full label when the combined length is exactly 50', () => {
+    // 50-char total: 'plan-id:' (8) + plan id of length 42.
+    const fortyTwoChars = 'a'.repeat(42);
+    const out = truncatePlanIdLabel(fortyTwoChars);
+    expect(out.length).toBe(50);
+    expect(out).toBe(`plan-id:${fortyTwoChars}`);
+  });
+
+  it('truncates a plan id that overruns the 50-char limit by one byte', () => {
+    // 51-char total: triggers the truncate path even though the
+    // overflow is minimal. Hash-suffix shape becomes the canonical
+    // form whenever truncation fires.
+    const fortyThreeChars = 'b'.repeat(43);
+    const out = truncatePlanIdLabel(fortyThreeChars);
+    expect(out.length).toBe(50);
+    expect(out.startsWith('plan-id:')).toBe(true);
+    // Exactly 12 hex chars at the tail, separated by '-'.
+    expect(/-[0-9a-f]{12}$/.test(out)).toBe(true);
+  });
+
+  it('truncates the dogfeed-9/-11 pipeline plan id to 50 chars', () => {
+    const out = truncatePlanIdLabel(LONG_PLAN_ID);
+    expect(out.length).toBe(50);
+    expect(out.startsWith('plan-id:')).toBe(true);
+    // Hash digest tail is the first 12 hex digits of sha256(planId).
+    const expectedHash = createHash('sha256').update(LONG_PLAN_ID).digest('hex').slice(0, 12);
+    expect(out.endsWith(`-${expectedHash}`)).toBe(true);
+  });
+
+  it('preserves the human-readable head of the plan id on truncation', () => {
+    const out = truncatePlanIdLabel(LONG_PLAN_ID);
+    // First 29 chars of the plan id appear right after `plan-id:`.
+    // 50 - 8 (prefix) - 1 ('-') - 12 (hash) = 29.
+    expect(out.slice(8, 8 + 29)).toBe(LONG_PLAN_ID.slice(0, 29));
+  });
+
+  it('disambiguates two plan ids that share a long prefix (multi-task plans)', () => {
+    // Multi-task plans differ only at the trailing index suffix:
+    // first-prefix truncation alone would collide on the same
+    // 50-char label. The sha-256 digest tail is the
+    // collision-avoidance mechanism the auditor relies on.
+    const labelA = truncatePlanIdLabel(LONG_PLAN_ID);
+    const labelB = truncatePlanIdLabel(LONG_PLAN_ID_NEXT);
+    expect(labelA).not.toBe(labelB);
+    expect(labelA.length).toBe(50);
+    expect(labelB.length).toBe(50);
+  });
+
+  it('is deterministic: the same plan id always maps to the same label', () => {
+    const out1 = truncatePlanIdLabel(LONG_PLAN_ID);
+    const out2 = truncatePlanIdLabel(LONG_PLAN_ID);
+    expect(out1).toBe(out2);
+  });
+
+  it('throws on empty input', () => {
+    expect(() => truncatePlanIdLabel('')).toThrow();
+  });
+
+  it('throws on non-string input', () => {
+    expect(() => truncatePlanIdLabel(undefined as unknown as string)).toThrow();
+    expect(() => truncatePlanIdLabel(null as unknown as string)).toThrow();
+    expect(() => truncatePlanIdLabel(42 as unknown as string)).toThrow();
+  });
+
+  it('round-trips for any plan id: truncate(planId) is the same regardless of who computes it', () => {
+    // The auditor's PR-body-fallback path round-trips: it accepts a
+    // body-derived plan id only when truncatePlanIdLabel(fromBody)
+    // matches the workflow-supplied label token. This covers the
+    // determinism contract that validation relies on -- the same
+    // plan id always maps to the same label token, so a malicious
+    // body that names a different plan would not satisfy the round
+    // trip and would be rejected.
+    expect(truncatePlanIdLabel(LONG_PLAN_ID)).toBe(truncatePlanIdLabel(LONG_PLAN_ID));
+    expect(truncatePlanIdLabel(LONG_PLAN_ID)).not.toBe(truncatePlanIdLabel(LONG_PLAN_ID_NEXT));
+  });
+});
+
+describe('parsePlanIdFromPrBody', () => {
+  // Mirrors the YAML footer buildPrBody emits in
+  // src/runtime/actors/code-author/pr-creation.ts:218-221. JSON.stringify
+  // is the same encoding the source uses, so the test fixture
+  // round-trips through whatever escape semantics the helper depends
+  // on instead of a hand-quoted literal that could drift.
+  const FOOTER_BODY = [
+    '## Why',
+    '',
+    'Some prose explaining the change.',
+    '',
+    '## Machine-parseable provenance footer',
+    '',
+    '```yaml',
+    `plan_id: ${JSON.stringify(LONG_PLAN_ID)}`,
+    'observation_atom_id: "obs-12345"',
+    'commit_sha: "abc1234567890"',
+    '```',
+  ].join('\n');
+
+  it('extracts the full plan id from a buildPrBody-shaped footer', () => {
+    expect(parsePlanIdFromPrBody(FOOTER_BODY)).toBe(LONG_PLAN_ID);
+  });
+
+  it('returns null when no plan_id field is present', () => {
+    expect(parsePlanIdFromPrBody('## Why\n\nNo footer here.\n')).toBe(null);
+  });
+
+  it('returns null on null/undefined/non-string input', () => {
+    expect(parsePlanIdFromPrBody(undefined)).toBe(null);
+    expect(parsePlanIdFromPrBody(null)).toBe(null);
+    expect(parsePlanIdFromPrBody('')).toBe(null);
+    expect(parsePlanIdFromPrBody(42 as unknown as string)).toBe(null);
+  });
+
+  it('does not match a `plan_id` mention in surrounding prose (line-anchored)', () => {
+    // A prose line like `the plan_id: "fake"` (note leading whitespace
+    // / non-line-start position) must not capture; the YAML field is
+    // anchored to a line beginning with multiline-flag.
+    const body = 'See plan_id: "fake-id" in the prose.\nOther content.\n';
+    expect(parsePlanIdFromPrBody(body)).toBe(null);
+  });
+
+  it('handles JSON-escaped characters (\\" \\\\ \\n) symmetrically with JSON.stringify', () => {
+    // buildPrBody uses JSON.stringify on the plan id, so the parser
+    // must handle the symmetric decode: an embedded quote round-trips
+    // through escape -> capture -> JSON.parse. A plan id with literal
+    // unusual chars is unlikely in practice but the contract is
+    // 'parses what JSON.stringify produced'.
+    const weirdId = 'plan-with-"quote"-and-\\backslash';
+    const body = `plan_id: ${JSON.stringify(weirdId)}\nobservation_atom_id: "x"\n`;
+    expect(parsePlanIdFromPrBody(body)).toBe(weirdId);
+  });
+
+  it('returns null on a malformed quoted value (missing closing quote)', () => {
+    // Anchored regex requires the closing quote; a malformed line
+    // returns null rather than emitting a half-decoded id that the
+    // auditor would then fail to look up.
+    const body = 'plan_id: "missing-end-quote\nobservation_atom_id: "x"\n';
+    expect(parsePlanIdFromPrBody(body)).toBe(null);
+  });
+});
+
+describe('parseEmbeddedAtomFromPrBody', () => {
+  // Mirror the renderEmbeddedAtomBlock shape from
+  // src/runtime/actors/code-author/pr-creation.ts so the test
+  // fixture round-trips through whatever encoding the renderer
+  // uses, instead of a hand-built literal that could drift.
+  function buildBlock(atomId: string, payload: object | string): string {
+    const json = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+    return [
+      `<details><summary>atom: ${atomId}</summary>`,
+      '',
+      '```json',
+      json,
+      '```',
+      '',
+      '</details>',
+    ].join('\n');
+  }
+
+  function buildSection(blocks: ReadonlyArray<string>): string {
+    return [EMBEDDED_ATOMS_HEADING, '', ...blocks].join('\n');
+  }
+
+  const PLAN_ID = LONG_PLAN_ID;
+  const INTENT_ID = 'operator-intent-2026-04-30-fix-auditor';
+
+  const PLAN_ATOM = {
+    schema_version: 1,
+    id: PLAN_ID,
+    type: 'plan',
+    layer: 'L1',
+    principal_id: 'cto-actor',
+    provenance: { kind: 'agent-claimed', source: { agent_id: 'cto-actor' }, derived_from: [INTENT_ID] },
+    confidence: 0.9,
+    scope: 'project',
+    content: 'plan content',
+    metadata: { delegation: { sub_actor_principal_id: 'code-author' } },
+    created_at: '2026-04-30T12:00:00.000Z',
+    last_reinforced_at: '2026-04-30T12:00:00.000Z',
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    taint: 'clean',
+    signals: { agrees_with: [], conflicts_with: [], validation_status: 'unchecked', last_validated_at: null },
+  };
+
+  const INTENT_ATOM = {
+    schema_version: 1,
+    id: INTENT_ID,
+    type: 'operator-intent',
+    layer: 'L1',
+    principal_id: 'apex-agent',
+    provenance: { kind: 'human-attested', source: { author: 'apex-agent' }, derived_from: [] },
+    confidence: 1,
+    scope: 'project',
+    content: 'fix the auditor ci gap',
+    metadata: { trust_envelope: { max_blast_radius: 'tooling', min_plan_confidence: 0.7 } },
+    created_at: '2026-04-30T11:00:00.000Z',
+    last_reinforced_at: '2026-04-30T11:00:00.000Z',
+    expires_at: '2026-05-30T11:00:00.000Z',
+    supersedes: [],
+    superseded_by: [],
+    taint: 'clean',
+    signals: { agrees_with: [], conflicts_with: [], validation_status: 'unchecked', last_validated_at: null },
+  };
+
+  it('extracts a single embedded atom snapshot keyed by id', () => {
+    const body = buildSection([buildBlock(PLAN_ID, PLAN_ATOM)]);
+    const out = parseEmbeddedAtomFromPrBody(body, PLAN_ID);
+    expect(out).toMatchObject({ id: PLAN_ID, type: 'plan' });
+  });
+
+  it('extracts a sibling atom from a multi-block section', () => {
+    // The renderer emits one <details> per snapshot in the same
+    // section. The parser must scan each block and return the
+    // first one whose JSON id matches the lookup, so a body that
+    // ships {plan, intent} can resolve either id without a
+    // surrounding-block ordering dependency.
+    const body = buildSection([
+      buildBlock(PLAN_ID, PLAN_ATOM),
+      buildBlock(INTENT_ID, INTENT_ATOM),
+    ]);
+    expect(parseEmbeddedAtomFromPrBody(body, PLAN_ID)?.type).toBe('plan');
+    expect(parseEmbeddedAtomFromPrBody(body, INTENT_ID)?.type).toBe('operator-intent');
+  });
+
+  it('returns null when the section heading is absent', () => {
+    // A PR body that opens with prose but never emits the
+    // embedded-atoms heading must not match a stray <details>
+    // elsewhere; the heading is the section anchor.
+    const body = `## Summary\n\nSome prose.\n\n${buildBlock(PLAN_ID, PLAN_ATOM)}\n`;
+    expect(parseEmbeddedAtomFromPrBody(body, PLAN_ID)).toBe(null);
+  });
+
+  it('returns null when the requested atom id has no matching block', () => {
+    const body = buildSection([buildBlock(PLAN_ID, PLAN_ATOM)]);
+    expect(parseEmbeddedAtomFromPrBody(body, 'plan-other')).toBe(null);
+  });
+
+  it('rejects an id-mismatched payload (round-trip integrity guard)', () => {
+    // Security regression: a block whose <summary> lies about its
+    // atom id (claims plan-id-A but the JSON payload's `id` is
+    // plan-id-B) MUST NOT pass the lookup for plan-id-A. The
+    // parser compares the parsed payload's `id` field, not the
+    // summary text. Without this gate a malicious PR-body edit
+    // could redirect the auditor at an unrelated payload whose
+    // envelope happens to permit the diff.
+    const lyingBlock = [
+      `<details><summary>atom: ${PLAN_ID}</summary>`,
+      '',
+      '```json',
+      JSON.stringify({ ...PLAN_ATOM, id: 'plan-malicious' }, null, 2),
+      '```',
+      '',
+      '</details>',
+    ].join('\n');
+    const body = buildSection([lyingBlock]);
+    expect(parseEmbeddedAtomFromPrBody(body, PLAN_ID)).toBe(null);
+  });
+
+  it('skips a malformed JSON block and continues scanning', () => {
+    // A truncated-JSON block (the renderer's
+    // EMBEDDED_ATOM_JSON_CAP truncation marker produces this
+    // shape) must not silently disable later valid blocks. A
+    // body with one corrupt entry + one valid sibling still
+    // surfaces the sibling.
+    const body = buildSection([
+      buildBlock(PLAN_ID, '{"id":"' + PLAN_ID + '","type":"plan",/* truncated */'),
+      buildBlock(INTENT_ID, INTENT_ATOM),
+    ]);
+    expect(parseEmbeddedAtomFromPrBody(body, PLAN_ID)).toBe(null);
+    expect(parseEmbeddedAtomFromPrBody(body, INTENT_ID)?.type).toBe('operator-intent');
+  });
+
+  it('returns null on null/undefined/empty body', () => {
+    expect(parseEmbeddedAtomFromPrBody(undefined, PLAN_ID)).toBe(null);
+    expect(parseEmbeddedAtomFromPrBody(null, PLAN_ID)).toBe(null);
+    expect(parseEmbeddedAtomFromPrBody('', PLAN_ID)).toBe(null);
+  });
+
+  it('returns null on null/undefined/empty atom id', () => {
+    const body = buildSection([buildBlock(PLAN_ID, PLAN_ATOM)]);
+    expect(parseEmbeddedAtomFromPrBody(body, undefined)).toBe(null);
+    expect(parseEmbeddedAtomFromPrBody(body, null)).toBe(null);
+    expect(parseEmbeddedAtomFromPrBody(body, '')).toBe(null);
   });
 });
 
@@ -373,5 +687,201 @@ describe('buildAuthedGitInvocation', () => {
     expect(out.args).toEqual(['push']);
     // Read-only env still pinned (no askpass, no helper).
     expect(out.env.GIT_TERMINAL_PROMPT).toBe('0');
+  });
+});
+
+describe('isTransientPrCreationGatewayError', () => {
+  // The detector's job is narrow: recognise a 5xx-shaped
+  // `gh REST pulls create` failure where the dispatch wrapper's
+  // probe-by-branch recovery is the right response. 4xx and other
+  // shapes short-circuit because probing for an orphaned PR on a
+  // structural failure (auth, validation, conflict) is the wrong
+  // remedy.
+  it('detects 504 Gateway Timeout in the executor failure reason', () => {
+    // Today's dogfeed-13 evidence: PR was created server-side
+    // anyway but the gh CLI exited non-zero before reading the
+    // response. The literal 504 token in the wrapped error message
+    // is the recovery trigger.
+    expect(isTransientPrCreationGatewayError(
+      'gh REST pulls create failed: HTTP 504: Gateway Timeout',
+    )).toBe(true);
+    expect(isTransientPrCreationGatewayError(
+      'Error: status code 504',
+    )).toBe(true);
+  });
+
+  it('detects 502 Bad Gateway (same recovery, less common in practice)', () => {
+    expect(isTransientPrCreationGatewayError(
+      'gh REST pulls create failed: HTTP/1.1 502 Bad Gateway',
+    )).toBe(true);
+  });
+
+  it('rejects 4xx and other structural failures', () => {
+    // 422 = validation error (typically a duplicate head branch);
+    // 401 = token revoked; 403 = scope insufficient. Probing the
+    // PR list with the same token will fail the same way; the
+    // recovery is the wrong remedy and the wrapper short-circuits
+    // to error.
+    expect(isTransientPrCreationGatewayError(
+      'gh REST pulls create failed: HTTP 422: Validation Failed',
+    )).toBe(false);
+    expect(isTransientPrCreationGatewayError('HTTP 401 Unauthorized')).toBe(false);
+    expect(isTransientPrCreationGatewayError('HTTP 403 Forbidden')).toBe(false);
+    // 503 is technically a 5xx but is not in the recovery surface
+    // today (the regex matches 502 and 504 only). If a 503
+    // recovery path is added later, the test pins the current
+    // shape so the change is intentional.
+    expect(isTransientPrCreationGatewayError('HTTP 503 Service Unavailable')).toBe(false);
+  });
+
+  it('rejects three-digit substrings that are not 502/504 (no false positives)', () => {
+    // A reason mentioning literal `5040` or `1504` should not
+    // match; the boundary anchor on the regex prevents false
+    // positives in error messages that happen to contain a 5xx-
+    // looking substring.
+    expect(isTransientPrCreationGatewayError('error code 5040 from gh')).toBe(false);
+    expect(isTransientPrCreationGatewayError('1504 retries')).toBe(false);
+  });
+
+  it('returns false on null/undefined/non-string inputs (fail-closed)', () => {
+    expect(isTransientPrCreationGatewayError(undefined as unknown as string)).toBe(false);
+    expect(isTransientPrCreationGatewayError(null as unknown as string)).toBe(false);
+    expect(isTransientPrCreationGatewayError('')).toBe(false);
+    expect(isTransientPrCreationGatewayError(42 as unknown as string)).toBe(false);
+  });
+});
+
+describe('probeOrphanedPrByBranch', () => {
+  // The probe runs `gh pr list --head <branch>` through the
+  // dispatch-supplied execImpl so the token attribution stays
+  // bot-bound. The test stubs execImpl directly to assert the
+  // wire-shape and the result-decoding contract.
+
+  function stubExecImpl(reply: { exitCode: number; stdout: string }) {
+    const calls: Array<{ file: string; args: ReadonlyArray<string> }> = [];
+    const impl = (async (file: string, args: ReadonlyArray<string>) => {
+      calls.push({ file, args: [...args] });
+      return { exitCode: reply.exitCode, stdout: reply.stdout, stderr: '' };
+    }) as unknown as Parameters<typeof probeOrphanedPrByBranch>[0]['execImpl'];
+    return { impl, calls };
+  }
+
+  it('returns the PR number + url on exact-one-match', async () => {
+    const { impl, calls } = stubExecImpl({
+      exitCode: 0,
+      stdout: JSON.stringify([{ number: 271, url: 'https://github.com/o/r/pull/271' }]),
+    });
+    const result = await probeOrphanedPrByBranch({
+      branch: 'code-author/plan-x-abc123',
+      owner: 'o',
+      repo: 'r',
+      execImpl: impl,
+    });
+    expect(result).toEqual({ number: 271, htmlUrl: 'https://github.com/o/r/pull/271' });
+    // Wire-shape: gh CLI invocation routes through the dispatch
+    // bot's execImpl, scoped to the resolved repo slug, filtered
+    // to open PRs on the named head branch. The full argv pins
+    // the contract so a future refactor cannot silently drop a
+    // flag (e.g. `--state open`) that changes the recovery
+    // semantics.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].file).toBe('gh');
+    expect(calls[0].args).toEqual([
+      'pr', 'list',
+      '--repo', 'o/r',
+      '--head', 'code-author/plan-x-abc123',
+      '--state', 'open',
+      '--json', 'number,url',
+    ]);
+  });
+
+  it('returns null on empty array (no orphaned PR)', async () => {
+    const { impl } = stubExecImpl({ exitCode: 0, stdout: '[]' });
+    const result = await probeOrphanedPrByBranch({
+      branch: 'code-author/no-orphan',
+      owner: 'o',
+      repo: 'r',
+      execImpl: impl,
+    });
+    expect(result).toBe(null);
+  });
+
+  it('returns null when more than one PR matches (anomalous; fail-closed)', async () => {
+    // Two PRs on the same head branch is anomalous; recovering
+    // to either one would be a guess. Fail-closed and let the
+    // operator inspect.
+    const { impl } = stubExecImpl({
+      exitCode: 0,
+      stdout: JSON.stringify([
+        { number: 1, url: 'https://github.com/o/r/pull/1' },
+        { number: 2, url: 'https://github.com/o/r/pull/2' },
+      ]),
+    });
+    const result = await probeOrphanedPrByBranch({
+      branch: 'code-author/duplicate',
+      owner: 'o',
+      repo: 'r',
+      execImpl: impl,
+    });
+    expect(result).toBe(null);
+  });
+
+  it('returns null when gh CLI exits non-zero', async () => {
+    // A non-zero gh exit is indistinguishable from "no PR exists"
+    // at the recovery layer; the wrapper logs the underlying gh
+    // stderr and falls through to the original 5xx error.
+    const { impl } = stubExecImpl({ exitCode: 1, stdout: '' });
+    const result = await probeOrphanedPrByBranch({
+      branch: 'code-author/auth-fail',
+      owner: 'o',
+      repo: 'r',
+      execImpl: impl,
+    });
+    expect(result).toBe(null);
+  });
+
+  it('returns null on malformed JSON output', async () => {
+    const { impl } = stubExecImpl({ exitCode: 0, stdout: 'not json' });
+    const result = await probeOrphanedPrByBranch({
+      branch: 'code-author/garbled',
+      owner: 'o',
+      repo: 'r',
+      execImpl: impl,
+    });
+    expect(result).toBe(null);
+  });
+
+  it('returns null when execImpl throws', async () => {
+    const impl = (async () => { throw new Error('spawn failed'); }) as unknown as Parameters<typeof probeOrphanedPrByBranch>[0]['execImpl'];
+    const result = await probeOrphanedPrByBranch({
+      branch: 'code-author/spawn-fail',
+      owner: 'o',
+      repo: 'r',
+      execImpl: impl,
+    });
+    expect(result).toBe(null);
+  });
+
+  it('returns null on missing required arguments without spawning gh', async () => {
+    // Defensive guards on the input arguments: an empty or
+    // missing branch / owner / repo is a programming error in
+    // the caller; do not spawn gh with a degenerate query that
+    // could match unrelated PRs.
+    const { impl, calls } = stubExecImpl({ exitCode: 0, stdout: '[]' });
+    expect(await probeOrphanedPrByBranch({ branch: '', owner: 'o', repo: 'r', execImpl: impl })).toBe(null);
+    expect(await probeOrphanedPrByBranch({ branch: 'b', owner: '', repo: 'r', execImpl: impl })).toBe(null);
+    expect(await probeOrphanedPrByBranch({ branch: 'b', owner: 'o', repo: '', execImpl: impl })).toBe(null);
+    // None of those reached the gh spawn step.
+    expect(calls).toHaveLength(0);
+  });
+
+  it('returns null when execImpl is not a function', async () => {
+    const result = await probeOrphanedPrByBranch({
+      branch: 'b',
+      owner: 'o',
+      repo: 'r',
+      execImpl: undefined as unknown as Parameters<typeof probeOrphanedPrByBranch>[0]['execImpl'],
+    });
+    expect(result).toBe(null);
   });
 });

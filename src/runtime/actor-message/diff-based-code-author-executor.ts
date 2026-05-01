@@ -38,6 +38,7 @@ import {
   type GitIdentity,
 } from '../actors/code-author/git-ops.js';
 import {
+  buildEmbeddedAtomSnapshots,
   createDraftPr,
   renderPrBody,
   PrCreationError,
@@ -435,6 +436,15 @@ export function buildDiffBasedCodeAuthorExecutor(
         };
       }
 
+      // Embed plan + provenance ancestor atom snapshots in the
+      // body so a downstream consumer that cannot reach this
+      // host's atom store can still resolve the atoms via the
+      // carrier the dispatch wrote into the PR. The default
+      // ancestor type (`operator-intent`) matches the substrate's
+      // intent-driven-plan vocabulary; deployments that key their
+      // audit chain on a different ancestor pass an alternate
+      // type through buildEmbeddedAtomSnapshots.
+      const embeddedAtoms = await buildEmbeddedAtomSnapshots(config.host, plan);
       let prResult;
       try {
         prResult = await createDraftPr({
@@ -454,21 +464,31 @@ export function buildDiffBasedCodeAuthorExecutor(
             costUsd: draftResult.totalCostUsd,
             modelUsed: draftResult.modelUsed,
             touchedPaths: draftResult.touchedPaths,
+            embeddedAtoms,
           }),
           draft,
         });
       } catch (err) {
+        // Surface `branchName` on pr-creation failures: the branch
+        // already reached the remote (apply-branch succeeded before
+        // this catch), so a downstream caller can detect orphaned
+        // remote artifacts and reconcile them. Failures earlier in
+        // the chain (drafter, dirty-worktree, push rejected) omit
+        // the field so a consumer that conditions on it treats
+        // those as nothing-to-recover.
         if (err instanceof PrCreationError) {
           return {
             kind: 'error',
             stage: `pr-creation/${err.reason}`,
             reason: `${err.message} (stage=${err.stage})`,
+            branchName: gitResult.branchName,
           };
         }
         return {
           kind: 'error',
           stage: 'pr-creation/unexpected',
           reason: err instanceof Error ? err.message : String(err),
+          branchName: gitResult.branchName,
         };
       }
 

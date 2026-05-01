@@ -63,7 +63,10 @@ import { specStage } from '../../../examples/planning-stages/spec/index.js';
 import { planStage } from '../../../examples/planning-stages/plan/index.js';
 import { reviewStage } from '../../../examples/planning-stages/review/index.js';
 import { createDispatchStage } from '../../../examples/planning-stages/dispatch/index.js';
-import { SubActorRegistry } from '../../../src/runtime/actor-message/index.js';
+import {
+  SubActorRegistry,
+  type InvokeResult,
+} from '../../../src/runtime/actor-message/index.js';
 
 const NOW = '2026-04-28T12:00:00.000Z' as Time;
 const SEED_INTENT_ID = 'operator-intent-test-1' as AtomId;
@@ -481,6 +484,175 @@ describe('deep planning pipeline end-to-end', () => {
     expect(stageNames.has('brainstorm-stage')).toBe(false);
     expect(stageNames.has('spec-stage')).toBe(true);
     expect(stageNames.has('dispatch-stage')).toBe(true);
+  });
+
+  it('full lifecycle: plan-stage emits proposed, auto-approve transitions to approved, dispatch-stage drives to executing -> succeeded with audit chain at every step', async () => {
+    // Integration regression for the substrate-deep dogfeed shape:
+    // a single pipeline run produces a plan atom that walks the full
+    // state machine (proposed -> approved -> executing -> succeeded)
+    // and emits an audit-event chain visible to a console reader. The
+    // test wires a SubActorRegistry with a recorded invoker, seeds the
+    // two policy atoms the auto-approve path requires, and asserts
+    // the final plan atom carries every lifecycle stamp + the four
+    // expected audit events.
+    const host = createMemoryHost();
+
+    // Seed an operator-intent whose trust envelope authorizes the
+    // plan-stage's emitted delegation (sub_actor='code-author',
+    // implied_blast_radius='framework', confidence=0.9). The envelope
+    // shape mirrors the auto-approve.test.ts fixture so the pipeline
+    // path and the single-pass tick walk identical envelope checks.
+    await host.atoms.put({
+      ...operatorIntentAtom(SEED_INTENT_ID),
+      metadata: {
+        trust_envelope: {
+          max_blast_radius: 'framework',
+          min_plan_confidence: 0.55,
+          allowed_sub_actors: ['code-author'],
+        },
+      },
+    });
+
+    // Two policy atoms drive the auto-approve path: the global
+    // allowlist of sub-actors that may be auto-approved, and the
+    // principal allowlist for intent authorship. Without either the
+    // pipeline path leaves the plan in 'proposed' (auto-approve runs
+    // but no plan qualifies).
+    await host.atoms.put({
+      schema_version: 1,
+      id: 'pol-plan-autonomous-intent-approve' as AtomId,
+      content: 'autonomous-intent approve policy',
+      type: 'directive',
+      layer: 'L3',
+      provenance: {
+        kind: 'operator-seeded',
+        source: { tool: 'test-fixture' },
+        derived_from: [],
+      },
+      confidence: 1,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'operator-principal' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        policy: {
+          subject: 'plan-autonomous-intent-approve',
+          allowed_sub_actors: ['code-author'],
+        },
+      },
+    });
+    await host.atoms.put({
+      schema_version: 1,
+      id: 'pol-operator-intent-creation' as AtomId,
+      content: 'intent creation policy',
+      type: 'directive',
+      layer: 'L3',
+      provenance: {
+        kind: 'operator-seeded',
+        source: { tool: 'test-fixture' },
+        derived_from: [],
+      },
+      confidence: 1,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'operator-principal' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        policy: {
+          subject: 'operator-intent-creation',
+          allowed_principal_ids: ['operator-principal'],
+        },
+      },
+    });
+    await seedPauseNeverPolicies(host);
+    stubLlm(host);
+
+    // Wire a registry with a recorded invoker so the dispatch-stage
+    // actually transitions the plan beyond 'approved'.
+    const registry = new SubActorRegistry();
+    let invokerCalls = 0;
+    registry.register('code-author' as PrincipalId, async (_p, corr): Promise<InvokeResult> => {
+      invokerCalls += 1;
+      return {
+        kind: 'completed',
+        producedAtomIds: [`out-${corr}`],
+        summary: 'lifecycle ok',
+      };
+    });
+
+    const stages = [
+      brainstormStage,
+      specStage,
+      planStage,
+      reviewStage,
+      createDispatchStage(registry),
+    ];
+
+    const result = await runPipeline(
+      stages,
+      host,
+      makeRunOptions({ correlationId: 'corr-lifecycle' }),
+    );
+    expect(result.kind).toBe('completed');
+    if (result.kind !== 'completed') return;
+    expect(invokerCalls).toBe(1);
+
+    // The plan atom emitted by plan-stage walked through every state.
+    const planPage = await host.atoms.query({ type: ['plan'] }, 100);
+    const plan = planPage.atoms.find(
+      (a) => a.provenance.derived_from.includes(result.pipelineId),
+    );
+    expect(plan).toBeDefined();
+    expect(plan!.plan_state).toBe('succeeded');
+    // approved_* stamps from the pipeline auto-approve pass.
+    expect(plan!.metadata.approved_at).toBeDefined();
+    expect(plan!.metadata.approved_via).toBeDefined();
+    expect(plan!.metadata.approved_intent_id).toBe(String(SEED_INTENT_ID));
+    // executing_* stamps from the dispatch-stage's claim.
+    expect(plan!.metadata.executing_at).toBeDefined();
+    expect(plan!.metadata.executing_invoker).toBe('code-author');
+    // terminal_* stamps from the dispatch-stage's terminal write.
+    expect(plan!.metadata.terminal_at).toBeDefined();
+    expect(plan!.metadata.terminal_kind).toBe('succeeded');
+
+    // Audit-event chain visible across the whole lifecycle. The
+    // approved-by-intent event comes from the pipeline auto-approve
+    // pass; the dispatch-* events come from runDispatchTick.
+    const approvedEvents = await host.auditor.query(
+      { kind: ['plan.approved-by-intent'] },
+      50,
+    );
+    expect(approvedEvents.some((e) => e.refs.atom_ids?.includes(plan!.id))).toBe(true);
+    const executingEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-executing'] },
+      50,
+    );
+    expect(executingEvents.some((e) => e.refs.atom_ids?.includes(plan!.id))).toBe(true);
+    const succeededEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-succeeded'] },
+      50,
+    );
+    expect(succeededEvents.some((e) => e.refs.atom_ids?.includes(plan!.id))).toBe(true);
   });
 
   it('halts at pre-flight when resumeFromStage names an unknown stage', async () => {

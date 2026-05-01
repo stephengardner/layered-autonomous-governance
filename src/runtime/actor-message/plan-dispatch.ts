@@ -5,12 +5,23 @@
  * Workflow:
  * 1. listApprovedDelegatablePlans(host) walks plans with
  *    plan_state='approved' that carry a metadata.delegation envelope.
- * 2. For each, call registry.invoke(...).
- * 3. On success, update the plan to state='succeeded' and note the
- *    produced atom ids in metadata.dispatch_result.
- * 4. On error, update the plan to state='failed' and write an
- *    escalation actor-message back to the plan's operator principal.
- * 5. Unregistered sub-actor principal -> ValidationError bubbled by
+ * 2. For each, claim approved -> executing (with metadata.executing_at
+ *    + executing_invoker) and emit a 'plan.dispatch-executing' audit
+ *    event so the transition is observable through the same channel as
+ *    the proposed -> approved transition (auto-approve.ts pattern).
+ * 3. Call registry.invoke(...).
+ * 4. On success, update the plan to state='succeeded' (with
+ *    metadata.terminal_at + terminal_kind + dispatch_result) and emit
+ *    a 'plan.dispatch-succeeded' audit event.
+ * 5. On error, update the plan to state='failed' (with
+ *    metadata.terminal_at + terminal_kind + error_message +
+ *    dispatch_result), emit a 'plan.dispatch-failed' audit event, and
+ *    write an escalation actor-message back to the plan's operator
+ *    principal.
+ * 6. On 'dispatched' (fire-and-forget), keep the plan in 'executing'
+ *    and emit a 'plan.dispatch-in-flight' audit event so the operator
+ *    can see the async path without waiting for terminal state.
+ * 7. Unregistered sub-actor principal -> ValidationError bubbled by
  *    registry.invoke; the dispatcher catches, writes an escalation
  *    actor-message, and marks the plan 'failed'. This makes the
  *    "delegated to a non-existent actor" failure mode visible.
@@ -18,12 +29,43 @@
  * Each dispatch is idempotent by plan id: a dispatcher restart
  * re-scans for 'approved' plans, but once a plan is moved to
  * 'succeeded' or 'failed' it drops out of the scan.
+ *
+ * Audit-log emission posture mirrors src/runtime/actor-message/
+ * intent-approve.ts and src/runtime/planning-pipeline/auto-approve.ts:
+ * each plan_state transition produces exactly one audit event so an
+ * operator walking host.auditor.query sees the full lifecycle
+ * (proposed -> approved -> executing -> succeeded|failed) without
+ * re-reading every plan atom. The audit kind is the load-bearing
+ * routing key so dashboards filter on it without a metadata walk.
+ *
+ * Backward-compatibility note: metadata.dispatch_result is preserved
+ * unchanged so console plan-detail and any consumer querying the legacy
+ * shape keeps working. The new top-level fields (executing_at,
+ * executing_invoker, terminal_at, terminal_kind, error_message) are
+ * additive; an old reader that ignores them sees the same dispatch_result
+ * payload as before.
  */
 
 import type { Host } from '../../interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../types.js';
 import type { ActorMessageV1 } from './types.js';
 import type { InvokeResult, SubActorRegistry } from './sub-actor-registry.js';
+
+/**
+ * Cap on metadata.error_message length. Bounds runaway emissions from a
+ * sub-actor whose error contains a stack trace, full LLM transcript, or
+ * other unbounded content. The truncation marker matches the
+ * substrate-wide convention of an explicit ellipsis suffix so an audit
+ * consumer can detect that the message was clipped.
+ */
+const MAX_ERROR_MESSAGE_LEN = 1024;
+
+function truncateErrorMessage(message: string): string {
+  if (message.length <= MAX_ERROR_MESSAGE_LEN) return message;
+  // Reserve room for the marker so the total length stays under the cap.
+  const head = message.slice(0, MAX_ERROR_MESSAGE_LEN - 12);
+  return `${head}...truncated`;
+}
 
 /**
  * Envelope that a Plan atom uses to ask for sub-actor dispatch.
@@ -87,6 +129,30 @@ export async function runDispatchTick(
   let dispatched = 0;
   let failed = 0;
 
+  // Local helper: every audit emission for a dispatch transition shares
+  // the same kind/principal_id/timestamp/refs scaffolding and varies
+  // only in the details payload. Extracted at N=2 per the repo's
+  // duplication-floor canon (4 emit sites: executing, succeeded,
+  // in-flight, failed). Closes over plan + envelope from the caller's
+  // scope so the helper signature stays minimal.
+  async function emitDispatchAudit(
+    plan: Atom,
+    kind: 'plan.dispatch-executing'
+      | 'plan.dispatch-succeeded'
+      | 'plan.dispatch-in-flight'
+      | 'plan.dispatch-failed',
+    timestamp: string,
+    details: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    await host.auditor.log({
+      kind,
+      principal_id: plan.principal_id as PrincipalId,
+      timestamp: timestamp as Time,
+      refs: { atom_ids: [plan.id] },
+      details,
+    });
+  }
+
   for (const plan of candidates) {
     // resolveDelegationEnvelope fills correlation_id / payload /
     // escalate_to from the plan atom when the descriptor on
@@ -117,7 +183,24 @@ export async function runDispatchTick(
       // Another tick claimed it, or the plan was revoked. Skip.
       continue;
     }
-    await host.atoms.update(plan.id, { plan_state: 'executing' });
+    // Claim the plan AND stamp the executing metadata in a single
+    // update so the transition is atomic from the AtomStore's
+    // perspective: a peer reader observing plan_state='executing'
+    // also sees executing_at + executing_invoker, never the
+    // intermediate "executing without provenance" state.
+    const executingAt = new Date(now()).toISOString();
+    await host.atoms.update(plan.id, {
+      plan_state: 'executing',
+      metadata: {
+        executing_at: executingAt,
+        executing_invoker: envelope.sub_actor_principal_id,
+      },
+    });
+    await emitDispatchAudit(plan, 'plan.dispatch-executing', executingAt, {
+      plan_id: String(plan.id),
+      sub_actor_principal_id: envelope.sub_actor_principal_id,
+      correlation_id: envelope.correlation_id,
+    });
 
     let result: InvokeResult;
     try {
@@ -134,49 +217,90 @@ export async function runDispatchTick(
     }
 
     // Final state transition. AtomStore.update merges metadata by
-    // key, so passing only `{ dispatch_result: ... }` is both
-    // correct and avoids clobbering other metadata keys that a
-    // concurrent writer may have added to the plan. Re-spreading
-    // `...plan.metadata` would replay a stale snapshot.
+    // key, so passing only the new keys is both correct and avoids
+    // clobbering other metadata keys that a concurrent writer may
+    // have added to the plan. Re-spreading `...plan.metadata` would
+    // replay a stale snapshot.
+    //
+    // dispatch_result is preserved verbatim (legacy shape; console
+    // plan-detail + intent-approve audit consumers all read it). The
+    // new top-level fields (terminal_at, terminal_kind, error_message)
+    // are additive so a reader querying terminal_kind sees the same
+    // outcome without parsing dispatch_result.kind.
+    const terminalAt = new Date(now()).toISOString();
     if (result.kind === 'completed') {
       await host.atoms.update(plan.id, {
         plan_state: 'succeeded',
         metadata: {
+          terminal_at: terminalAt,
+          terminal_kind: 'succeeded',
           dispatch_result: {
             kind: 'completed',
             summary: result.summary,
             produced_atom_ids: result.producedAtomIds,
-            at: new Date(now()).toISOString(),
+            at: terminalAt,
           },
         },
       });
+      await emitDispatchAudit(plan, 'plan.dispatch-succeeded', terminalAt, {
+        plan_id: String(plan.id),
+        sub_actor_principal_id: envelope.sub_actor_principal_id,
+        correlation_id: envelope.correlation_id,
+        summary: result.summary,
+        produced_atom_ids: [...result.producedAtomIds],
+      });
       dispatched += 1;
     } else if (result.kind === 'dispatched') {
-      // Plan is already in 'executing'; record the dispatch_result
-      // but keep the state where the claim put it.
+      // Plan stays in 'executing'; the terminal transition lands on a
+      // future tick when the async sub-actor completes. terminal_at
+      // and terminal_kind intentionally NOT stamped: the plan has not
+      // reached terminal yet. dispatch_result records the in-flight
+      // hand-off so an audit consumer sees the dispatch happened.
       await host.atoms.update(plan.id, {
         metadata: {
           dispatch_result: {
             kind: 'dispatched',
             summary: result.summary,
-            at: new Date(now()).toISOString(),
+            at: terminalAt,
           },
         },
+      });
+      await emitDispatchAudit(plan, 'plan.dispatch-in-flight', terminalAt, {
+        plan_id: String(plan.id),
+        sub_actor_principal_id: envelope.sub_actor_principal_id,
+        correlation_id: envelope.correlation_id,
+        summary: result.summary,
       });
       dispatched += 1;
     } else {
       // error case
+      const errorMessage = truncateErrorMessage(result.message);
       await host.atoms.update(plan.id, {
         plan_state: 'failed',
         metadata: {
+          terminal_at: terminalAt,
+          terminal_kind: 'failed',
+          error_message: errorMessage,
           dispatch_result: {
             kind: 'error',
             message: result.message,
-            at: new Date(now()).toISOString(),
+            at: terminalAt,
           },
         },
       });
-      await writeEscalationMessage(host, plan, envelope, result.message, now);
+      await emitDispatchAudit(plan, 'plan.dispatch-failed', terminalAt, {
+        plan_id: String(plan.id),
+        sub_actor_principal_id: envelope.sub_actor_principal_id,
+        correlation_id: envelope.correlation_id,
+        error_message: errorMessage,
+      });
+      // Pass the truncated errorMessage (not the raw result.message) so a
+      // runaway sub-actor's stack trace cannot pollute the escalation
+      // actor-message body and its inbox-rendered cousin. The legacy
+      // dispatch_result.message above keeps the verbatim payload for
+      // back-compat consumers; everywhere else the bounded form is the
+      // contract.
+      await writeEscalationMessage(host, plan, envelope, errorMessage, now);
       failed += 1;
     }
   }

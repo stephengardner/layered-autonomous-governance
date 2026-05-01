@@ -66,7 +66,12 @@ import type { Redactor } from '../../substrate/redactor.js';
 import { defaultBudgetCap, type BudgetCap } from '../../substrate/agent-budget.js';
 import { loadReplayTier } from '../../substrate/policy/replay-tier.js';
 import { loadBlobThreshold } from '../../substrate/policy/blob-threshold.js';
-import { createDraftPr, renderPrBody, PrCreationError } from '../actors/code-author/pr-creation.js';
+import {
+  buildEmbeddedAtomSnapshots,
+  createDraftPr,
+  renderPrBody,
+  PrCreationError,
+} from '../actors/code-author/pr-creation.js';
 import type {
   CodeAuthorExecutor,
   CodeAuthorExecutorResult,
@@ -221,7 +226,15 @@ export function buildAgenticCodeAuthorExecutor(
             touchedPaths: agentResult.artifacts?.touchedPaths ?? [],
           };
         } catch (err) {
-          return { kind: 'error', stage: 'agentic/pr-creation', reason: errorMessage(err) };
+          // Surface `branchName` so a downstream caller can detect
+          // and reconcile orphaned remote artifacts. Symmetric with
+          // the diff-based executor's pr-creation failure path.
+          return {
+            kind: 'error',
+            stage: 'agentic/pr-creation',
+            reason: errorMessage(err),
+            branchName,
+          };
         }
       } finally {
         // 6. Always release the workspace, even on throw. Swallow any
@@ -391,6 +404,15 @@ async function createPrViaGhClient(
     ? (meta['title'] as string)
     : `plan ${planId}`;
   const title = `code-author: ${planTitle}`;
+  // Embed plan + provenance ancestor atom snapshots in the body
+  // so a downstream consumer that cannot reach this host's atom
+  // store can still resolve the atoms via the carrier the
+  // dispatch wrote into the PR. The default ancestor type
+  // (`operator-intent`) matches the substrate's
+  // intent-driven-plan vocabulary; deployments that key their
+  // audit chain on a different ancestor pass an alternate type
+  // through buildEmbeddedAtomSnapshots.
+  const embeddedAtoms = await buildEmbeddedAtomSnapshots(config.host, plan);
   const body = renderPrBody({
     planId,
     planContent: String(plan.content),
@@ -401,6 +423,7 @@ async function createPrViaGhClient(
     costUsd: 0,
     modelUsed: config.model,
     touchedPaths,
+    embeddedAtoms,
   });
   try {
     const pr = await createDraftPr({

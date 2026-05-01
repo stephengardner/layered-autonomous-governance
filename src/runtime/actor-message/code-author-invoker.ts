@@ -115,6 +115,20 @@ export interface CodeAuthorExecutorFailure {
   readonly kind: 'error';
   readonly stage: string;
   readonly reason: string;
+  /**
+   * Optional post-push recovery handle: the pushed branch name,
+   * populated only when the failure happened AFTER the branch
+   * reached the remote. Callers that want to detect orphaned
+   * artifacts on the remote (e.g. retry / reconciliation after a
+   * transient PR-creation gateway error) read this to reconcile
+   * downstream side effects.
+   *
+   * Failures BEFORE the branch reaches the remote (drafter,
+   * dirty-worktree, push rejected) leave the field undefined so
+   * a downstream consumer that conditions on the field treats
+   * those cases as nothing-to-recover.
+   */
+  readonly branchName?: string;
 }
 
 export type CodeAuthorExecutorResult =
@@ -400,10 +414,19 @@ function renderExecutorMetadata(
   result: CodeAuthorExecutorResult,
 ): Record<string, unknown> {
   if (result.kind === 'error') {
+    // Preserve `branch_name` on the error metadata when the executor
+    // surfaced one. Without it, a downstream consumer reading
+    // `metadata.executor_result` from the observation atom cannot
+    // see the branch the executor pushed before the failure step,
+    // and any reconciliation that depends on the field becomes
+    // observation-blind.
     return {
       kind: 'error',
       stage: result.stage,
       reason: result.reason,
+      ...(typeof result.branchName === 'string' && result.branchName.length > 0
+        ? { branch_name: result.branchName }
+        : {}),
     };
   }
   return {

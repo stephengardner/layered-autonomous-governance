@@ -3,10 +3,36 @@
 // them without firing the script's CLI side effects, mirroring the
 // pattern landed for git-as-push-auth.mjs.
 
+import { createHash } from 'node:crypto';
 import {
   buildPushEnv,
   buildReadOnlyEnv,
 } from './git-as-push-auth.mjs';
+
+// GitHub label names are capped at 50 characters. Plan-atom ids in
+// this codebase routinely exceed that (e.g. 91 chars for pipeline-
+// generated plans like
+// `plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-0`).
+// A naive `plan-id:<full-id>` label hits HTTP 422 and the LAG-auditor
+// gate never fires on the autonomous PR.
+//
+// The truncated form keeps the `plan-id:` prefix (the workflow's
+// `select(.name | startswith("plan-id:"))` filter relies on it),
+// preserves the human-readable head of the plan id, and appends a
+// short sha-256 hex digest so two plans whose ids share a long
+// prefix (multi-task plans differ only at the trailing index) do not
+// collide on the same label. The auditor uses the full plan id from
+// the PR body's machine-parseable provenance footer; the label is
+// only the workflow trigger marker. The chosen layout is:
+//   plan-id:<head>-<hash>   where head = first PLAN_ID_LABEL_HEAD chars
+//                            and  hash = first PLAN_ID_LABEL_HASH hex chars
+export const PLAN_ID_LABEL_PREFIX = 'plan-id:';
+const PLAN_ID_LABEL_MAX = 50;
+const PLAN_ID_LABEL_HASH = 12;
+// Reserve room for prefix + '-' separator + hash so the truncated
+// label is exactly PLAN_ID_LABEL_MAX chars on the truncate path.
+const PLAN_ID_LABEL_HEAD =
+  PLAN_ID_LABEL_MAX - PLAN_ID_LABEL_PREFIX.length - 1 - PLAN_ID_LABEL_HASH;
 
 /**
  * Parse a `GH_REPO=owner/repo` env value.
@@ -25,6 +51,164 @@ export function parseRepoSlug(slug) {
   const [owner, repo] = parts;
   if (!owner || !repo) return null;
   return { owner, repo };
+}
+
+/**
+ * Parse the `plan_id` field out of a PR body's machine-parseable
+ * provenance footer (a YAML block emitted by buildPrBody in
+ * src/runtime/actors/code-author/pr-creation.ts):
+ *
+ *   ```yaml
+ *   plan_id: "<full-plan-atom-id>"
+ *   observation_atom_id: "..."
+ *   commit_sha: "..."
+ *   ```
+ *
+ * Returns the unescaped plan id string when present, otherwise null.
+ * The auditor falls back to this when the workflow-supplied label-
+ * derived id can't be resolved against the atom store (because
+ * truncatePlanIdLabel had to shorten it to fit GitHub's 50-char
+ * label limit). The label is the workflow trigger marker, the body
+ * footer is the canonical machine-readable carrier.
+ *
+ * The regex is anchored to a line beginning so a stray `plan_id`
+ * mention in surrounding prose can't shadow the YAML field. Strict
+ * JSON.parse on the captured group rejects malformed escapes
+ * instead of silently returning a half-decoded string.
+ */
+export function parsePlanIdFromPrBody(body) {
+  if (typeof body !== 'string' || body.length === 0) return null;
+  // Negated class excludes raw `\n` so the match cannot span lines
+  // and pull in a closing quote from a sibling YAML field. The
+  // canonical buildPrBody output emits `JSON.stringify(planId)`,
+  // which already escapes any literal newline in the id as `\\n`,
+  // so a newline reaching this regex is a malformed body and the
+  // safer behaviour is no-match -> null.
+  const match = /^plan_id:\s*"((?:[^"\\\n]|\\.)*)"\s*$/m.exec(body);
+  if (!match) return null;
+  try {
+    return JSON.parse(`"${match[1]}"`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Section heading the dispatch-side renderer (renderPrBody in
+ * src/runtime/actors/code-author/pr-creation.ts) emits before the
+ * embedded-atom <details> blocks. Lifted to a module constant so
+ * the dispatch-side and auditor-side anchor the same string; a
+ * drift between the two would silently disable the embedded-atom
+ * carrier flow that fixes the LAG-auditor CI gap (the workflow
+ * runs on a runner with no .lag/atoms/ directory and no named
+ * tunnel, so the embedded JSON in the PR body is the only way the
+ * auditor can resolve the plan + operator-intent snapshots).
+ *
+ * NOTE: must stay in sync with EMBEDDED_ATOMS_HEADING in
+ * src/runtime/actors/code-author/pr-creation.ts. A future refactor
+ * that wants to share the constant across the .ts/.mjs boundary
+ * can promote it into the dist/ output (or a JSON manifest) once
+ * we have a bigger reason to do that work.
+ */
+export const EMBEDDED_ATOMS_HEADING = '## Embedded atom snapshots';
+
+/**
+ * Parse an atom JSON snapshot embedded in a PR body's
+ * `<details>...```json...```...</details>` block keyed by atom id.
+ *
+ * Returns the parsed atom object on success, or null when:
+ *   - body is null/undefined/empty
+ *   - no <details> block matches the embedded-atoms section
+ *   - the requested atomId has no embedded snapshot
+ *   - the JSON payload is malformed
+ *   - the parsed payload's `id` field does not equal the requested
+ *     atomId (round-trip integrity guard; symmetric with how
+ *     parsePlanIdFromPrBody validates the YAML footer's plan_id
+ *     before trusting it)
+ *
+ * The id-mismatch guard is the load-bearing security check: a
+ * malicious PR-body edit could ship a plan-shaped atom under a
+ * legitimate atom id's <details> heading, redirecting the auditor
+ * at an unrelated payload whose envelope might happen to permit
+ * the diff. Comparing the embedded payload's own `id` to the
+ * caller-supplied lookup id rejects that path; the embedded
+ * snapshot must self-identify with the same id the lookup
+ * specified.
+ *
+ * Multiple <details> blocks per body are supported (the renderer
+ * emits one per atom); the parser scans them in order and returns
+ * the first match for the requested atomId.
+ */
+export function parseEmbeddedAtomFromPrBody(body, atomId) {
+  if (typeof body !== 'string' || body.length === 0) return null;
+  if (typeof atomId !== 'string' || atomId.length === 0) return null;
+  // Only scan inside the embedded-atoms section so a stray
+  // <details> elsewhere in the body cannot shadow a missing
+  // embedded snapshot. Anchored to the heading the renderer emits.
+  const sectionStart = body.indexOf(EMBEDDED_ATOMS_HEADING);
+  if (sectionStart < 0) return null;
+  const section = body.slice(sectionStart);
+  // Each block's <summary> carries the atom id with the literal
+  // marker text 'atom: '. Iterate over every <details> block in
+  // the section and inspect the JSON payload to find the match;
+  // the summary text is HTML-escaped for rendering purposes and is
+  // NOT the integrity gate the lookup compares against (the
+  // parsed payload's `id` field is the canonical identifier per
+  // the round-trip security note above).
+  const blockRegex = /<details><summary>atom: [^<]*<\/summary>\s*```json\s*([\s\S]*?)\s*```\s*<\/details>/g;
+  let match;
+  while ((match = blockRegex.exec(section)) !== null) {
+    const jsonText = match[1];
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch {
+      // Malformed JSON in this block: keep scanning later blocks
+      // because the renderer always emits valid JSON, but a
+      // mid-section corruption should not silently disable later
+      // valid blocks. A multi-block body where one entry is
+      // malformed still surfaces the others.
+      continue;
+    }
+    if (parsed && typeof parsed === 'object' && parsed.id === atomId) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+/**
+ * Build the GitHub label name for a plan id, capped at 50 chars.
+ *
+ * Returns `plan-id:<id>` when the full id fits, otherwise
+ * `plan-id:<head>-<hash>` where head = the first PLAN_ID_LABEL_HEAD
+ * characters of the plan id and hash = the first PLAN_ID_LABEL_HASH
+ * hex digits of `sha256(planId)`. The combined truncated form is
+ * exactly PLAN_ID_LABEL_MAX characters so the GitHub Issues API
+ * accepts it. The hash component avoids collisions when two plan
+ * ids share a long prefix (e.g. multi-task plans whose ids differ
+ * only at the trailing index suffix).
+ *
+ * The full plan id remains available to consumers via the PR body's
+ * machine-parseable provenance footer (`plan_id: "<full-id>"`); the
+ * label here is the workflow-trigger marker, not the canonical
+ * carrier. See .github/workflows/pr-landing.yml lag-auditor job.
+ *
+ * Throws on non-string or empty input rather than emitting a
+ * malformed label that would silently route the PR through an
+ * unconfigured auditor path.
+ */
+export function truncatePlanIdLabel(planId) {
+  if (typeof planId !== 'string' || planId.length === 0) {
+    throw new Error(
+      `[autonomous-dispatch] truncatePlanIdLabel: planId must be a non-empty string, got ${typeof planId}`,
+    );
+  }
+  const full = `${PLAN_ID_LABEL_PREFIX}${planId}`;
+  if (full.length <= PLAN_ID_LABEL_MAX) return full;
+  const head = planId.slice(0, PLAN_ID_LABEL_HEAD);
+  const hash = createHash('sha256').update(planId).digest('hex').slice(0, PLAN_ID_LABEL_HASH);
+  return `${PLAN_ID_LABEL_PREFIX}${head}-${hash}`;
 }
 
 /**
@@ -159,6 +343,113 @@ const REMOTE_GIT_VERBS = new Set([
   'clone',
   'ls-remote',
 ]);
+
+/**
+ * Recognise a transient `gh REST pulls create` 5xx error in an
+ * executor failure's `reason` string. Returns true for the 5xx
+ * shapes the dispatch flow has observed in production:
+ *
+ *   - 504 Gateway Timeout (today's dogfeed-13 evidence: PR is
+ *     sometimes created server-side anyway but the gh CLI returns
+ *     non-zero before reading the response).
+ *   - 502 Bad Gateway (same shape, observed less often; recovery
+ *     is identical).
+ *
+ * The detector is intentionally narrow. It matches the literal
+ * status-code marker the gh CLI emits (`HTTP 504`, `HTTP/1.1 504`,
+ * `status code 504`, etc.) rather than attempting to recognise
+ * every flavour of "transient": a 401/403 would be a token /
+ * scope issue and probing for an orphaned PR is the wrong remedy
+ * (the token cannot read the listing either, so the probe fails
+ * with the same auth error). 4xx errors are always treated as
+ * structural and short-circuit; 5xx is the narrow recovery
+ * surface.
+ *
+ * Pure: takes a string, returns a boolean. Callers compose the
+ * detection with the orphaned-PR probe themselves.
+ */
+const TRANSIENT_5XX_RE = /\b50[24]\b/;
+
+export function isTransientPrCreationGatewayError(reason) {
+  if (typeof reason !== 'string' || reason.length === 0) return false;
+  return TRANSIENT_5XX_RE.test(reason);
+}
+
+/**
+ * Probe for an orphaned PR by branch head via `gh pr list --head`,
+ * spawning the supplied execImpl so callers (production +
+ * tests) share one wire-shape. Returns `{ number, htmlUrl }` on
+ * exact-one-match or null otherwise:
+ *
+ *   - branch null/undefined/empty: no probe, returns null. The
+ *     executor failed before the branch reached the remote;
+ *     there is nothing to recover.
+ *   - gh CLI exits non-zero: returns null. A failed probe is
+ *     indistinguishable from "no PR exists" at this layer; the
+ *     caller (the dispatch wrapper) logs the underlying gh
+ *     stderr and falls through to the original 5xx error.
+ *   - empty array result: returns null. No orphaned PR; the
+ *     5xx must have been an actual create-side failure, not a
+ *     create-then-server-error race.
+ *   - exactly-one PR: returns its number + htmlUrl. The dispatch
+ *     wrapper treats this as success and continues with labels.
+ *   - multiple matching PRs: returns null. Two PRs on the same
+ *     head branch is anomalous (GitHub disallows it on the same
+ *     base branch but a refspec edge case could in principle
+ *     produce it); fail-closed and let the operator inspect.
+ *
+ * The repo slug is required because `gh pr list --head` is repo-
+ * scoped and a missing slug would default to the working-dir
+ * repo, which is correct in normal operation but wrong when the
+ * dispatcher is invoked from a worktree pointing at a different
+ * upstream. Callers always pass the dispatch-resolved owner/repo.
+ *
+ * The execImpl is the same authed-git/gh shim the dispatch flow
+ * builds; threading it here keeps the bot-identity discipline
+ * uniform (the probe runs as the dispatch bot, never the
+ * operator's PAT).
+ */
+export async function probeOrphanedPrByBranch({
+  branch,
+  owner,
+  repo,
+  execImpl,
+}) {
+  if (typeof branch !== 'string' || branch.length === 0) return null;
+  if (typeof owner !== 'string' || owner.length === 0) return null;
+  if (typeof repo !== 'string' || repo.length === 0) return null;
+  if (typeof execImpl !== 'function') return null;
+  let result;
+  try {
+    result = await execImpl('gh', [
+      'pr', 'list',
+      '--repo', `${owner}/${repo}`,
+      '--head', branch,
+      '--state', 'open',
+      '--json', 'number,url',
+    ], { reject: false });
+  } catch {
+    return null;
+  }
+  if (!result || result.exitCode !== 0) return null;
+  const stdout = typeof result.stdout === 'string' ? result.stdout.trim() : '';
+  if (stdout.length === 0) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 1) return null;
+  const entry = parsed[0];
+  if (!entry || typeof entry !== 'object') return null;
+  const number = entry.number;
+  const url = entry.url;
+  if (typeof number !== 'number' || typeof url !== 'string' || url.length === 0) {
+    return null;
+  }
+  return { number, htmlUrl: url };
+}
 
 function rewriteGitRemoteArg(args, token, repoOwner, repoName) {
   if (!Array.isArray(args)) return null;

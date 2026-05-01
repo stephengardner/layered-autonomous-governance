@@ -78,6 +78,10 @@ import type {
   PipelineLiveOpsResult,
   PipelineSourceAtom,
 } from './pipelines-types';
+import {
+  buildPlanStateLifecycle,
+  type PlanStateLifecycle,
+} from './plan-state-lifecycle';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -1584,6 +1588,22 @@ interface PlanLifecycle {
   } | null;
   readonly failure: PlanLifecycleFailure | null;
   readonly transitions: ReadonlyArray<PlanLifecyclePhase>;
+  /*
+   * Focused four-step plan_state timeline (proposed -> approved ->
+   * executing -> terminal) projected from the dispatcher metadata
+   * stamps in src/runtime/actor-message/plan-dispatch.ts. The
+   * four-step shape is fixed when present; each step carries a
+   * status field saying whether the plan reached, is pending, or
+   * skipped that boundary.
+   *
+   * Nullability: this field is null when the input plan atom is
+   * not found (a `plan-not-found` lifecycle response). Callers
+   * MUST handle null before reading `.steps` to avoid a runtime
+   * undefined access. See plan-state-lifecycle.ts for the
+   * projection details, and the buildPlanStateLifecycle call site
+   * in handlePlanLifecycle for the null-vs-projection branching.
+   */
+  readonly plan_state_lifecycle: PlanStateLifecycle | null;
 }
 
 /*
@@ -1908,6 +1928,25 @@ async function handlePlanLifecycle(planId: string): Promise<PlanLifecycle> {
   // already domain-meaningful (plan-proposed before approval, etc.).
   transitions.sort((a, b) => a.at.localeCompare(b.at));
 
+  /*
+   * Focused plan_state lifecycle: four-step projection of the
+   * dispatcher metadata stamps from PR #270. Built only when the
+   * plan atom resolves -- a missing plan returns null so the
+   * client can render a "plan not found" empty state rather than
+   * a misleading all-pending timeline.
+   */
+  const plan_state_lifecycle: PlanStateLifecycle | null = plan
+    ? buildPlanStateLifecycle({
+      id: plan.id,
+      created_at: plan.created_at,
+      principal_id: plan.principal_id,
+      plan_state: typeof planAny?.['plan_state'] === 'string'
+        ? (planAny['plan_state'] as string)
+        : null,
+      metadata: meta,
+    })
+    : null;
+
   return {
     plan: planBlock,
     intent: intentBlock,
@@ -1917,6 +1956,7 @@ async function handlePlanLifecycle(planId: string): Promise<PlanLifecycle> {
     settled: settledBlock,
     failure: failureBlock,
     transitions,
+    plan_state_lifecycle,
   };
 }
 
