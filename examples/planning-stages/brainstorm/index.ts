@@ -43,6 +43,7 @@ import type {
   StageOutput,
 } from '../../../src/runtime/planning-pipeline/index.js';
 import type { AtomId } from '../../../src/types.js';
+import { buildJudgeSchema } from '../lib/zod-to-judge-schema.js';
 
 /** Maximum entries per list field; mirrors MAX_CITED_LIST in atom-shapes. */
 const MAX_LIST = 256;
@@ -65,57 +66,26 @@ export const brainstormPayloadSchema = z.object({
 export type BrainstormPayload = z.infer<typeof brainstormPayloadSchema>;
 
 /**
- * JSON-schema shape passed to host.llm.judge. The zod schema above is
- * the source of truth for runtime validation; this constant is its
- * derivative used to constrain the LLM at generation time.
+ * JSON-schema shape passed to host.llm.judge. Derived mechanically
+ * from `brainstormPayloadSchema` via the shared `buildJudgeSchema`
+ * helper, so a new bounded field added to the zod schema produces a
+ * bounded JSON-schema field with no second edit. The helper covers
+ * the supported zod surface (object/string/number/boolean/enum/array
+ * with min and max bounds, plus optional/nullable/effects wrappers)
+ * and throws on anything outside it; that throw is the substrate
+ * signal that a stage adopted a new zod shape and the helper must be
+ * extended rather than worked around.
  *
- * Every bounded string field carries a `maxLength` matching the zod
- * `.max(N)` constant, and every bounded array carries a `maxItems`
- * matching the zod array cap. Without these bounds the LLM accepts
- * the type-only schema and produces over-length strings the
- * JSON-schema validator passes but the zod schema rejects
- * post-generation. The schema-parity test in
- * test/examples/planning-stages/schema-parity.test.ts walks both
- * schemas to assert agreement and flags any future drift.
+ * The parity test in test/examples/planning-stages/schema-parity.test.ts
+ * walks both schemas to assert agreement on every bounded field, so a
+ * helper-level regression that loosens the JSON-schema produces a
+ * single-test failure pointing at the forgotten field.
  *
  * Exported for the parity test; the runStage function below references
  * this same constant so a single edit lands in both the LLM-time fence
  * and the parity assertion.
  */
-export const BRAINSTORM_JUDGE_SCHEMA = {
-  type: 'object',
-  properties: {
-    open_questions: {
-      type: 'array',
-      items: { type: 'string', maxLength: MAX_STR },
-      maxItems: MAX_LIST,
-    },
-    alternatives_surveyed: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          option: { type: 'string', maxLength: MAX_STR },
-          rejection_reason: { type: 'string', maxLength: MAX_STR },
-        },
-        required: ['option', 'rejection_reason'],
-      },
-      maxItems: MAX_LIST,
-    },
-    decision_points: {
-      type: 'array',
-      items: { type: 'string', maxLength: MAX_STR },
-      maxItems: MAX_LIST,
-    },
-    cost_usd: { type: 'number' },
-  },
-  required: [
-    'open_questions',
-    'alternatives_surveyed',
-    'decision_points',
-    'cost_usd',
-  ],
-} as const;
+export const BRAINSTORM_JUDGE_SCHEMA = buildJudgeSchema(brainstormPayloadSchema);
 
 /**
  * Atom-id citation regex.
