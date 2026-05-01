@@ -253,6 +253,35 @@ describe('parseRunCtoActorArgs', () => {
     if (!r.ok) expect(r.reason).toMatch(/--invokers/);
   });
 
+  // CR PR #259 review: reject empty + flag-like values. Without these
+  // guards, `--invokers=` would set invokersPath to `''` and
+  // `--invokers --mode substrate-deep` would set invokersPath to
+  // `'--mode'`, both of which fail later at path resolution with a
+  // less actionable diagnostic.
+  it('rejects --invokers= (empty inline value)', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x', '--invokers=']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/--invokers/);
+  });
+
+  it('rejects --invokers <next-flag> (consumes a flag as value)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--invokers', '--mode', 'substrate-deep',
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/--invokers/);
+  });
+
+  it('rejects --invokers with an all-whitespace value', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--invokers', '   ',
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/--invokers/);
+  });
+
   it('preserves --invokers alongside --mode substrate-deep', () => {
     const r = parseRunCtoActorArgs([
       '--request', 'x',

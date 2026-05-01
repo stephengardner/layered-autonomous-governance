@@ -223,8 +223,21 @@ export function parseRunCtoActorArgs(argv) {
       // scripts/invokers/autonomous-dispatch.mjs to register code-author
       // and any other sub-actors. Validated at consume time (driver
       // resolves the path and exit(2) on missing-file / wrong-shape).
+      //
+      // Guard against `--invokers=` (empty inline) and `--invokers --mode`
+      // (next-flag-as-value): readRequiredValue would otherwise assign
+      // `''` or `'--mode'` to invokersPath, and the failure mode would
+      // surface much later as a less-actionable path-resolution error in
+      // the driver. Reject at parse time with the same message.
       const v = readRequiredValue('--invokers expects a path to an .mjs module');
       if (!v.ok) return v;
+      if (
+        typeof v.value !== 'string'
+        || v.value.trim().length === 0
+        || v.value.startsWith('--')
+      ) {
+        return { ok: false, reason: '--invokers expects a path to an .mjs module' };
+      }
       args.invokersPath = v.value;
     } else if (a === '-h' || a === '--help') {
       args.help = true;
