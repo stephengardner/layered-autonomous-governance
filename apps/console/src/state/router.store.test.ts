@@ -67,6 +67,26 @@ describe('routeForAtomId', () => {
     it('routes pipeline-resume-* descendants to activities', () => {
       expect(routeForAtomId('pipeline-resume-abc-2026-04-26T01-00-00-000Z')).toBe('activities');
     });
+
+    it('routes brainstorm-output-* stage-output atoms to activities', () => {
+      // Stage-output atoms are pipeline descendants persisted per-stage
+      // by the deep planning pipeline (see PR #252). Without an explicit
+      // branch they fell through to canon and produced an empty focus-
+      // mode page in the canon view because they aren't canon types.
+      expect(routeForAtomId('brainstorm-output-abc-2026-04-30T01-00-00-000Z')).toBe('activities');
+    });
+
+    it('routes spec-output-* stage-output atoms to activities', () => {
+      expect(routeForAtomId('spec-output-xyz-2026-04-30T01-00-00-000Z')).toBe('activities');
+    });
+
+    it('routes review-report-* stage-output atoms to activities', () => {
+      expect(routeForAtomId('review-report-abc-2026-04-30T01-00-00-000Z')).toBe('activities');
+    });
+
+    it('routes dispatch-record-* stage-output atoms to activities', () => {
+      expect(routeForAtomId('dispatch-record-abc-2026-04-30T01-00-00-000Z')).toBe('activities');
+    });
   });
 
   describe('canon (default)', () => {

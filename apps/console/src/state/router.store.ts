@@ -210,12 +210,23 @@ export function routeForAtomId(id: string): Route {
    * arbitrary atom ids. Order: must precede the generic `plan-` branch
    * so a future `plan-*` rename of a pipeline descendant doesn't
    * silently re-route.
+   *
+   * Stage-output atoms (`brainstorm-output-`, `spec-output-`,
+   * `review-report-`, `dispatch-record-`) are persisted per-stage
+   * outputs introduced when the deep-planning pipeline started writing
+   * each stage's result as its own atom. They are pipeline descendants
+   * by the same logic as the four prefixes above and route the same
+   * way until the detail handler resolves them back to their parent.
    */
   if (
     id.startsWith('pipeline-stage-event-')
     || id.startsWith('pipeline-audit-finding-')
     || id.startsWith('pipeline-failed-')
     || id.startsWith('pipeline-resume-')
+    || id.startsWith('brainstorm-output-')
+    || id.startsWith('spec-output-')
+    || id.startsWith('review-report-')
+    || id.startsWith('dispatch-record-')
   ) return 'activities';
   if (id.startsWith('pipeline-')) return 'pipelines';
   if (id.startsWith('plan-')) return 'plans';
