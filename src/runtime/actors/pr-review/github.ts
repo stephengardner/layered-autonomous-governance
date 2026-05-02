@@ -466,14 +466,19 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
   }
 
   /**
-   * Fetch PR-level mergeability metadata via a single GraphQL query.
-   * Returns `mergeable` (coerced from the GraphQL enum to
-   * boolean | null; null for UNKNOWN when GitHub has not finished
-   * computing), `mergeStateStatus`
-   * (CLEAN / BLOCKED / UNKNOWN / BEHIND / DIRTY / DRAFT / HAS_HOOKS /
-   * UNSTABLE), and the head ref's SHA so the check-runs and
-   * legacy-statuses fetches can hang off it. One GraphQL round trip
-   * keeps the composite read cheap.
+   * Fetch PR-level metadata via a single GraphQL query. Returns:
+   *   - `mergeable` (coerced from the GraphQL enum to boolean | null;
+   *     null for UNKNOWN when GitHub has not finished computing)
+   *   - `mergeStateStatus` (CLEAN / BLOCKED / UNKNOWN / BEHIND /
+   *     DIRTY / DRAFT / HAS_HOOKS / UNSTABLE; the merge-readiness
+   *     snapshot of an OPEN PR)
+   *   - `prState` (lifecycle phase: OPEN / CLOSED / MERGED; null on
+   *     fetch failure)
+   *   - `title` (human-readable PR title; null on fetch failure;
+   *     empty string preserved as a valid untitled-PR value)
+   *   - `headOid` (the head ref's SHA so the check-runs and
+   *     legacy-statuses fetches can hang off it)
+   * One GraphQL round trip keeps the composite read cheap.
    */
   private async fetchPrMetaGql(pr: PrIdentifier): Promise<{
     mergeable: boolean | null;

@@ -178,12 +178,12 @@ export interface PrReviewStatus {
   readonly prState: string | null;
   /**
    * Human-readable PR title. Read alongside the lifecycle state so
-   * downstream projections (e.g. the Live Ops Pulse "PR activity"
-   * panel) can render a recognizable label instead of falling back to
-   * "(no title)" - a fallback that is correct only when the upstream
-   * adapter genuinely could not read it. `null` when the metadata
-   * fetch failed (same condition as `prState`); empty string is a
-   * valid value (PRs without titles exist) and is preserved as-is.
+   * a downstream UI or projection that renders PR activity can show
+   * a recognizable label instead of falling back to "(no title)" -
+   * a fallback that is correct only when the upstream adapter
+   * genuinely could not read it. `null` when the metadata fetch
+   * failed (same condition as `prState`); empty string is a valid
+   * value (PRs without titles exist) and is preserved as-is.
    */
   readonly title: string | null;
   /**

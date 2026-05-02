@@ -750,6 +750,8 @@ async function primeObservation(actor: PrFixActor, adapters: PrFixAdapters): Pro
     pr: APPLY_PR,
     mergeable: APPLY_OBS.mergeable,
     mergeStateStatus: APPLY_OBS.mergeStateStatus,
+    prState: 'OPEN',
+    title: null,
     lineComments: [],
     bodyNits: [],
     submittedReviews: [],
