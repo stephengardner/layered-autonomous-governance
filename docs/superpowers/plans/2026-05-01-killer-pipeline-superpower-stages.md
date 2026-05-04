@@ -293,6 +293,8 @@ The atom subject is `planning-pipeline-stage-implementations`; its policy field 
 
 - [ ] **Step 2: Add a reader in `src/runtime/planning-pipeline/policy.ts` mirroring the existing readers.**
 
+The reader is a NEW function, `readPipelineStageImplementationsPolicy`, that returns a `Map<stage_name, 'agentic' | 'single-shot'>`. It is intentionally separate from the existing `readPipelineStagesPolicy` (which returns `StageDescriptor[]` with `{name, principal_id}` fields and is consumed by the runner's stage-list construction) so the two policies stay independently versionable and the existing reader keeps its narrower contract. Task 6 (line 309) consumes the new reader's map and picks the matching adapter per stage at registry-construction time.
+
 - [ ] **Step 3: Test the reader with a stub policy atom.**
 
 - [ ] **Step 4: Commit.**
