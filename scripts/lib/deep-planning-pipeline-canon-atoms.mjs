@@ -243,10 +243,29 @@ export function buildDeepPlanningPipelineSpecs(operatorId) {
       policy: {
         subject: 'planning-pipeline-stage-implementations',
         scope: 'project',
-        implementations: DEFAULT_PIPELINE_STAGES.map((s) => ({
-          stage_name: s.name,
-          mode: DEFAULT_STAGE_IMPLEMENTATION_MODES[s.name],
-        })),
+        // Fail-fast guard: a stage in DEFAULT_PIPELINE_STAGES whose
+        // mode is missing from DEFAULT_STAGE_IMPLEMENTATION_MODES
+        // would silently emit an entry with mode=undefined, which the
+        // policy reader's fail-closed shape reduces to an empty map
+        // and the wiring layer treats as "stage not selected" -- a
+        // silent default-to-single-shot regardless of the operator's
+        // canon edit. The .mjs builders are NOT type-checked by tsc,
+        // so a string-literal drift between the two constants would
+        // not surface at build time. Throw at bootstrap-generation
+        // time instead so the failure is loud and traceable to the
+        // exact stage name that drifted.
+        implementations: DEFAULT_PIPELINE_STAGES.map((s) => {
+          const mode = DEFAULT_STAGE_IMPLEMENTATION_MODES[s.name];
+          if (mode !== 'agentic' && mode !== 'single-shot') {
+            throw new Error(
+              `DEFAULT_STAGE_IMPLEMENTATION_MODES is missing or invalid for stage `
+              + `'${s.name}' (got ${JSON.stringify(mode)}). Add an entry to `
+              + 'DEFAULT_STAGE_IMPLEMENTATION_MODES whose value is one of '
+              + "'agentic' | 'single-shot' before bootstrap.",
+            );
+          }
+          return { stage_name: s.name, mode };
+        }),
       },
       alternatives_rejected: [
         'Conflate the implementations list with pol-planning-pipeline-stages-default; couples two independent canon dimensions and forces a deployment that wants to keep the default ordering but flip one stage to agentic to reproduce the entire stages list',

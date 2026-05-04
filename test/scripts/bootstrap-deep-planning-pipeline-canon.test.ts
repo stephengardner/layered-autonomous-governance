@@ -110,6 +110,17 @@ describe('bootstrap-deep-planning-pipeline-canon specs', () => {
     expect(DEFAULT_STAGE_IMPLEMENTATION_MODES['review-stage']).toBe('single-shot');
     expect(DEFAULT_STAGE_IMPLEMENTATION_MODES['dispatch-stage']).toBe('single-shot');
   });
+
+  it('every default stage has a valid implementation mode (no undefined drift)', () => {
+    // Drift guard: the bootstrap builder throws if a DEFAULT_PIPELINE_STAGES
+    // entry lacks a corresponding DEFAULT_STAGE_IMPLEMENTATION_MODES entry.
+    // This test catches the same drift at test-time so a CI run rejects a
+    // commit that adds a stage without setting its default mode.
+    for (const stage of DEFAULT_PIPELINE_STAGES) {
+      const mode = DEFAULT_STAGE_IMPLEMENTATION_MODES[stage.name];
+      expect(['agentic', 'single-shot']).toContain(mode);
+    }
+  });
 });
 
 describe('bootstrap-deep-planning-pipeline-canon atom shapes', () => {

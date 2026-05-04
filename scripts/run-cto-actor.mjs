@@ -393,6 +393,29 @@ async function runDeepPipeline(args) {
   // halts the registry construction with a clear "not yet implemented"
   // diagnostic rather than silently downgrading.
   const AGENTIC_AVAILABLE = new Set(['brainstorm-stage']);
+
+  // Fail-fast preflight: implementation-policy entries whose
+  // stage_name does not match any resolved stage in the canon-ordered
+  // stages list are typos or canon drift, NOT a no-op. Without this
+  // guard a typo like 'brainstorrn-stage' would be silently dropped
+  // (the .filter below skips it) and the operator would see the
+  // single-shot path run while believing the agentic path was wired,
+  // which is exactly the silent-degradation failure mode the wiring
+  // layer's halt-on-unimplemented-agentic guard exists to prevent.
+  const resolvedStageNames = new Set(stages.stages.map((s) => s.name));
+  const unknownImplStages = [...stageImpls.implementations.keys()]
+    .filter((name) => !resolvedStageNames.has(name));
+  if (unknownImplStages.length > 0) {
+    console.error(
+      `ERROR: pol-planning-pipeline-stage-implementations atom `
+      + `${stageImpls.atomId ?? '(unknown)'} contains stage_name values not present `
+      + `in the resolved pipeline stages list: [${unknownImplStages.join(', ')}]. `
+      + 'Fix the stage_name values to match pol-planning-pipeline-stages-default '
+      + 'or update the stages-order policy to include them.',
+    );
+    process.exit(2);
+  }
+
   const wantsAgentic = stages.stages
     .filter((s) => stageImpls.implementations.get(s.name) === 'agentic')
     .map((s) => s.name);
