@@ -298,6 +298,52 @@ describe('mkPipelineStageEventAtom', () => {
       }),
     ).toThrow(/canon_atom_ids/);
   });
+
+  it('fails closed when canon-bound has no canonAtomIds', () => {
+    expect(() =>
+      mkPipelineStageEventAtom({
+        pipelineId: 'pipeline-abc' as AtomId,
+        stageName: 'brainstorm-stage',
+        principalId: 'brainstorm-actor' as PrincipalId,
+        correlationId: 'corr-1',
+        now: NOW,
+        transition: 'canon-bound',
+        durationMs: 50,
+        costUsd: 0,
+      }),
+    ).toThrow(/canon-bound.*non-empty canon_atom_ids/);
+  });
+
+  it('fails closed when canon-audit-complete has no verdict', () => {
+    expect(() =>
+      mkPipelineStageEventAtom({
+        pipelineId: 'pipeline-abc' as AtomId,
+        stageName: 'brainstorm-stage',
+        principalId: 'brainstorm-actor' as PrincipalId,
+        correlationId: 'corr-1',
+        now: NOW,
+        transition: 'canon-audit-complete',
+        durationMs: 50,
+        costUsd: 0,
+      }),
+    ).toThrow(/canon-audit-complete.*canon_audit_verdict/);
+  });
+
+  it('fails closed when agent-turn lacks agentTurnAtomId or turnIndex', () => {
+    expect(() =>
+      mkPipelineStageEventAtom({
+        pipelineId: 'pipeline-abc' as AtomId,
+        stageName: 'brainstorm-stage',
+        principalId: 'brainstorm-actor' as PrincipalId,
+        correlationId: 'corr-1',
+        now: NOW,
+        transition: 'agent-turn',
+        durationMs: 50,
+        costUsd: 0,
+        turnIndex: 0,
+      }),
+    ).toThrow(/agent-turn.*agent_turn_atom_id and turn_index/);
+  });
 });
 
 describe('mkPipelineFailedAtom', () => {

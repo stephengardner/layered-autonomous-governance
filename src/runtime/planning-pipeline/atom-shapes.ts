@@ -44,11 +44,11 @@ const TRANSITION = z.enum([
   'exit-failure',
   'hil-pause',
   'hil-resume',
-  // Killer-pipeline transitions for agentic stage adapters. Each preserves
-  // the existing event-atom shape; transition-specific payload lands on
-  // metadata. Adding new values here does not change legacy event-atom
-  // queries because the type discriminator is metadata.transition, not
-  // atom.type.
+  // Transition definitions for agentic stage adapters: each preserves
+  // the existing event-atom shape and places transition-specific payload
+  // on metadata. The type discriminator is metadata.transition, not
+  // atom.type, so adding values does not change legacy event-atom
+  // queries.
   'canon-bound',
   'canon-audit-complete',
   'agent-turn',
@@ -281,11 +281,32 @@ export interface MkPipelineStageEventAtomInput {
 
 export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): Atom {
   TRANSITION.parse(input.transition);
-  // Validate killer-pipeline payload shapes when the transition needs them.
-  // Fail-closed at mint time so a malformed agentic-stage adapter cannot
-  // smuggle an oversized canon list, an unknown verdict label, or a
-  // findings array past MAX_CITED_LIST. Mirrors the cite-list bounding
-  // pattern enforced for cited_atom_ids / cited_paths above.
+  // Fail-closed at mint time on transition-specific payload shape. A
+  // malformed adapter cannot smuggle an oversized canon list, an unknown
+  // verdict, an out-of-bound findings array, or skip a required field for
+  // its transition. Mirrors the cite-list bounding pattern enforced for
+  // cited_atom_ids / cited_paths above.
+  if (input.transition === 'canon-bound') {
+    if (input.canonAtomIds === undefined || input.canonAtomIds.length === 0) {
+      throw new Error(
+        `mkPipelineStageEventAtom: transition='canon-bound' requires non-empty canon_atom_ids`,
+      );
+    }
+  }
+  if (input.transition === 'canon-audit-complete') {
+    if (input.canonAuditVerdict === undefined) {
+      throw new Error(
+        `mkPipelineStageEventAtom: transition='canon-audit-complete' requires canon_audit_verdict`,
+      );
+    }
+  }
+  if (input.transition === 'agent-turn') {
+    if (input.agentTurnAtomId === undefined || input.turnIndex === undefined) {
+      throw new Error(
+        `mkPipelineStageEventAtom: transition='agent-turn' requires agent_turn_atom_id and turn_index`,
+      );
+    }
+  }
   if (input.canonAtomIds !== undefined && input.canonAtomIds.length > MAX_CITED_LIST) {
     throw new Error(
       `mkPipelineStageEventAtom: canon_atom_ids capped at ${MAX_CITED_LIST}`,
