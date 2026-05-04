@@ -42,6 +42,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PIPELINE_STAGES,
   DEFAULT_PIPELINE_MODE,
+  DEFAULT_STAGE_IMPLEMENTATION_MODES,
   PIPELINE_STAGE_HIL_DEFAULTS,
   buildAtomFromSpec,
   buildDeepPlanningPipelineAtoms,
@@ -51,6 +52,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import {
   readPipelineDefaultModePolicy,
   readPipelineStageHilPolicy,
+  readPipelineStageImplementationsPolicy,
   readPipelineStagesPolicy,
 } from '../../src/runtime/planning-pipeline/policy.js';
 import type { Atom } from '../../src/types.js';
@@ -69,6 +71,7 @@ describe('bootstrap-deep-planning-pipeline-canon specs', () => {
       'pol-pipeline-stage-hil-review-stage',
       'pol-pipeline-stage-hil-spec-stage',
       'pol-planning-pipeline-default-mode',
+      'pol-planning-pipeline-stage-implementations-default',
       'pol-planning-pipeline-stages-default',
     ]);
   });
@@ -98,6 +101,14 @@ describe('bootstrap-deep-planning-pipeline-canon specs', () => {
 
   it('default mode is single-pass per dev-indie-floor-org-ceiling', () => {
     expect(DEFAULT_PIPELINE_MODE).toBe('single-pass');
+  });
+
+  it('default per-stage implementation modes are single-shot for every stage', () => {
+    expect(DEFAULT_STAGE_IMPLEMENTATION_MODES['brainstorm-stage']).toBe('single-shot');
+    expect(DEFAULT_STAGE_IMPLEMENTATION_MODES['spec-stage']).toBe('single-shot');
+    expect(DEFAULT_STAGE_IMPLEMENTATION_MODES['plan-stage']).toBe('single-shot');
+    expect(DEFAULT_STAGE_IMPLEMENTATION_MODES['review-stage']).toBe('single-shot');
+    expect(DEFAULT_STAGE_IMPLEMENTATION_MODES['dispatch-stage']).toBe('single-shot');
   });
 });
 
@@ -173,14 +184,36 @@ describe('bootstrap-deep-planning-pipeline-canon atom shapes', () => {
     expect(result.mode).toBe('single-pass');
   });
 
+  it('pol-planning-pipeline-stage-implementations-default round-trips to single-shot for every stage', async () => {
+    const host = createMemoryHost();
+    const atom = findAtom(
+      buildDeepPlanningPipelineAtoms(OP),
+      'pol-planning-pipeline-stage-implementations-default',
+    );
+    expect(atom.type).toBe('directive');
+    expect(atom.layer).toBe('L3');
+    const policy = readPolicyBlock(atom);
+    expect(policy.subject).toBe('planning-pipeline-stage-implementations');
+    expect(policy.scope).toBe('project');
+    expect(policy.implementations).toHaveLength(5);
+    await host.atoms.put(atom);
+    const result = await readPipelineStageImplementationsPolicy(host, { scope: 'project' });
+    expect(result.atomId).toBe('pol-planning-pipeline-stage-implementations-default');
+    expect(result.implementations.get('brainstorm-stage')).toBe('single-shot');
+    expect(result.implementations.get('spec-stage')).toBe('single-shot');
+    expect(result.implementations.get('plan-stage')).toBe('single-shot');
+    expect(result.implementations.get('review-stage')).toBe('single-shot');
+    expect(result.implementations.get('dispatch-stage')).toBe('single-shot');
+  });
+
   it('every emitted atom carries operator-seeded provenance with derived_from', () => {
     // The substrate-shape directive `dev-deep-planning-pipeline` lived here as
     // an L0 stub before promotion; after the operator ratified it via /decide,
     // it moved to scripts/bootstrap-operator-directives.mjs (see that file's
-    // ATOMS array). The 7 atoms below are the policy + ordering atoms the
+    // ATOMS array). The 8 atoms below are the policy + ordering atoms the
     // pipeline substrate needs at the seed-time of any deployment.
     const atoms = buildDeepPlanningPipelineAtoms(OP);
-    expect(atoms.length).toBe(7);
+    expect(atoms.length).toBe(8);
     for (const atom of atoms) {
       expect(atom.provenance.kind).toBe('operator-seeded');
       expect(atom.provenance.derived_from.length).toBeGreaterThan(0);

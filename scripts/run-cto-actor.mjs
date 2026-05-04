@@ -196,9 +196,14 @@ async function runDeepPipeline(args) {
   // diagnostic instead of a module-not-found stacktrace.
   let runPipeline;
   let readPipelineStagesPolicy;
+  let readPipelineStageImplementationsPolicy;
   try {
     const mod = await import('../dist/runtime/planning-pipeline/index.js');
-    ({ runPipeline, readPipelineStagesPolicy } = mod);
+    ({
+      runPipeline,
+      readPipelineStagesPolicy,
+      readPipelineStageImplementationsPolicy,
+    } = mod);
   } catch (err) {
     console.error(
       'ERROR: --mode substrate-deep requires the planning-pipeline build. ' +
@@ -305,6 +310,20 @@ async function runDeepPipeline(args) {
   const { createDispatchStage } = await import('../dist/examples/planning-stages/dispatch/index.js');
   const { SubActorRegistry, runAuditor } = await import('../dist/runtime/actor-message/index.js');
 
+  // Read the per-stage adapter-mode policy. The map is the canon-
+  // selected adapter mode (agentic | single-shot) for each stage.
+  // Stages absent from the map default to single-shot per the
+  // indie-floor / dev-indie-floor-org-ceiling canon: a deployment that
+  // never seeds the bootstrap canon inherits known-cost defaults.
+  const stageImpls = await readPipelineStageImplementationsPolicy(host, { scope: 'project' });
+  if (stageImpls.atomId === null) {
+    console.warn(
+      '[cto-actor] pol-planning-pipeline-stage-implementations-default is not seeded; '
+      + 'every stage defaults to single-shot. Run scripts/bootstrap-deep-planning-pipeline-canon.mjs '
+      + 'to seed the canon, then flip a stage to agentic via a higher-priority canon edit.',
+    );
+  }
+
   // Wire the SubActorRegistry the dispatch-stage hands plans to.
   // V0 ships the auditor invoker (read-only, always safe to invoke);
   // additional invokers (code-author, future actors) are registered
@@ -353,13 +372,94 @@ async function runDeepPipeline(args) {
       + 'pass --invokers <path> to register code-author or other sub-actors.',
     );
   }
-  const stageRegistry = new Map([
+  // Single-shot adapters are the indie-floor default. Each entry maps
+  // stage_name -> reference adapter; unmapped stages halt loud.
+  const singleShotRegistry = new Map([
     ['brainstorm-stage', brainstormStage],
     ['spec-stage', specStage],
     ['plan-stage', planStage],
     ['review-stage', reviewStage],
     ['dispatch-stage', createDispatchStage(subActorRegistry)],
   ]);
+
+  // Track which stages the canon selected for the agentic mode. If any
+  // stage is agentic we lazily build the substrate primitives the
+  // agentic adapter requires (AgentLoop + WorkspaceProvider + BlobStore
+  // + Redactor); single-shot deployments pay zero cost for that wiring.
+  // T6 ships the agentic option for brainstorm-stage only; spec, plan,
+  // review, and dispatch fall back to single-shot regardless of the
+  // canon policy. T11-T13 deliver agentic adapters for the remaining
+  // stages; until then a canon entry of 'agentic' for those stages
+  // halts the registry construction with a clear "not yet implemented"
+  // diagnostic rather than silently downgrading.
+  const AGENTIC_AVAILABLE = new Set(['brainstorm-stage']);
+  const wantsAgentic = stages.stages
+    .filter((s) => stageImpls.implementations.get(s.name) === 'agentic')
+    .map((s) => s.name);
+
+  const unimplementedAgentic = wantsAgentic.filter((name) => !AGENTIC_AVAILABLE.has(name));
+  if (unimplementedAgentic.length > 0) {
+    console.error(
+      `ERROR: canon selects mode='agentic' for stages [${unimplementedAgentic.join(', ')}] `
+      + 'but no agentic adapter is registered for those stages. T6 ships agentic for '
+      + 'brainstorm-stage only; T11-T13 add agentic spec/plan/review. Until then, flip '
+      + 'those stages back to mode=\'single-shot\' via a higher-priority canon atom or '
+      + 'wait for the upstream stage to ship its agentic option.',
+    );
+    process.exit(2);
+  }
+
+  // Build the agentic adapter wiring lazily. The substrate primitives
+  // (ClaudeCodeAgentLoopAdapter, GitWorktreeProvider, FileBlobStore,
+  // RegexRedactor) are imported only when at least one stage selects
+  // agentic so a deployment that never opts in pays zero startup cost
+  // and never imports the agent-loop dependency tree.
+  const stageRegistry = new Map(singleShotRegistry);
+  if (wantsAgentic.length > 0) {
+    console.log(
+      `[cto-actor] canon-selected agentic adapters: [${wantsAgentic.join(', ')}]; `
+      + 'building AgentLoop + Workspace + BlobStore + Redactor substrate primitives.',
+    );
+    const { ClaudeCodeAgentLoopAdapter } = await import(
+      '../dist/examples/agent-loops/claude-code/index.js'
+    );
+    const { GitWorktreeProvider } = await import(
+      '../dist/examples/workspace-providers/git-worktree/index.js'
+    );
+    const { FileBlobStore } = await import('../dist/examples/blob-stores/file/index.js');
+    const { RegexRedactor } = await import('../dist/examples/redactors/regex-default/index.js');
+    const { buildAgenticBrainstormStage } = await import(
+      '../dist/examples/planning-stages/brainstorm/agentic.js'
+    );
+
+    // Wire the substrate primitives once and share them across every
+    // agentic stage that opts in. A deployment that wants per-stage
+    // overrides (e.g. a different blob root for spec-stage than for
+    // brainstorm-stage) ships its own driver; the indie floor walks
+    // the operator's repo as the workspace and stores blob payloads
+    // under the existing .lag/blobs/ tree.
+    const blobRoot = resolve(STATE_DIR, 'blobs');
+    const agentLoop = new ClaudeCodeAgentLoopAdapter({});
+    const workspaceProvider = new GitWorktreeProvider({
+      repoDir: REPO_ROOT,
+      copyCredsForRoles: ['lag-ceo'],
+    });
+    const blobStore = new FileBlobStore(blobRoot);
+    const redactor = new RegexRedactor();
+
+    if (wantsAgentic.includes('brainstorm-stage')) {
+      stageRegistry.set(
+        'brainstorm-stage',
+        buildAgenticBrainstormStage({
+          agentLoop,
+          workspaceProvider,
+          blobStore,
+          redactor,
+        }),
+      );
+    }
+  }
+
   const stageAdapters = [];
   const unresolvedStages = [];
   for (const s of stages.stages) {

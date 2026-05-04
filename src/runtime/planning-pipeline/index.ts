@@ -60,6 +60,7 @@ export {
   readPipelineStageHilPolicy,
   readPipelineDefaultModePolicy,
   readPipelineStageCostCapPolicy,
+  readPipelineStageImplementationsPolicy,
 } from './policy.js';
 export type {
   StageDescriptor,
@@ -67,6 +68,8 @@ export type {
   PipelineStageHilPolicyResult,
   PipelineDefaultModePolicyResult,
   PipelineStageCostCapPolicyResult,
+  PipelineStageImplementationsPolicyResult,
+  PipelineStageImplementationMode,
 } from './policy.js';
 
 export {

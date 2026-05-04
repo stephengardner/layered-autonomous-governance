@@ -4,6 +4,7 @@ import {
   readPipelineStageHilPolicy,
   readPipelineDefaultModePolicy,
   readPipelineStageCostCapPolicy,
+  readPipelineStageImplementationsPolicy,
 } from '../../../src/runtime/planning-pipeline/policy.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../../src/types.js';
@@ -297,5 +298,154 @@ describe('readPipelineStageCostCapPolicy', () => {
     );
     const result = await readPipelineStageCostCapPolicy(host, 'spec-stage');
     expect(result.cap_usd).toBeNull();
+  });
+});
+
+describe('readPipelineStageImplementationsPolicy', () => {
+  it('returns empty map when no policy atom is present (caller falls back to single-shot)', async () => {
+    const host = createMemoryHost();
+    const result = await readPipelineStageImplementationsPolicy(host, { scope: 'project' });
+    expect(result.implementations.size).toBe(0);
+    expect(result.atomId).toBeNull();
+  });
+
+  it('returns the configured per-stage implementation modes', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-stage-implementations-default', {
+        subject: 'planning-pipeline-stage-implementations',
+        scope: 'project',
+        implementations: [
+          { stage_name: 'brainstorm-stage', mode: 'agentic' },
+          { stage_name: 'spec-stage', mode: 'single-shot' },
+        ],
+      }),
+    );
+    const result = await readPipelineStageImplementationsPolicy(host, { scope: 'project' });
+    expect(result.implementations.get('brainstorm-stage')).toBe('agentic');
+    expect(result.implementations.get('spec-stage')).toBe('single-shot');
+    expect(result.atomId).toBe('pol-planning-pipeline-stage-implementations-default');
+  });
+
+  it('fail-closed: malformed implementations array returns empty map', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-stage-implementations-default', {
+        subject: 'planning-pipeline-stage-implementations',
+        scope: 'project',
+        implementations: 'not-an-array',
+      }),
+    );
+    const result = await readPipelineStageImplementationsPolicy(host, { scope: 'project' });
+    expect(result.implementations.size).toBe(0);
+    expect(result.atomId).toBe('pol-planning-pipeline-stage-implementations-default');
+  });
+
+  it('fail-closed: entry missing mode returns empty map', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-stage-implementations-default', {
+        subject: 'planning-pipeline-stage-implementations',
+        scope: 'project',
+        implementations: [{ stage_name: 'brainstorm-stage' }],
+      }),
+    );
+    const result = await readPipelineStageImplementationsPolicy(host, { scope: 'project' });
+    expect(result.implementations.size).toBe(0);
+  });
+
+  it('fail-closed: unknown mode value returns empty map', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-stage-implementations-default', {
+        subject: 'planning-pipeline-stage-implementations',
+        scope: 'project',
+        implementations: [
+          { stage_name: 'brainstorm-stage', mode: 'turbo-agentic' },
+        ],
+      }),
+    );
+    const result = await readPipelineStageImplementationsPolicy(host, { scope: 'project' });
+    expect(result.implementations.size).toBe(0);
+  });
+
+  it('fail-closed: duplicate stage names return empty map', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-stage-implementations-default', {
+        subject: 'planning-pipeline-stage-implementations',
+        scope: 'project',
+        implementations: [
+          { stage_name: 'brainstorm-stage', mode: 'agentic' },
+          { stage_name: 'brainstorm-stage', mode: 'single-shot' },
+        ],
+      }),
+    );
+    const result = await readPipelineStageImplementationsPolicy(host, { scope: 'project' });
+    expect(result.implementations.size).toBe(0);
+  });
+
+  it('source-rank arbitration: principal scope beats project scope when ctx.scope matches', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-stage-implementations-project', {
+        subject: 'planning-pipeline-stage-implementations',
+        scope: 'project',
+        implementations: [{ stage_name: 'brainstorm-stage', mode: 'single-shot' }],
+      }),
+    );
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-stage-implementations-cto', {
+        subject: 'planning-pipeline-stage-implementations',
+        scope: 'principal:cto-actor',
+        implementations: [{ stage_name: 'brainstorm-stage', mode: 'agentic' }],
+      }),
+    );
+    const result = await readPipelineStageImplementationsPolicy(host, {
+      scope: 'principal:cto-actor',
+    });
+    expect(result.implementations.get('brainstorm-stage')).toBe('agentic');
+  });
+
+  it('principal-scoped policy does NOT leak into project-scope query', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-stage-implementations-project', {
+        subject: 'planning-pipeline-stage-implementations',
+        scope: 'project',
+        implementations: [{ stage_name: 'brainstorm-stage', mode: 'single-shot' }],
+      }),
+    );
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-stage-implementations-cto', {
+        subject: 'planning-pipeline-stage-implementations',
+        scope: 'principal:cto-actor',
+        implementations: [{ stage_name: 'brainstorm-stage', mode: 'agentic' }],
+      }),
+    );
+    const result = await readPipelineStageImplementationsPolicy(host, { scope: 'project' });
+    expect(result.implementations.get('brainstorm-stage')).toBe('single-shot');
+  });
+
+  it('skips superseded atoms', async () => {
+    const host = createMemoryHost();
+    const superseded: Atom = {
+      ...policyAtom('pol-planning-pipeline-stage-implementations-old', {
+        subject: 'planning-pipeline-stage-implementations',
+        scope: 'project',
+        implementations: [{ stage_name: 'brainstorm-stage', mode: 'agentic' }],
+      }),
+      superseded_by: ['pol-planning-pipeline-stage-implementations-new' as AtomId],
+    };
+    await host.atoms.put(superseded);
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-stage-implementations-new', {
+        subject: 'planning-pipeline-stage-implementations',
+        scope: 'project',
+        implementations: [{ stage_name: 'brainstorm-stage', mode: 'single-shot' }],
+      }),
+    );
+    const result = await readPipelineStageImplementationsPolicy(host, { scope: 'project' });
+    expect(result.implementations.get('brainstorm-stage')).toBe('single-shot');
   });
 });
