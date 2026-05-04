@@ -39,6 +39,19 @@ export interface PipelineStageCostCapPolicyResult {
   readonly cap_usd: number | null;
 }
 
+/** Modes a stage adapter can be selected as. */
+export type PipelineStageImplementationMode = 'agentic' | 'single-shot';
+
+export interface PipelineStageImplementationsPolicyResult {
+  /**
+   * Map of stage_name to selected adapter mode. A stage absent from the
+   * map has no canon selection; the caller applies its own default for
+   * absent entries.
+   */
+  readonly implementations: ReadonlyMap<string, PipelineStageImplementationMode>;
+  readonly atomId: string | null;
+}
+
 async function* iteratePolicyAtoms(host: Host): AsyncGenerator<Atom> {
   let totalSeen = 0;
   let cursor: string | undefined;
@@ -185,4 +198,59 @@ export async function readPipelineStageCostCapPolicy(
     if (typeof cap === 'number' && Number.isFinite(cap) && cap > 0) return { cap_usd: cap };
   }
   return { cap_usd: null };
+}
+
+/**
+ * Read the per-stage implementation-mode policy and return a map of
+ * stage_name to 'agentic' | 'single-shot'.
+ *
+ * Intentionally separate from readPipelineStagesPolicy: the stages
+ * reader resolves WHICH stages run in WHAT order; this reader resolves
+ * WHICH adapter IMPLEMENTATION runs each stage. Conflating them would
+ * couple two independent canon dimensions: a deployment that wants to
+ * keep the default stage ordering but flip one stage's adapter mode
+ * would have to reproduce the entire stage list to alter the mode.
+ *
+ * Fail-closed: malformed entries collapse to an empty map. The caller
+ * decides the default mode for stages absent from the returned map.
+ */
+export async function readPipelineStageImplementationsPolicy(
+  host: Host,
+  ctx: { readonly scope: string },
+): Promise<PipelineStageImplementationsPolicyResult> {
+  let best: { atom: Atom; depth: number } | null = null;
+  for await (const atom of iteratePolicyAtoms(host)) {
+    const policy = readPolicy(atom);
+    if (policy?.subject !== 'planning-pipeline-stage-implementations') continue;
+    if (!scopeApplies(policy.scope, ctx.scope)) continue;
+    const depth = scopeDepth(policy.scope);
+    if (best === null || depth > best.depth) best = { atom, depth };
+  }
+  const empty: ReadonlyMap<string, PipelineStageImplementationMode> = new Map();
+  if (best === null) return { implementations: empty, atomId: null };
+  const policy = readPolicy(best.atom);
+  if (policy === null) return { implementations: empty, atomId: null };
+  const rawImpls = policy.implementations;
+  if (!Array.isArray(rawImpls)) {
+    return { implementations: empty, atomId: String(best.atom.id) };
+  }
+  const out = new Map<string, PipelineStageImplementationMode>();
+  for (const entry of rawImpls) {
+    if (entry === null || typeof entry !== 'object') {
+      return { implementations: empty, atomId: String(best.atom.id) };
+    }
+    const obj = entry as Record<string, unknown>;
+    const stageName = typeof obj.stage_name === 'string' ? obj.stage_name : null;
+    const rawMode = obj.mode;
+    const mode: PipelineStageImplementationMode | null =
+      rawMode === 'agentic' || rawMode === 'single-shot' ? rawMode : null;
+    if (stageName === null || mode === null) {
+      return { implementations: empty, atomId: String(best.atom.id) };
+    }
+    if (out.has(stageName)) {
+      return { implementations: empty, atomId: String(best.atom.id) };
+    }
+    out.set(stageName, mode);
+  }
+  return { implementations: out, atomId: String(best.atom.id) };
 }

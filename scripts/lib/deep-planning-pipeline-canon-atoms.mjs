@@ -1,4 +1,4 @@
-// Pure builders for the seven L3 policy + ordering atoms the deep
+// Pure builders for the eight L3 policy + ordering atoms the deep
 // planning pipeline seeds into canon. The CLI wrapper
 // (scripts/bootstrap-deep-planning-pipeline-canon.mjs) shells out to
 // this module so the test suite can build atoms off the same data
@@ -15,6 +15,11 @@
 //     'single-pass' so a solo developer does not pay the multi-stage
 //     cost on a one-line README fix. Read by
 //     readPipelineDefaultModePolicy.
+//   - pol-planning-pipeline-stage-implementations-default: per-stage
+//     adapter selection (agentic vs single-shot). Indie-floor default
+//     is single-shot for every stage; flipping a stage to agentic is
+//     a higher-priority canon edit. Read by
+//     readPipelineStageImplementationsPolicy.
 //
 // The substrate-shape directive `dev-deep-planning-pipeline` lived
 // here as an L0 pending_review stub before operator promotion. After
@@ -71,6 +76,26 @@ export const PIPELINE_STAGE_HIL_DEFAULTS = Object.freeze({
  * atom rather than a code change.
  */
 export const DEFAULT_PIPELINE_MODE = 'single-pass';
+
+/**
+ * Indie-floor default per-stage adapter mode. Every stage ships at
+ * 'single-shot' so a deployment inherits the existing host.llm.judge
+ * behavior on first install. Flipping a stage to 'agentic' is a
+ * conscious canon edit (higher-priority pol- atom) per
+ * dev-indie-floor-org-ceiling: the more expensive path is opt-in.
+ *
+ * Today only brainstorm-stage has an agentic adapter shipped (PR
+ * #280); the other four entries reserve their slot so an operator's
+ * canon edit cannot silently activate an adapter that does not yet
+ * exist (the wiring layer halts loud on a missing adapter).
+ */
+export const DEFAULT_STAGE_IMPLEMENTATION_MODES = Object.freeze({
+  'brainstorm-stage': 'single-shot',
+  'spec-stage': 'single-shot',
+  'plan-stage': 'single-shot',
+  'review-stage': 'single-shot',
+  'dispatch-stage': 'single-shot',
+});
 
 function ensureOperatorId(operatorId, label) {
   if (typeof operatorId !== 'string' || operatorId.length === 0) {
@@ -198,6 +223,61 @@ export function buildDeepPlanningPipelineSpecs(operatorId) {
         'Sound at 3 months: a deployment that wants substrate-deep by default writes a '
         + 'higher-priority canon atom; arbitration resolves it via the existing source-rank '
         + 'formula. The default-mode atom is a feature flag with a deterministic default.',
+      derived_from: sharedDerivedFrom,
+    },
+    {
+      id: 'pol-planning-pipeline-stage-implementations-default',
+      type: 'directive',
+      layer: 'L3',
+      content:
+        'Default per-stage adapter selection for the deep planning pipeline. Every stage '
+        + "ships at 'single-shot' (the existing host.llm.judge behavior) so a fresh deployment "
+        + "inherits known-cost defaults. Flipping a stage to 'agentic' (a dispatched agent-loop "
+        + 'session bundled with a superpowers skill) is a conscious canon edit per '
+        + 'dev-indie-floor-org-ceiling: the higher-cost, higher-rigor path is opt-in. Today only '
+        + 'brainstorm-stage has an agentic adapter shipped; the other four entries reserve their '
+        + 'slot so an operator-edit that activates an unimplemented adapter halts loud at '
+        + 'registry-construction time rather than silently falling back. Read by '
+        + 'readPipelineStageImplementationsPolicy; resolved alongside readPipelineStagesPolicy '
+        + 'at registry-construction in run-cto-actor.mjs (and its peers).',
+      policy: {
+        subject: 'planning-pipeline-stage-implementations',
+        scope: 'project',
+        // Fail-fast guard: a stage in DEFAULT_PIPELINE_STAGES whose
+        // mode is missing from DEFAULT_STAGE_IMPLEMENTATION_MODES
+        // would silently emit an entry with mode=undefined, which the
+        // policy reader's fail-closed shape reduces to an empty map
+        // and the wiring layer treats as "stage not selected" -- a
+        // silent default-to-single-shot regardless of the operator's
+        // canon edit. The .mjs builders are NOT type-checked by tsc,
+        // so a string-literal drift between the two constants would
+        // not surface at build time. Throw at bootstrap-generation
+        // time instead so the failure is loud and traceable to the
+        // exact stage name that drifted.
+        implementations: DEFAULT_PIPELINE_STAGES.map((s) => {
+          const mode = DEFAULT_STAGE_IMPLEMENTATION_MODES[s.name];
+          if (mode !== 'agentic' && mode !== 'single-shot') {
+            throw new Error(
+              `DEFAULT_STAGE_IMPLEMENTATION_MODES is missing or invalid for stage `
+              + `'${s.name}' (got ${JSON.stringify(mode)}). Add an entry to `
+              + 'DEFAULT_STAGE_IMPLEMENTATION_MODES whose value is one of '
+              + "'agentic' | 'single-shot' before bootstrap.",
+            );
+          }
+          return { stage_name: s.name, mode };
+        }),
+      },
+      alternatives_rejected: [
+        'Conflate the implementations list with pol-planning-pipeline-stages-default; couples two independent canon dimensions and forces a deployment that wants to keep the default ordering but flip one stage to agentic to reproduce the entire stages list',
+        'Default every stage to agentic; trades the indie-floor cost story for a more rigorous default that surprises a solo developer running a typo-fix',
+        'Hardcode the per-stage implementation choice in run-cto-actor.mjs; loses the canon-edit knob and forces a code change for what is a deployment-policy decision',
+      ],
+      what_breaks_if_revisit:
+        'Sound at 3 months: per-stage entries are additive (a future agentic spec-stage ships '
+        + 'with a canon atom flipping spec-stage to agentic; the canon-default atom requires no '
+        + 'edit). Switching a deployment to agentic-by-default is a higher-priority pol- atom '
+        + 'visible in the diff. The wiring layer fail-loud on a stage whose declared adapter is '
+        + 'not registered prevents silent drift between policy and implementation.',
       derived_from: sharedDerivedFrom,
     },
   ];
