@@ -66,7 +66,7 @@ Each "Concrete steps" entry is one action (2-5 minutes):
 
 ## Body shape
 
-Each plan body is markdown with three sections:
+Each plan body is markdown with two sections:
 
 ```markdown
 ## Why this
@@ -81,13 +81,13 @@ honours the operator-intent literally.>
    output>
 2. **<exact action>** - ...
 3. ...
-
-## Provenance
-
-- `derived_from`: <list of atom-ids from the verified set>
-- `principles_applied`: <subset of derived_from showing which atoms
-  the plan claims to satisfy>
 ```
+
+Provenance is recorded ONLY in the top-level JSON fields
+`derived_from` and `principles_applied`, NOT inside `body`. Atom-id
+citations never appear in body prose; the citation fence is
+schema-level so the substrate-mediated audit can walk them without
+parsing markdown.
 
 ## Output contract
 
@@ -148,8 +148,9 @@ Self-check:
 - Is `principles_applied` a subset of `derived_from`?
 - Is `delegation.sub_actor_principal_id` in the verified sub-actor
   set?
-- Does each `body` have "Why this", "Concrete steps", and
-  "Provenance" sections?
+- Does each `body` have "Why this" and "Concrete steps" sections,
+  with provenance recorded ONLY in the top-level `derived_from` and
+  `principles_applied` fields and NOT inside body prose?
 - Are the steps bite-sized and concrete (exact file paths, exact
   commands, no placeholders)?
 - Are the alternatives_rejected substantively distinct, with trade-
