@@ -247,7 +247,7 @@ Implementation: try `~/.claude/plugins/cache/claude-plugins-official/superpowers
 
 - [ ] **Step 4: Vendor the brainstorming skill content into `examples/planning-stages/skills/brainstorming.md`.**
 
-Copy the relevant content from the operator's plugin cache (the SKILL.md content shown in this session). Include only the parts a stage-running agent needs: the process, the design-for-isolation guidelines, and the visual-companion section.
+Copy the relevant content from the operator's plugin cache (`superpowers:brainstorming` SKILL.md). Include only the parts a stage-running agent needs: the process, the design-for-isolation guidelines, and the visual-companion section.
 
 - [ ] **Step 5: Document the README + commit.**
 

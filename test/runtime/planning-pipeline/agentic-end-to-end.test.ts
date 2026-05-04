@@ -24,10 +24,8 @@ import { describe, expect, it } from 'vitest';
 import { runPipeline } from '../../../src/runtime/planning-pipeline/index.js';
 import { buildAgenticBrainstormStage } from '../../../examples/planning-stages/brainstorm/agentic.js';
 import { brainstormPayloadSchema } from '../../../examples/planning-stages/brainstorm/index.js';
-import type {
-  AgentLoopAdapter,
-  PlanningStage,
-} from '../../../src/substrate/agent-loop.js';
+import type { AgentLoopAdapter } from '../../../src/substrate/agent-loop.js';
+import type { PlanningStage } from '../../../src/runtime/planning-pipeline/types.js';
 import type {
   Atom,
   AtomId,

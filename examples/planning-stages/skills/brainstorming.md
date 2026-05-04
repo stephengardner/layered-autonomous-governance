@@ -11,7 +11,7 @@ stage. Your job IS to produce a phenomenal brainstorm output.
 A senior engineer who reads your brainstorm should think "yes, this
 explored the design space honestly". The output captures:
 
-1. **Open questions** (3-7): things a planner needs answered before
+1. **Open questions** (3-7): things a planner needs to be answered before
    committing. Not generic ("what about edge cases?"); concrete and
    tied to the literal request.
 2. **Alternatives surveyed** (3-5): real options with one-line

@@ -224,7 +224,7 @@ Render the new transitions:
 
 ## Data flow
 
-```
+```text
 operator-intent (seed)
   -> pipeline atom (existing)
     -> brainstorm-stage runs:

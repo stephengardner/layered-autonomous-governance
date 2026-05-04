@@ -273,11 +273,15 @@ export interface RunStageAgentLoopResult<TOut> {
  */
 async function resolveApplicableCanon(
   host: Host,
-  _principal: PrincipalId,
 ): Promise<{
   readonly atomIds: ReadonlyArray<AtomId>;
   readonly atoms: ReadonlyArray<Atom>;
 }> {
+  // Per-principal canon filtering is reserved for a follow-up: a future
+  // host.canon.applicable seam will accept a PrincipalId and narrow the
+  // result to scope-applicable directives. Until that seam lands, this
+  // helper returns all clean, non-superseded L3 directives so the
+  // call shape can stay stable when the seam adds the principal arg.
   const PAGE_SIZE = 200;
   const MAX_SCAN = 5_000;
   const atoms: Atom[] = [];
@@ -508,9 +512,10 @@ export async function runStageAgentLoop<TOut>(
   const t0 = nowMs();
 
   // 1. Resolve applicable canon for the stage principal at project scope.
+  // Per-principal narrowing is a substrate follow-up; today the resolver
+  // returns all clean L3 directives.
   const { atomIds: canonAtomIdsAll } = await resolveApplicableCanon(
     input.stageInput.host,
-    input.stagePrincipal,
   );
   const canonAtomIds = canonAtomIdsAll.slice(0, MAX_CANON_BOUND_LIST);
 

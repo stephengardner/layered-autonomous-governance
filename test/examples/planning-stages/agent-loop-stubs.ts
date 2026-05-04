@@ -12,6 +12,7 @@
  * imported only by sibling test files.
  */
 
+import { createHash } from 'node:crypto';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
 import {
   blobRefFromHash,
@@ -199,12 +200,7 @@ export function makeStubHostBundle(): {
     async put(content) {
       const buf =
         typeof content === 'string' ? Buffer.from(content) : content;
-      return blobRefFromHash(
-        require('node:crypto')
-          .createHash('sha256')
-          .update(buf)
-          .digest('hex'),
-      );
+      return blobRefFromHash(createHash('sha256').update(buf).digest('hex'));
     },
     async get() {
       return Buffer.from('');
