@@ -120,8 +120,9 @@ matching this schema:
 
 - `plans`: 1-5 entries. A single coherent change is one entry; multi-
   step work that branches into independent sub-changes can split.
-- `derived_from`: at least one atom-id, every id from the verified
-  citation set, capped at the substrate's MAX_CITED_LIST.
+- `derived_from`: at least one atom-id; every id MUST be drawn from
+  the verified citation set (OMIT rather than guess); capped at the
+  substrate's MAX_CITED_LIST.
 - `principles_applied`: a subset of `derived_from`.
 - `alternatives_rejected`: substantively different approaches with
   one-line trade-off reasons. NOT "do it the right way vs do it the
