@@ -92,6 +92,18 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       const startedAt = new Date().toISOString();
       const sessionId = `agent-session-${randomBytes(6).toString('hex')}` as AtomId;
       const sessionAtom: Atom = mkAtom(sessionId, 'agent-session', input.principal, [], {
+        // Top-level shadow keys mirror nested `agent_session` fields so
+        // the LAG Console's `listActiveSessions` projection (which reads
+        // top-level `metadata.session_id` / `started_at` / `ended_at` /
+        // `terminal_state`) sees adapter-written sessions uniformly with
+        // the operator-pulse pathway in `scripts/lib/operator-claude-session.mjs`.
+        // Nested `agent_session.*` remains canonical for substrate consumers;
+        // top-level keys are projection-compat shadows. Note: Console reads
+        // `ended_at` while the substrate canonicalizes `completed_at`.
+        session_id: sessionId,
+        started_at: startedAt,
+        ended_at: startedAt,
+        terminal_state: 'aborted',
         agent_session: {
           model_id: 'claude-opus-4-7',
           adapter_id: 'claude-code-agent-loop',
@@ -124,7 +136,17 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
     const sessionId = `agent-session-${randomBytes(6).toString('hex')}` as AtomId;
+    // Open the session atom with top-level shadow keys mirroring the
+    // nested `agent_session` fields. Substrate consumers continue to
+    // read the nested shape; the Console's `listActiveSessions`
+    // projection reads top-level `metadata.session_id` / `started_at`
+    // / `ended_at` / `terminal_state`. `ended_at` is omitted at session
+    // start so the projection treats the session as live; the finally
+    // block writes `ended_at` on session close.
     const sessionAtom: Atom = mkAtom(sessionId, 'agent-session', input.principal, [], {
+      session_id: sessionId,
+      started_at: startedAt,
+      terminal_state: 'completed',
       agent_session: {
         model_id: 'claude-opus-4-7',
         adapter_id: 'claude-code-agent-loop',
@@ -269,7 +291,17 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
           tool_calls: [],
           latency_ms: 0,
         };
-        const turnAtom: Atom = mkAtom(turnId, 'agent-turn', input.principal, [sessionId], { agent_turn: turnMeta });
+        // Top-level `session_id` shadow keeps the LAG Console's
+        // `listActiveSessions` projection (which reads
+        // `metadata.session_id` to correlate turns with sessions) in
+        // step with the operator-pulse path in
+        // `scripts/lib/operator-claude-session.mjs`. Nested
+        // `agent_turn.session_atom_id` stays canonical for substrate
+        // consumers.
+        const turnAtom: Atom = mkAtom(turnId, 'agent-turn', input.principal, [sessionId], {
+          session_id: sessionId,
+          agent_turn: turnMeta,
+        });
         await input.host.atoms.put(turnAtom);
         turnAtomIds.push(turnId);
         return turnId;
@@ -558,9 +590,21 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
         }
       }
       const completedAt = new Date().toISOString();
+      const finalTerminalState = kind === 'completed' ? 'completed' : kind;
       try {
         await input.host.atoms.update(sessionId, {
           metadata: {
+            // Top-level shadow keys mirror the nested fields on close
+            // so the LAG Console's `listActiveSessions` projection
+            // sees `ended_at` + the final `terminal_state` and de-lists
+            // the session from the active set. Note the name shift:
+            // substrate canonicalizes `completed_at`, Console reads
+            // `ended_at` -- both refer to the same concept and are
+            // written here.
+            session_id: sessionId,
+            started_at: startedAt,
+            ended_at: completedAt,
+            terminal_state: finalTerminalState,
             agent_session: {
               // Prefer the model the CLI's `system` event reported (so
               // operator CLIs that auto-route to a different default
@@ -572,7 +616,7 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
               workspace_id: input.workspace.id,
               started_at: startedAt,
               completed_at: completedAt,
-              terminal_state: kind === 'completed' ? 'completed' : kind,
+              terminal_state: finalTerminalState,
               replay_tier: input.replayTier,
               budget_consumed: {
                 turns: turnAtomIds.length,
