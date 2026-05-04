@@ -91,3 +91,9 @@ NUL
 /scripts/reply-and-resolve-pr*.mjs
 /scripts/reply-and-resolve-cr.mjs
 /apps/console/*.png
+
+# Per-launcher PID record for the Console dev-servers (tsx watch + vite).
+# Written by scripts/dev-server-with-pid.mjs at start, removed at clean exit;
+# scripts/dev-server-cleanup.mjs reads it as the (b) pre-flight kill path.
+# Always per-worktree, never tracked.
+/apps/console/.lag-dev-servers.pid.json

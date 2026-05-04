@@ -5,9 +5,10 @@
   "type": "module",
   "description": "LAG Console - web app rendering the governance substrate (principals, canon, activities, plans). Read-only v1; portable to Tauri.",
   "scripts": {
+    "predev": "node ../../scripts/dev-server-cleanup.mjs",
     "dev": "concurrently -k -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
-    "dev:web": "vite",
-    "dev:server": "tsx watch server/index.ts",
+    "dev:web": "node ../../scripts/dev-server-with-pid.mjs vite",
+    "dev:server": "node ../../scripts/dev-server-with-pid.mjs tsx watch server/index.ts",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
