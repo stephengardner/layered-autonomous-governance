@@ -60,11 +60,11 @@ unauthorised mutation". The verdict captures:
 - **Verify the review-stage gate.** When the upstream review-report
   is not clean (audit_status !== 'clean'), reject UNLESS a
   pipeline-resume atom for the review-stage is present in seedAtomIds
-  AND the resume atom's principal_id is an allowed_resumer per the
+  AND the resume atom's principalId is an allowed_resumer per the
   per-stage HIL policy. Treat the gate as cleared ONLY when both
   conditions hold; atom presence alone is insufficient. The resume
   entrypoint validates the signer at write time, but the dispatch
-  agent re-checks the principal_id against the allowlist before
+  agent re-checks the principalId against the allowlist before
   approving so a misrouted resume atom cannot bypass the HIL gate.
 - **Default-deny.** When you cannot verify a check (atom not on disk,
   citation set silently empty, envelope field missing), reject the
