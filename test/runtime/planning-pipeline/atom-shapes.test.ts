@@ -299,7 +299,10 @@ describe('mkPipelineStageEventAtom', () => {
     ).toThrow(/canon_atom_ids/);
   });
 
-  it('fails closed when canon-bound has no canonAtomIds', () => {
+  it('fails closed when canon-bound has no canonAtomIds field at all (defined-but-empty is OK)', () => {
+    // canon-bound REQUIRES canonAtomIds defined; an absent field is a
+    // half-formed mint. An empty list is a legitimate state (the
+    // principal has no applicable canon at this scope) and is allowed.
     expect(() =>
       mkPipelineStageEventAtom({
         pipelineId: 'pipeline-abc' as AtomId,
@@ -311,7 +314,24 @@ describe('mkPipelineStageEventAtom', () => {
         durationMs: 50,
         costUsd: 0,
       }),
-    ).toThrow(/canon-bound.*non-empty canon_atom_ids/);
+    ).toThrow(/canon-bound.*canon_atom_ids/);
+  });
+
+  it('accepts canon-bound with an empty canonAtomIds list', () => {
+    const atom = mkPipelineStageEventAtom({
+      pipelineId: 'pipeline-abc' as AtomId,
+      stageName: 'brainstorm-stage',
+      principalId: 'brainstorm-actor' as PrincipalId,
+      correlationId: 'corr-1',
+      now: NOW,
+      transition: 'canon-bound',
+      durationMs: 50,
+      costUsd: 0,
+      canonAtomIds: [],
+    });
+    expect(
+      (atom.metadata as { canon_atom_ids: ReadonlyArray<string> }).canon_atom_ids,
+    ).toEqual([]);
   });
 
   it('fails closed when canon-audit-complete has no verdict', () => {

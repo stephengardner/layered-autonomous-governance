@@ -77,8 +77,9 @@ function buildBrainstormPrompt(opts: {
   readonly skillBundle: string;
   readonly stageInput: StageInput<unknown>;
   readonly canonAtomIds: ReadonlyArray<string>;
+  readonly stagePrincipal: PrincipalId;
 }): string {
-  const { skillBundle, stageInput, canonAtomIds } = opts;
+  const { skillBundle, stageInput, canonAtomIds, stagePrincipal } = opts;
   const seedAtomIds = stageInput.seedAtomIds.map(String).join(', ') || '(none)';
   const verifiedCited = stageInput.verifiedCitedAtomIds.map(String).join(', ') || '(none)';
   return [
@@ -90,7 +91,11 @@ function buildBrainstormPrompt(opts: {
     '',
     `- pipeline_id: ${String(stageInput.pipelineId)}`,
     `- correlation_id: ${stageInput.correlationId}`,
-    `- principal: brainstorm-actor`,
+    // Use the resolved principal so an override via config.principal stays
+    // in sync with the canon/tool-policy identity the actor actually runs
+    // under. Hardcoding 'brainstorm-actor' would desync the prompt from
+    // the resolved identity at lines 159 and 173.
+    `- principal: ${String(stagePrincipal)}`,
     `- seed atom ids: ${seedAtomIds}`,
     `- canon directives applicable: ${canonAtomIds.length} (you have read access via Read on .lag/atoms/)`,
     `- verified citation set (forward-compat, brainstorm prose should not embed atom: citations): ${verifiedCited}`,
@@ -172,11 +177,12 @@ export function buildAgenticBrainstormStage(
       stageName: 'brainstorm-stage',
       stagePrincipal,
       skillBundle,
-      promptBuilder: ({ skillBundle: sb, stageInput, canonAtomIds }) =>
+      promptBuilder: ({ skillBundle: sb, stageInput, canonAtomIds, stagePrincipal: sp }) =>
         buildBrainstormPrompt({
           skillBundle: sb,
           stageInput,
           canonAtomIds: canonAtomIds.map(String),
+          stagePrincipal: sp,
         }),
       outputSchema: brainstormPayloadSchema,
       agentLoop: config.agentLoop,

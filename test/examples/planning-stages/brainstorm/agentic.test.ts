@@ -135,4 +135,59 @@ describe('agenticBrainstormStage', () => {
     });
     expect(typeof stage.audit).toBe('function');
   });
+
+  it('threads config.principal into the prompt so the override stays in sync with the actor identity', async () => {
+    const { host, blobStore, redactor, workspaceProvider } = makeStubHostBundle();
+    const customPrincipal = 'custom-brainstorm-actor' as PrincipalId;
+    const recorder: { lastInput?: import('../../../../src/substrate/agent-loop.js').AgentLoopInput } = {};
+    let runIdx = 0;
+    const sequencingAdapter: AgentLoopAdapter = {
+      capabilities: {
+        tracks_cost: true,
+        supports_signal: true,
+        classify_failure: () => 'structural',
+      },
+      async run(input) {
+        if (runIdx === 0) {
+          recorder.lastInput = input;
+        }
+        const stub = makeStubAdapter({
+          outputs: [
+            JSON.stringify({
+              open_questions: ['q'],
+              alternatives_surveyed: [
+                { option: 'a', rejection_reason: 'r' },
+                { option: 'b', rejection_reason: 'r' },
+              ],
+              decision_points: ['d'],
+              cost_usd: 0,
+            }),
+          ],
+        });
+        const auditStub = makeStubAdapter({
+          outputs: [JSON.stringify({ verdict: 'approved', findings: [] })],
+        });
+        const a = runIdx === 0 ? stub : auditStub;
+        runIdx++;
+        return a.run(input);
+      },
+    };
+
+    const stage = buildAgenticBrainstormStage({
+      agentLoop: sequencingAdapter,
+      workspaceProvider,
+      blobStore,
+      redactor,
+      principal: customPrincipal,
+    });
+    await stage.run(makeStageInput(host));
+
+    // The brainstorm-prompt embeds the resolved principal id; the
+    // hardcoded literal 'brainstorm-actor' must NOT appear when the
+    // caller supplied an override.
+    const prompt = recorder.lastInput?.task.successCriteria ?? '';
+    expect(prompt).toContain(`- principal: ${customPrincipal}`);
+    expect(prompt).not.toMatch(/- principal: brainstorm-actor\b/);
+    expect(recorder.lastInput?.principal).toBe(customPrincipal);
+  });
 });

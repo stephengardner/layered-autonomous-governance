@@ -287,9 +287,14 @@ export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): 
   // its transition. Mirrors the cite-list bounding pattern enforced for
   // cited_atom_ids / cited_paths above.
   if (input.transition === 'canon-bound') {
-    if (input.canonAtomIds === undefined || input.canonAtomIds.length === 0) {
+    // canonAtomIds may be an empty list (a stage may have no applicable
+    // canon directives), but the field MUST be DEFINED so the event
+    // atom carries an explicit empty-list rather than an absent slot
+    // that downstream renderers and audit walkers would treat as
+    // "missing data" instead of "empty by design".
+    if (input.canonAtomIds === undefined) {
       throw new Error(
-        `mkPipelineStageEventAtom: transition='canon-bound' requires non-empty canon_atom_ids`,
+        `mkPipelineStageEventAtom: transition='canon-bound' requires canon_atom_ids (may be [])`,
       );
     }
   }

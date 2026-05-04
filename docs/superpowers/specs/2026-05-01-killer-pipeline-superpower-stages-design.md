@@ -32,7 +32,7 @@ This is **substrate-pure**: the runner is unchanged, no new substrate types, no 
 
 - Replacing the substrate's `host.llm.judge` primitive. It stays as the cheap single-shot path for tactical decisions.
 - Building a new orchestration framework. Agent loops already exist (PR1+PR2+PR3 trilogy from April 25).
-- Speculative dial infrastructure (per `dev-apex-tunable-trade-off-dials-future-seam`). The mode toggle is a canon policy edit, not a CLI flag.
+- Speculative dial infrastructure (per `dev-apex-tunable-trade-off-dials-future-seam`). The mode toggle is a CLI opt-in (`--mode=substrate-deep` on `run-cto-actor.mjs`) plus the canon authorization stack (`pol-pipeline-default-mode` + per-scope overrides). Indie-floor default stays `single-pass` so a typo-fix never surprise-pays the deep-pipeline tax; org-ceiling deployments raise the dial via a higher-priority policy atom that flips the default for their scope. Both layers are required: the CLI flag selects the path on a given invocation, and canon authorizes the principal + scope to take that path. There is no third "free-form runtime knob"; that surface is reserved for a future apex-tunable dial via the canon-defined ENUM mechanism.
 
 ## Architecture
 

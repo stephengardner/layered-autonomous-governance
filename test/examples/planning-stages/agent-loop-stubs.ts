@@ -154,11 +154,15 @@ export function makeStubAdapter(opts: {
             agent_turn: {
               session_atom_id: sessionId,
               turn_index: i,
-              llm_input: '<stub-input>',
-              llm_output: opts.outputs[i]!,
+              // Canonical AgentTurnMeta discriminated-union shape:
+              // small payloads ride inline; large payloads externalize
+              // via BlobStore. Stubs default to inline because the
+              // outputs are deterministic small JSON strings; tests
+              // that need the {ref:BlobRef} branch use makeBlobRefStub.
+              llm_input: { inline: '<stub-input>' },
+              llm_output: { inline: opts.outputs[i]! },
               tool_calls: [],
               latency_ms: 100,
-              cost_usd: 0.1,
             } satisfies AgentTurnMeta,
           },
         };

@@ -59,7 +59,7 @@ import type {
   AgentTask,
   ToolPolicy,
 } from '../../../src/substrate/agent-loop.js';
-import type { BlobStore } from '../../../src/substrate/blob-store.js';
+import type { BlobRef, BlobStore } from '../../../src/substrate/blob-store.js';
 import type { Host } from '../../../src/substrate/interface.js';
 import type { Redactor } from '../../../src/substrate/redactor.js';
 import type {
@@ -408,10 +408,29 @@ function parseCanonAuditResponse(
  * substrate edit could move this to a contract method on
  * AgentLoopAdapter).
  *
+ * Handles AgentTurnMeta.llm_output's full discriminated-union shape:
+ *
+ *   - { inline: string }: payload is small enough to live in the atom;
+ *     the helper returns the inline string directly.
+ *   - { ref: BlobRef }: payload was externalized to the BlobStore by
+ *     the adapter (because it exceeded blobThreshold or because the
+ *     replay tier requires content-addressed externalization). The
+ *     helper MUST dereference the ref via blobStore.get; otherwise the
+ *     downstream parser sees the BlobRef wrapper instead of the actual
+ *     JSON payload, and large agent outputs silently fail schema
+ *     validation even though the agent emitted valid JSON.
+ *
+ * Also accepts legacy raw-string llm_output values as a defensive
+ * fallback. Real adapters write the discriminated-union shape; the
+ * raw-string branch only catches stub fixtures or older adapter code
+ * that has not migrated yet, so a malformed test fixture surfaces
+ * loudly via schema validation rather than as a silent null.
+ *
  * Returns null when no turn atoms exist or no final text is available.
  */
 async function readFinalOutputJson(
   host: Host,
+  blobStore: BlobStore,
   turnAtomIds: ReadonlyArray<AtomId>,
 ): Promise<string | null> {
   if (turnAtomIds.length === 0) return null;
@@ -423,10 +442,29 @@ async function readFinalOutputJson(
   const turnMeta = meta.agent_turn as Record<string, unknown> | undefined;
   if (turnMeta === undefined) return null;
   const llmOutput = turnMeta.llm_output;
-  if (typeof llmOutput === 'string') return llmOutput;
+  // Canonical discriminated-union shape per AgentTurnMeta.
   if (typeof llmOutput === 'object' && llmOutput !== null) {
+    const obj = llmOutput as Record<string, unknown>;
+    if (typeof obj.inline === 'string') {
+      return obj.inline;
+    }
+    if (typeof obj.ref === 'string') {
+      // Dereference the blob-backed payload. A BlobStore.get failure
+      // throws; the helper does not catch it because a missing or
+      // unreadable blob is a substrate-integrity failure and must
+      // surface to the runner's catastrophic-failure handler rather
+      // than fall through to a null that the audit gate could
+      // misinterpret as 'no final output'.
+      const buf = await blobStore.get(obj.ref as BlobRef);
+      return buf.toString('utf8');
+    }
+    // Object that is neither {inline} nor {ref}: legacy or malformed
+    // shape. Fall through to JSON.stringify so the downstream parser
+    // throws on the original payload and the operator sees the
+    // unparseable emission rather than a silent null.
     return JSON.stringify(llmOutput);
   }
+  if (typeof llmOutput === 'string') return llmOutput;
   return null;
 }
 
@@ -627,6 +665,7 @@ export async function runStageAgentLoop<TOut>(
   }
   const rawOutput = await readFinalOutputJson(
     input.stageInput.host,
+    input.blobStore,
     agentResult.turnAtomIds,
   );
   if (rawOutput === null) {
@@ -698,19 +737,40 @@ export async function runStageAgentLoop<TOut>(
         blobThreshold: input.blobThreshold,
         correlationId: `${input.stageInput.correlationId}-canon-audit`,
       });
-      const rawAudit =
-        auditResult.kind === 'completed'
-          ? await readFinalOutputJson(
-              input.stageInput.host,
-              auditResult.turnAtomIds,
-            )
-          : null;
-      const auditExtracted = rawAudit !== null
-        ? extractFinalJsonPayload(rawAudit)
-        : undefined;
-      const audit = parseCanonAuditResponse(auditExtracted);
-      auditVerdict = audit.verdict;
-      auditFindings = audit.findings;
+      // Fail-closed on any non-completed audit result: a budget-
+      // exhausted / aborted / catastrophic audit must NOT fall through
+      // to parseCanonAuditResponse(undefined), which would return
+      // verdict='approved' and silently clear the canon gate. Treat
+      // every non-completed kind as a critical issues-found finding so
+      // the gate stays load-bearing and the operator sees the failure
+      // mode in the audit-complete event findings.
+      if (auditResult.kind !== 'completed') {
+        auditVerdict = 'issues-found';
+        auditFindings = [
+          {
+            severity: 'critical',
+            category: 'canon-audit-failed',
+            message:
+              `canon-audit run ended with kind='${auditResult.kind}'; `
+              + `failure=${JSON.stringify(auditResult.failure ?? null)}. `
+              + `Treating as fail-closed: audit could not complete and `
+              + `cannot be interpreted as approval.`,
+            cited_atom_ids: [],
+            cited_paths: [],
+          },
+        ];
+      } else {
+        const rawAudit = await readFinalOutputJson(
+          input.stageInput.host,
+          input.blobStore,
+          auditResult.turnAtomIds,
+        );
+        const auditExtracted =
+          rawAudit !== null ? extractFinalJsonPayload(rawAudit) : undefined;
+        const audit = parseCanonAuditResponse(auditExtracted);
+        auditVerdict = audit.verdict;
+        auditFindings = audit.findings;
+      }
     } finally {
       await input.workspaceProvider.release(auditWorkspace);
     }
