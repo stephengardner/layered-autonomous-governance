@@ -14,22 +14,22 @@
 
 The operator's mandate is "VALIDATED + TESTED ... INDUSTRY LEADING". The full design covers 5 stages + console + 4 canon atoms + a real-LLM dogfeed. Given session-bounded reality and the rigor the operator's canons demand, **this PR ships the substrate + the brainstorm-stage agentic adapter end-to-end with tests, plus the canon-policy seam**. The remaining 3 upstream stages (spec, plan, review) follow the SAME pattern as brainstorm; once brainstorm lands and is validated end-to-end on a real intent, replicating to the other three is mechanical (the helper does the lifting). This is the disciplined "ship one stage perfectly, then replicate" approach -- not the rushed "ship five stages partially" approach the spec-without-rigor canon explicitly rejects.
 
-What ships in this PR:
+What ships in THIS PR (substrate + brainstorm slice + tests):
 - T1: Extended pipeline-stage-event transitions (substrate atom-shapes change).
 - T2: `runStageAgentLoop` helper at `examples/planning-stages/lib/run-stage-agent-loop.ts`.
 - T3: Vendored superpower skill bundles at `examples/planning-stages/skills/`.
 - T4: `agenticBrainstormStage` adapter at `examples/planning-stages/brainstorm/agentic.ts`.
+- T9: Deterministic end-to-end test on `MemoryHost` with a stub agent-loop adapter covering the full chain.
+
+Follow-ups (each its own PR; each pattern-matches T4):
 - T5: Canon policy atom for stage-implementation selection.
 - T6: Canon bootstrap script wiring.
 - T7: `run-cto-actor.mjs` reads the canon policy and selects the agentic adapter when authorised.
 - T8: Console deliberation-trail extension for the new transitions.
-- T9: End-to-end test on `MemoryHost` with a stub agent-loop adapter (deterministic) covering the full chain.
 - T10: Real-LLM dogfeed via the existing `ClaudeCodeAgentLoopAdapter` -- compare brainstorm output BEFORE vs AFTER.
-
-What follows in subsequent PRs (one per stage; each pattern-matches T4):
-- T11 (next PR): `agenticSpecStage`
-- T12 (next PR): `agenticPlanStage`
-- T13 (next PR): `agenticReviewStage`
+- T11: `agenticSpecStage`
+- T12: `agenticPlanStage`
+- T13: `agenticReviewStage`
 
 ---
 
@@ -46,9 +46,9 @@ What follows in subsequent PRs (one per stage; each pattern-matches T4):
 - `test/runtime/planning-pipeline/agentic-end-to-end.test.ts` -- full-pipeline deterministic E2E test.
 
 **Modify:**
-- `src/runtime/planning-pipeline/atom-shapes.ts` -- extend `TRANSITION` enum + `mkPipelineStageEventAtom` metadata fields. Add `mkPipelineCanonBoundEventAtom` + `mkPipelineCanonAuditEventAtom` mint helpers.
-- `src/runtime/planning-pipeline/runner.ts` -- no change needed. The runner already calls `emitStageEvent` only from its own state machine; the helper writes its own canon-bound + canon-audit events directly via the new mint helpers.
-- `src/runtime/planning-pipeline/index.ts` -- re-export the new mint helpers + extended types.
+- `src/runtime/planning-pipeline/atom-shapes.ts` -- extend `TRANSITION` enum + `mkPipelineStageEventAtom` metadata fields. The existing mint helper owns transition-specific validation and metadata shaping; new transitions land as branches inside that helper rather than as duplicate `mkPipelineCanonBoundEventAtom` + `mkPipelineCanonAuditEventAtom` siblings.
+- `src/runtime/planning-pipeline/runner.ts` -- no change needed. The runner already calls `emitStageEvent` only from its own state machine; the helper writes its own canon-bound + canon-audit events directly via the existing `mkPipelineStageEventAtom` mint helper.
+- `src/runtime/planning-pipeline/index.ts` -- re-export the extended `TRANSITION` enum + types.
 - `apps/console/src/features/deliberation-trail/` -- render the three new transitions.
 - `scripts/bootstrap-deep-planning-pipeline-canon.mjs` -- seed the new canon policy atom.
 - `scripts/run-cto-actor.mjs` -- read the new canon policy and choose adapter set per stage.
@@ -201,7 +201,7 @@ The helper:
 4. Mints + persists a `canon-bound` pipeline-stage-event with the canon atom-ids.
 5. Builds the prompt by concatenating: skill-bundle + canon-summary + stage-context + output-contract.
 6. Invokes `agentLoop.run(...)` with the prompt as `task.successCriteria` (or a similar field; review the AgentTask shape).
-7. After the adapter returns, dispatches a fresh small canon-audit agent-loop run with a canon-audit prompt. The audit's output is parsed against `{verdict: 'approved' | 'issues-found', findings: AuditFinding[]}`.
+7. After the adapter returns, dispatches a fresh small canon-audit agent-loop run with a canon-audit prompt. The audit's output is parsed against `{verdict: 'approved' | 'issues-found', findings: AuditFinding[]}` -- this is the same vocabulary the substrate's `CANON_AUDIT_VERDICT` zod enum and `mkPipelineStageEventAtom`'s `canonAuditVerdict` field accept (see `src/runtime/planning-pipeline/atom-shapes.ts`); no helper-side mapping is needed.
 8. Mints + persists a `canon-audit-complete` pipeline-stage-event with the verdict + findings.
 9. For each agent-turn atom the adapter wrote, mints a corresponding `agent-turn` pipeline-stage-event for console-side ergonomics.
 10. Validates the adapter's final-output JSON against `outputSchema`. On schema-fail, throws.

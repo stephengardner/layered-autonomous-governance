@@ -110,7 +110,7 @@ We extend the union (atom-shapes.ts mint helper + zod enum) with:
 
 - `canon-bound` -- canon load complete, atom-ids in metadata.
 - `canon-audit-complete` -- post-output audit ran; verdict + findings on metadata.
-- `agent-turn` -- per LLM call inside the stage's agent loop; metadata carries `turn_index`, `tools_used`, `tokens_in`, `tokens_out`, `cost_usd`, `duration_ms`. The agent-loop adapter already writes `agent-turn` atoms (substrate type from PR1); the pipeline-stage-event entry is a thin index pointing back at the agent-turn atom for console-side rendering ergonomics.
+- `agent-turn` -- per LLM call inside the stage's agent loop; the pipeline-stage-event metadata carries only the index fields (`agent_turn_atom_id`, `turn_index`, plus the standard `transition`, `duration_ms`, `cost_usd`). Richer per-turn telemetry (`tools_used`, `tokens_in`, `tokens_out`, `latency_ms`, `failure`) lives on the agent-turn ATOM itself per the substrate's `AgentTurnMeta` contract; the pipeline-stage-event entry is a thin index pointing back at the agent-turn atom for console-side rendering ergonomics.
 
 This keeps the substrate type union narrow but the projection rich. The console deliberation-trail surface already iterates all `pipeline-stage-event` atoms by pipeline_id; it just needs to render the new transitions.
 
