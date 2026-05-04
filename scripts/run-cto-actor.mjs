@@ -387,15 +387,18 @@ async function runDeepPipeline(args) {
   // agentic adapter requires (AgentLoop + WorkspaceProvider + BlobStore
   // + Redactor); single-shot deployments pay zero cost for that wiring.
   // T6 shipped brainstorm-stage; T7 added spec-stage; T8 added plan-stage;
-  // T9 adds review-stage. Dispatch is a deterministic handoff and stays
-  // single-shot permanently. A canon entry of 'agentic' for an
-  // unimplemented stage halts the registry construction with a clear
-  // "not yet implemented" diagnostic rather than silently downgrading.
+  // T9 added review-stage; T10 adds dispatch-stage. With T10 every stage
+  // in the default 5-stage ordering has both single-shot and agentic
+  // implementations; the brain transplant is complete. A canon entry of
+  // 'agentic' for an unimplemented stage halts the registry construction
+  // with a clear "not yet implemented" diagnostic rather than silently
+  // downgrading.
   const AGENTIC_AVAILABLE = new Set([
     'brainstorm-stage',
     'spec-stage',
     'plan-stage',
     'review-stage',
+    'dispatch-stage',
   ]);
 
   // Fail-fast preflight: implementation-policy entries whose
@@ -428,11 +431,11 @@ async function runDeepPipeline(args) {
   if (unimplementedAgentic.length > 0) {
     console.error(
       `ERROR: canon selects mode='agentic' for stages [${unimplementedAgentic.join(', ')}] `
-      + 'but no agentic adapter is registered for those stages. T6+T7+T8+T9 ship agentic '
-      + 'for brainstorm-stage, spec-stage, plan-stage, and review-stage; dispatch-stage '
-      + 'stays single-shot permanently. Flip those stages back to mode=\'single-shot\' via '
-      + 'a higher-priority canon atom or wait for the upstream stage to ship its agentic '
-      + 'option.',
+      + 'but no agentic adapter is registered for those stages. T6+T7+T8+T9+T10 ship '
+      + 'agentic adapters for brainstorm-stage, spec-stage, plan-stage, review-stage, and '
+      + 'dispatch-stage; with T10 the default 5-stage ordering has both single-shot and '
+      + 'agentic implementations end-to-end. Custom org-ceiling stages without an agentic '
+      + 'adapter must flip back to mode=\'single-shot\' via a higher-priority canon atom.',
     );
     process.exit(2);
   }
@@ -467,6 +470,9 @@ async function runDeepPipeline(args) {
     );
     const { buildAgenticReviewStage } = await import(
       '../dist/examples/planning-stages/review/agentic.js'
+    );
+    const { buildAgenticDispatchStage } = await import(
+      '../dist/examples/planning-stages/dispatch/agentic.js'
     );
 
     // Wire the substrate primitives once and share them across every
@@ -525,6 +531,24 @@ async function runDeepPipeline(args) {
           workspaceProvider,
           blobStore,
           redactor,
+        }),
+      );
+    }
+    if (wantsAgentic.includes('dispatch-stage')) {
+      // The agentic dispatch-stage takes the same SubActorRegistry the
+      // single-shot adapter does so the runDispatchTick handoff routes
+      // through the same registered invokers. The agent's job is chain
+      // verification (citations + sub-actor allowlist + envelope match)
+      // before the substrate hands off; the registry wiring is identical
+      // to single-shot.
+      stageRegistry.set(
+        'dispatch-stage',
+        buildAgenticDispatchStage({
+          agentLoop,
+          workspaceProvider,
+          blobStore,
+          redactor,
+          registry: subActorRegistry,
         }),
       );
     }

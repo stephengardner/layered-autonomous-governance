@@ -115,6 +115,55 @@ export type DispatchRecordPayload = z.infer<
 >;
 
 /**
+ * Build a pipeline-scoped plan filter for runDispatchTick. Selects
+ * approved plans whose provenance.derived_from chain traces back to
+ * the current pipeline atom; without this filter the tick is global,
+ * which would replay unrelated pipelines' approved plans under this
+ * pipeline's correlation id. Extracted as a top-level export so the
+ * agentic dispatch-stage adapter can re-use the same filter (per the
+ * dev-extract-at-n-2 canon dedup floor; a per-call-site copy would
+ * drift over time).
+ */
+export function buildPipelineScopedPlanFilter(
+  pipelineId: string,
+): (plan: Atom) => boolean {
+  return (plan: Atom): boolean => {
+    const derived = plan.provenance?.derived_from ?? [];
+    for (const id of derived) {
+      if (String(id) === pipelineId) return true;
+    }
+    return false;
+  };
+}
+
+/**
+ * Audit a dispatch-record payload. Emits a critical finding when
+ * dispatch_status is 'gated' so the runner halts; returns no findings
+ * for 'completed'. Extracted as a top-level export so the agentic
+ * dispatch-stage adapter can re-use the same audit logic (per the
+ * dev-extract-at-n-2 canon dedup floor; the closure form duplicated
+ * across single-shot + agentic would drift).
+ */
+export async function auditDispatch(
+  output: DispatchRecordPayload,
+  _ctx: StageContext,
+): Promise<ReadonlyArray<AuditFinding>> {
+  if (output.dispatch_status !== 'gated') return [];
+  return [
+    {
+      severity: 'critical' as const,
+      category: 'dispatch-gated',
+      message:
+        output.gating_reason
+        ?? 'Dispatch stage gated; upstream review-report is not clean and '
+          + 'no operator-acked pipeline-resume atom is present.',
+      cited_atom_ids: [] as ReadonlyArray<AtomId>,
+      cited_paths: [],
+    },
+  ];
+}
+
+/**
  * Shape this stage consumes from priorOutput. Mirrors the upstream
  * review-stage's ReviewReportPayload structurally; declared here as a
  * structural type so the dispatch-stage does not depend on the
@@ -193,22 +242,12 @@ export function createDispatchStage(
     }
 
     // Hand off to the existing runDispatchTick with a pipeline-scoped
-    // planFilter so the tick only claims approved plans whose
-    // provenance chain traces back to the current pipeline atom.
-    // Without this filter the tick is global: a pipeline that reaches
-    // dispatch-stage would claim approved plans from unrelated
+    // planFilter (extracted helper) so the tick only claims approved
+    // plans whose provenance chain traces back to the current pipeline
+    // atom. Without this filter the tick is global: a pipeline that
+    // reaches dispatch-stage would claim approved plans from unrelated
     // pipelines, replaying their dispatch with the wrong correlation.
-    // The filter walks derived_from on the plan; plans authored by
-    // the upstream plan-stage in this pipeline carry pipelineId in
-    // their derived_from chain.
-    const currentPipelineId = String(input.pipelineId);
-    const planFilter = (plan: Atom): boolean => {
-      const derived = plan.provenance?.derived_from ?? [];
-      for (const id of derived) {
-        if (String(id) === currentPipelineId) return true;
-      }
-      return false;
-    };
+    const planFilter = buildPipelineScopedPlanFilter(String(input.pipelineId));
     const tick = await runDispatchTick(input.host, registry, { planFilter });
     return {
       value: {
@@ -222,25 +261,6 @@ export function createDispatchStage(
       duration_ms: Date.now() - t0,
       atom_type: 'dispatch-record',
     };
-  }
-
-  async function auditDispatch(
-    output: DispatchRecordPayload,
-    _ctx: StageContext,
-  ): Promise<ReadonlyArray<AuditFinding>> {
-    if (output.dispatch_status !== 'gated') return [];
-    return [
-      {
-        severity: 'critical' as const,
-        category: 'dispatch-gated',
-        message:
-          output.gating_reason
-          ?? 'Dispatch stage gated; upstream review-report is not clean and '
-            + 'no operator-acked pipeline-resume atom is present.',
-        cited_atom_ids: [] as ReadonlyArray<AtomId>,
-        cited_paths: [],
-      },
-    ];
   }
 
   return {
