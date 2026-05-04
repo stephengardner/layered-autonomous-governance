@@ -51,6 +51,22 @@
  *   6. Update the session atom on exit (terminal_state, failure,
  *      budget_consumed, completed_at).
  *
+ * Atom-shape note (projection-compat shadows)
+ * -------------------------------------------
+ * The nested `metadata.agent_session.*` and `metadata.agent_turn.*`
+ * shapes defined by `AgentSessionMeta` and `AgentTurnMeta` are
+ * canonical; substrate consumers (validators, replay, audit) read
+ * the nested shape. Adapters MAY additionally write top-level shadow
+ * keys (`metadata.session_id`, `metadata.started_at`,
+ * `metadata.ended_at`, `metadata.terminal_state` on session atoms;
+ * `metadata.session_id` on turn atoms) so projections that key on
+ * top-level metadata see adapter-written sessions uniformly across
+ * the substrate. Top-level shadows are projection-compat helpers,
+ * not contract; the nested shape is canonical and MUST stay
+ * populated. Note the name shift: the substrate canonicalizes
+ * `completed_at` while the projection convention reads `ended_at`;
+ * both refer to the same concept (when the session terminated).
+ *
  * The adapter MAY:
  *   - Persist large turn payloads via `input.blobStore` according to
  *     `input.blobThreshold`.
