@@ -387,15 +387,18 @@ async function runDeepPipeline(args) {
   // agentic adapter requires (AgentLoop + WorkspaceProvider + BlobStore
   // + Redactor); single-shot deployments pay zero cost for that wiring.
   // T6 shipped brainstorm-stage; T7 added spec-stage; T8 added plan-stage;
-  // T9 adds review-stage. Dispatch is a deterministic handoff and stays
-  // single-shot permanently. A canon entry of 'agentic' for an
-  // unimplemented stage halts the registry construction with a clear
-  // "not yet implemented" diagnostic rather than silently downgrading.
+  // T9 added review-stage; T10 adds dispatch-stage. With T10 every stage
+  // in the default 5-stage ordering has both single-shot and agentic
+  // implementations; the brain transplant is complete. A canon entry of
+  // 'agentic' for an unimplemented stage halts the registry construction
+  // with a clear "not yet implemented" diagnostic rather than silently
+  // downgrading.
   const AGENTIC_AVAILABLE = new Set([
     'brainstorm-stage',
     'spec-stage',
     'plan-stage',
     'review-stage',
+    'dispatch-stage',
   ]);
 
   // Fail-fast preflight: implementation-policy entries whose
@@ -428,11 +431,11 @@ async function runDeepPipeline(args) {
   if (unimplementedAgentic.length > 0) {
     console.error(
       `ERROR: canon selects mode='agentic' for stages [${unimplementedAgentic.join(', ')}] `
-      + 'but no agentic adapter is registered for those stages. T6+T7+T8+T9 ship agentic '
-      + 'for brainstorm-stage, spec-stage, plan-stage, and review-stage; dispatch-stage '
-      + 'stays single-shot permanently. Flip those stages back to mode=\'single-shot\' via '
-      + 'a higher-priority canon atom or wait for the upstream stage to ship its agentic '
-      + 'option.',
+      + 'but no agentic adapter is registered for those stages. T6+T7+T8+T9+T10 ship '
+      + 'agentic adapters for brainstorm-stage, spec-stage, plan-stage, review-stage, and '
+      + 'dispatch-stage; with T10 the default 5-stage ordering has both single-shot and '
+      + 'agentic implementations end-to-end. Custom org-ceiling stages without an agentic '
+      + 'adapter must flip back to mode=\'single-shot\' via a higher-priority canon atom.',
     );
     process.exit(2);
   }
@@ -468,6 +471,9 @@ async function runDeepPipeline(args) {
     const { buildAgenticReviewStage } = await import(
       '../dist/examples/planning-stages/review/agentic.js'
     );
+    const { buildAgenticDispatchStage } = await import(
+      '../dist/examples/planning-stages/dispatch/agentic.js'
+    );
 
     // Wire the substrate primitives once and share them across every
     // agentic stage that opts in. A deployment that wants per-stage
@@ -484,49 +490,67 @@ async function runDeepPipeline(args) {
     const blobStore = new FileBlobStore(blobRoot);
     const redactor = new RegexRedactor();
 
-    if (wantsAgentic.includes('brainstorm-stage')) {
-      stageRegistry.set(
+    // Descriptor map for the per-stage agentic-builder wiring. Extracted
+    // at N=2 per dev-extract-at-n-2: with T10 there are 5 near-identical
+    // wantsAgentic.includes(...) -> stageRegistry.set(buildAgenticX(...))
+    // blocks; centralizing the descriptor prevents the wiring + the
+    // shipped-stage error message from drifting when a future stage
+    // lands. The dispatch-stage is the only entry that needs the
+    // SubActorRegistry, so its builder closes over subActorRegistry
+    // explicitly. The shape is data, not code.
+    const agenticBuilders = new Map([
+      [
         'brainstorm-stage',
-        buildAgenticBrainstormStage({
-          agentLoop,
-          workspaceProvider,
-          blobStore,
-          redactor,
-        }),
-      );
-    }
-    if (wantsAgentic.includes('spec-stage')) {
-      stageRegistry.set(
+        () => buildAgenticBrainstormStage({ agentLoop, workspaceProvider, blobStore, redactor }),
+      ],
+      [
         'spec-stage',
-        buildAgenticSpecStage({
-          agentLoop,
-          workspaceProvider,
-          blobStore,
-          redactor,
-        }),
-      );
-    }
-    if (wantsAgentic.includes('plan-stage')) {
-      stageRegistry.set(
+        () => buildAgenticSpecStage({ agentLoop, workspaceProvider, blobStore, redactor }),
+      ],
+      [
         'plan-stage',
-        buildAgenticPlanStage({
-          agentLoop,
-          workspaceProvider,
-          blobStore,
-          redactor,
-        }),
-      );
-    }
-    if (wantsAgentic.includes('review-stage')) {
-      stageRegistry.set(
+        () => buildAgenticPlanStage({ agentLoop, workspaceProvider, blobStore, redactor }),
+      ],
+      [
         'review-stage',
-        buildAgenticReviewStage({
-          agentLoop,
-          workspaceProvider,
-          blobStore,
-          redactor,
-        }),
-      );
+        () => buildAgenticReviewStage({ agentLoop, workspaceProvider, blobStore, redactor }),
+      ],
+      [
+        'dispatch-stage',
+        () =>
+          buildAgenticDispatchStage({
+            agentLoop,
+            workspaceProvider,
+            blobStore,
+            redactor,
+            // The agentic dispatch-stage takes the same SubActorRegistry
+            // the single-shot adapter does so the runDispatchTick handoff
+            // routes through the same registered invokers. The agent's
+            // job is chain verification before the substrate hands off;
+            // the registry wiring is identical to single-shot.
+            registry: subActorRegistry,
+          }),
+      ],
+    ]);
+    for (const stageName of wantsAgentic) {
+      const buildStage = agenticBuilders.get(stageName);
+      if (buildStage === undefined) {
+        // Fail-closed: AGENTIC_AVAILABLE said the stage has an agentic
+        // adapter, but the builder map says it doesn't. The two lists
+        // drifted; silently falling through to the single-shot adapter
+        // would land the substrate in the wrong mode without the operator
+        // noticing. Halt loud so the missed entry is added to the map
+        // (or removed from AGENTIC_AVAILABLE) before the next run.
+        console.error(
+          `ERROR: canon selects mode='agentic' for stage '${stageName}' but no `
+          + 'builder was registered in agenticBuilders. AGENTIC_AVAILABLE and '
+          + 'agenticBuilders drifted; both lists must enumerate the same '
+          + 'stage_names. Add the builder entry or remove the stage_name from '
+          + 'AGENTIC_AVAILABLE before the next run.',
+        );
+        process.exit(2);
+      }
+      stageRegistry.set(stageName, buildStage());
     }
   }
 
