@@ -41,6 +41,7 @@ import {
   type ReaperTtls,
   type RunReaperSweepResult,
 } from '../plans/reaper.js';
+import { readReaperTtlsFromCanon } from './reaper-ttls.js';
 
 /**
  * A canon target after resolution: the manager is instantiated, and the
@@ -74,7 +75,23 @@ export class LoopRunner {
   private readonly canonTargets: ReadonlyArray<ResolvedCanonTarget>;
   private readonly onTick: ((report: LoopTickReport) => void | Promise<void>) | null;
   private readonly reaperPrincipal: PrincipalId | null;
-  private readonly reaperTtls: ReaperTtls;
+  /**
+   * Constructor-validated env / CLI fallback for the reaper TTL pair.
+   * The actual TTLs used per tick come from `resolveReaperTtls`, which
+   * checks canon first and falls through here on absence / malformed.
+   * Holding the env-derived pair separately keeps the canon path
+   * additive: existing flag + env wiring keeps working as-is while the
+   * policy atom is the org-tunable dial above it.
+   */
+  private readonly reaperEnvTtls: ReaperTtls;
+  /**
+   * `true` when the env-derived pair was supplied explicitly via
+   * `LoopOptions.reaperWarnMs` / `reaperAbandonMs` (CLI flag or env
+   * var). When `false`, the env-pair equals `DEFAULT_REAPER_TTLS` and
+   * the per-tick log labels the source as `defaults` so the operator
+   * can see the loop is using the floor, not a deliberate override.
+   */
+  private readonly reaperEnvOverride: boolean;
   /**
    * `null` means we have not yet checked the principal exists in the
    * host's PrincipalStore. We defer the lookup to the first reaper
@@ -135,13 +152,21 @@ export class LoopRunner {
           `LoopRunner: reaperAbandonMs (${abandonMs}) must be strictly greater than reaperWarnMs (${warnMs})`,
         );
       }
-      this.reaperTtls = {
+      this.reaperEnvTtls = {
         staleWarnMs: warnMs,
         staleAbandonMs: abandonMs,
       };
+      // Track whether the caller supplied explicit env / CLI overrides so
+      // the per-tick log can label `defaults` vs `env` accurately. An
+      // unset pair means the runner falls through to the hardcoded floor
+      // when no canon policy atom exists; an operator scanning the log
+      // for "where did these TTLs come from" should see that distinction.
+      this.reaperEnvOverride =
+        options.reaperWarnMs !== undefined || options.reaperAbandonMs !== undefined;
     } else {
       this.reaperPrincipal = null;
-      this.reaperTtls = DEFAULT_REAPER_TTLS;
+      this.reaperEnvTtls = DEFAULT_REAPER_TTLS;
+      this.reaperEnvOverride = false;
     }
     const principal = this.options.principalId as PrincipalId;
     // `promotionThresholds` is passed through so callers can opt out of
@@ -489,6 +514,15 @@ export class LoopRunner {
    * host's PrincipalStore on first call so a misconfigured wiring
    * fails loud (rather than producing audit rows attributed to a
    * non-existent identity).
+   *
+   * TTL resolution order on every pass (re-read each tick so a canon
+   * edit takes effect on the next sweep without a daemon restart):
+   *   1. canon reaper-ttls policy atom (preferred)
+   *   2. `LoopOptions.reaperWarnMs` / `reaperAbandonMs` (CLI / env)
+   *   3. `DEFAULT_REAPER_TTLS` (hardcoded floor)
+   *
+   * Each pass logs one stderr line naming the source so an operator
+   * scanning logs can see which path the TTLs came from at a glance.
    */
   private async reaperPass(
     principal: PrincipalId,
@@ -508,10 +542,37 @@ export class LoopRunner {
       }
       this.reaperPrincipalChecked = true;
     }
+    // Re-read canon every tick so a reaper-ttls policy edit takes
+    // effect on the NEXT pass without a daemon restart. The reader
+    // returns null on absence OR malformed payload; in the malformed
+    // case it has already logged a stderr warning, so the fall-
+    // through here is the recovery path the operator was warned
+    // about.
+    const fromCanon = await readReaperTtlsFromCanon(this.host);
+    let ttls: ReaperTtls;
+    let source: 'canon-policy' | 'env' | 'defaults';
+    if (fromCanon !== null) {
+      ttls = fromCanon;
+      source = 'canon-policy';
+    } else if (this.reaperEnvOverride) {
+      ttls = this.reaperEnvTtls;
+      source = 'env';
+    } else {
+      ttls = this.reaperEnvTtls; // == DEFAULT_REAPER_TTLS when no override
+      source = 'defaults';
+    }
+    // Loud-at-boundaries: one line per pass naming the source. Goes
+    // to stderr so it does not pollute the structured tick stdout
+    // stream. An operator wanting to see which TTL path the loop
+    // chose at any moment greps for "[reaper] using TTLs".
+    // eslint-disable-next-line no-console
+    console.error(
+      `[reaper] using TTLs from ${source}: warn=${ttls.staleWarnMs}ms abandon=${ttls.staleAbandonMs}ms`,
+    );
     const sweep: RunReaperSweepResult = await runReaperSweep(
       this.host,
       principal,
-      this.reaperTtls,
+      ttls,
     );
     const fresh = sweep.classifications.fresh.length;
     const warned = sweep.classifications.warn.length;
