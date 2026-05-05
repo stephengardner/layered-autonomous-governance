@@ -15,8 +15,6 @@
  */
 
 import { parseArgs } from 'node:util';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createFileHost, type FileHost } from '../adapters/file/index.js';
 import { createBridgeHost, type BridgeHost } from '../adapters/bridge/index.js';
 import { CachingEmbedder } from '../adapters/_common/caching-embedder.js';
@@ -26,6 +24,38 @@ import type { Embedder, Host } from '../interface.js';
 import type { PrincipalId } from '../types.js';
 import type { LoopTickReport } from '../loop/types.js';
 import type { PrObservationRefresher } from '../runtime/plans/pr-observation-refresh.js';
+
+/**
+ * Optional injection point: a deployment-side factory that builds the
+ * PR-observation refresher seam used by the refresh pass. Threading
+ * the factory through here (vs. importing a concrete adapter inside
+ * `src/`) keeps framework code mechanism-only: the CLI module never
+ * knows how a refresher is constructed, only that the deployment
+ * provides one. The bin entrypoint at `bin/lag-run-loop.js` is the
+ * deployment-side wrapper that supplies the factory.
+ *
+ * Returning `null` from the factory (or omitting it entirely)
+ * activates the silent-skip path documented on
+ * `LoopOptions.runPlanObservationRefreshPass`: the pass logs once
+ * per tick and does no work.
+ */
+export type PrObservationRefresherFactory =
+  () => Promise<PrObservationRefresher | null> | PrObservationRefresher | null;
+
+/**
+ * Options for `runLoopMain`. Today the only deployment-side seam is
+ * the refresher factory; future opt-in injection points live here so
+ * the bin entrypoint stays the single composition root.
+ */
+export interface RunLoopMainOptions {
+  /**
+   * Optional. Called when the refresh pass is enabled to obtain the
+   * `PrObservationRefresher` adapter. Absent (or returning null)
+   * leaves the refresh pass in silent-skip per the LoopRunner
+   * contract.
+   */
+  readonly prObservationRefresherFactory?: PrObservationRefresherFactory;
+}
 
 type EmbedderChoice = 'trigram' | 'onnx-minilm';
 
@@ -53,24 +83,14 @@ interface CliArgs {
   readonly reaperAbandonMs: number | null;
   /**
    * Run the plan-state reconcile pass on every loop tick. Default
-   * `true` at the indie-floor: the failure mode the operator
-   * surfaced (3 plans stuck in 'executing' indefinitely after their
-   * PR merged) requires this pass to be self-sustaining. A
-   * deployment that observes PR state through a webhook / external
-   * driver and never wants the loop to write back can pass
-   * `--no-reconcile-plan-state` to flip it off.
+   * `true`. Disable via `--no-reconcile-plan-state`.
    */
   readonly reconcilePlanState: boolean;
   /**
    * Run the pr-observation refresh pass on every loop tick. Default
-   * `true` at the indie-floor for the same reason as
-   * reconcilePlanState: a stale OPEN observation on a merged PR is
-   * exactly what produces the stuck-executing failure mode. Disabling
-   * is via `--no-refresh-plan-observations`. The pass requires the
-   * `node` runtime to be able to spawn `scripts/run-pr-landing.mjs
-   * --observe-only --live`; in a sandboxed deployment that cannot
-   * spawn child processes, the operator disables this and provides
-   * an alternative observation driver.
+   * `true`. Disable via `--no-refresh-plan-observations`. Requires
+   * the bin entrypoint to inject a refresher factory; absent, the
+   * pass silent-skips per the LoopRunner contract.
    */
   readonly refreshPlanObservations: boolean;
 }
@@ -93,10 +113,8 @@ function parseCliArgs(): CliArgs | null {
         'reaper-principal': { type: 'string' },
         'reaper-warn-ms': { type: 'string' },
         'reaper-abandon-ms': { type: 'string' },
-        // The approval-cycle ticks (reconcile + refresh) default ON
-        // at the indie-floor; the failure mode the operator surfaced
-        // requires self-sustaining writeback. The negated flags are
-        // the explicit opt-out for sandboxed deployments.
+        // Approval-cycle ticks (reconcile + refresh) default ON;
+        // negated flags are the explicit opt-out.
         'reconcile-plan-state': { type: 'boolean', default: true },
         'no-reconcile-plan-state': { type: 'boolean', default: false },
         'refresh-plan-observations': { type: 'boolean', default: true },
@@ -352,52 +370,13 @@ function formatTickReport(report: LoopTickReport): string {
 }
 
 /**
- * Build the pr-observation refresher seam by dynamic-importing the
- * existing scripts/lib/pr-observation-refresher.mjs helper. The helper
- * shells out to `node scripts/run-pr-landing.mjs --observe-only --live`
- * per refresh, which is the deployment-side GitHub-shaped concern. The
- * framework loop module never imports a GitHub adapter; this CLI seam
- * is the deployment-side wiring per dev-substrate-not-prescription.
- *
- * Dynamic import (vs. a static one) because the .mjs file lives outside
- * the TypeScript graph and the path depends on package layout: at
- * runtime, `dist/cli/run-loop.js` is at `<pkg>/dist/cli/run-loop.js`
- * and the helper is at `<pkg>/scripts/lib/pr-observation-refresher.mjs`.
- * Returns null when the helper cannot be resolved (e.g. an out-of-tree
- * build that didn't ship `scripts/`); the refresh pass then becomes a
- * silent-skip in LoopRunner per its documented contract.
+ * Run the lag-run-loop CLI. Exported so the bin entrypoint can call
+ * it with deployment-side seams (e.g. a refresher factory) injected
+ * as options. Keeping this exported (vs. a top-level side-effect
+ * `await main()`) is what lets the bin layer compose the vendor-
+ * specific wiring without dragging it into framework src/.
  */
-async function buildPrObservationRefresher(): Promise<PrObservationRefresher | null> {
-  // dist layout: <pkg>/dist/cli/run-loop.js -> two `..` up reaches the
-  // package root, then scripts/lib/<name>.mjs is the canonical helper.
-  const here = dirname(fileURLToPath(import.meta.url));
-  const helperPath = resolve(here, '..', '..', 'scripts', 'lib', 'pr-observation-refresher.mjs');
-  try {
-    // pathToFileURL is Windows-safe: a bare path with a `C:` drive
-    // letter is interpreted as a URL scheme by ESM dynamic import,
-    // which would crash on Windows.
-    const mod: { createPrLandingObserveRefresher: (opts?: unknown) => PrObservationRefresher } =
-      await import(pathToFileURL(helperPath).href);
-    if (typeof mod.createPrLandingObserveRefresher !== 'function') {
-      // eslint-disable-next-line no-console
-      console.error(
-        `[plan-obs-refresh] WARN: refresher helper at ${helperPath} did not export `
-          + 'createPrLandingObserveRefresher; refresh pass will silent-skip.',
-      );
-      return null;
-    }
-    return mod.createPrLandingObserveRefresher();
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error(
-      `[plan-obs-refresh] WARN: could not load refresher helper at ${helperPath}: `
-        + `${err instanceof Error ? err.message : String(err)}; refresh pass will silent-skip.`,
-    );
-    return null;
-  }
-}
-
-async function main(): Promise<number> {
+export async function runLoopMain(opts: RunLoopMainOptions = {}): Promise<number> {
   const args = parseCliArgs();
   if (args === null) return 1;
 
@@ -412,12 +391,23 @@ async function main(): Promise<number> {
         (args.reaperAbandonMs !== null ? `  abandon=${args.reaperAbandonMs}ms` : ''),
     );
   }
-  // Build the refresher only when the refresh pass is enabled. A
-  // deployment that opted out via --no-refresh-plan-observations does
-  // not pay the dynamic-import cost.
-  const refresher: PrObservationRefresher | null = args.refreshPlanObservations
-    ? await buildPrObservationRefresher()
-    : null;
+  // Build the refresher only when the refresh pass is enabled and a
+  // factory was injected. Without a factory, the pass silently skips
+  // per the LoopRunner contract; framework code stays mechanism-only
+  // because the concrete adapter is constructed entirely outside src/.
+  let refresher: PrObservationRefresher | null = null;
+  if (args.refreshPlanObservations && opts.prObservationRefresherFactory !== undefined) {
+    try {
+      refresher = await opts.prObservationRefresherFactory();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[plan-obs-refresh] WARN: refresher factory threw: `
+          + `${err instanceof Error ? err.message : String(err)}; refresh pass will silent-skip.`,
+      );
+      refresher = null;
+    }
+  }
   console.log(
     `[boot] reconcile-plan-state: ${args.reconcilePlanState ? 'ENABLED' : 'DISABLED'}`,
   );
@@ -464,9 +454,3 @@ async function main(): Promise<number> {
   // until SIGINT/SIGTERM.
   return 0;
 }
-
-const exitCode = await main().catch(err => {
-  console.error('fatal:', err instanceof Error ? err.stack ?? err.message : String(err));
-  return 2;
-});
-if (exitCode !== 0) process.exit(exitCode);

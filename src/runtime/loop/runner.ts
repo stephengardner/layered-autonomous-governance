@@ -113,12 +113,11 @@ export class LoopRunner {
   private reaperPrincipalChecked: boolean = false;
   /**
    * Refresher seam for the pr-observation refresh pass. `null` when
-   * the pass is disabled OR when the operator opted into the pass
-   * but did not wire a refresher (the silent-skip path; the tick
-   * loop logs the gap once per tick to surface the misconfiguration).
-   * Substrate purity: the framework never imports a GitHub adapter;
-   * the deployment-side wiring constructs the adapter and threads
-   * it through `LoopOptions.prObservationRefresher`.
+   * the pass is disabled OR when the caller did not wire a refresher
+   * (the silent-skip path; the tick loop logs the gap once per tick).
+   * The framework consumes the adapter only through the
+   * `PrObservationRefresher` interface; concrete construction
+   * happens outside framework code.
    */
   private readonly prObservationRefresher: PrObservationRefresher | null;
   private tickCounter: number = 0;
@@ -147,13 +146,12 @@ export class LoopRunner {
     };
     // Capture the refresher seam at construction time. Storing here
     // (vs. reading off `options` per tick) keeps the per-tick path
-    // free of optional-property reads on the caller's options object,
-    // and matches the framework's rule that adapter seams are bound
-    // once at boot. The caller may opt into the refresh pass without
-    // supplying a refresher; we silently skip per tick rather than
-    // loud-fail at construction because a deployment that observes
-    // PRs through a webhook may want the reconcile pass enabled
-    // alongside a deliberately absent refresher.
+    // free of optional-property reads on the caller's options
+    // object. The pass silent-skips when this is null; the
+    // construction-time path does not throw because a caller
+    // opting into the refresh flag without supplying a refresher
+    // may be a coherent choice (see `runPlanObservationRefreshPass`
+    // doc on LoopOptions).
     this.prObservationRefresher = options.prObservationRefresher ?? null;
     // Validate the reaper config at construction time (vs. first
     // tick) so a misconfigured wiring fails the boot-up path instead
@@ -374,23 +372,13 @@ export class LoopRunner {
     }
 
     // --- Plan-observation refresh pass --------------------------------------
-    // Refresh BEFORE reconcile so a stale OPEN observation that was
-    // refreshed to a terminal state this tick becomes available for
-    // the reconcile pass on the SAME tick (not next tick). This is
-    // the same ordering scripts/run-approval-cycle.mjs uses for the
-    // daemon driver; mirroring it here keeps the in-process LoopRunner
-    // path and the daemon path observably equivalent. A failure logs
-    // to errors and leaves planObservationRefreshReport=null; other
-    // passes continue.
-    //
-    // Silent-skip when the seam is absent: an operator who opts into
-    // the pass without wiring a refresher (e.g. a misconfiguration,
-    // or a deployment that wants the reconcile pass alone) sees
-    // exactly one stderr line per tick naming the gap rather than a
-    // construction-time throw. The construction-time throw would block
-    // the legitimate "reconcile-only" posture, which is a coherent
-    // choice for a webhook-backed observation flow where the webhook
-    // itself writes terminal observations.
+    // Runs BEFORE reconcile so a non-terminal observation rewritten
+    // to terminal state by the refresher is reconciled on the SAME
+    // tick. Silent-skip when the refresher seam is absent so the
+    // reconcile pass can run alone on deployments where terminal
+    // observations are produced by an external driver. A pass
+    // failure logs to errors and leaves planObservationRefreshReport
+    // null; other passes continue.
     if (this.options.runPlanObservationRefreshPass) {
       if (this.prObservationRefresher === null) {
         // eslint-disable-next-line no-console
@@ -416,15 +404,11 @@ export class LoopRunner {
     // --- Plan-state reconcile pass ------------------------------------------
     // Default-disabled. When enabled, transitions plans whose linked
     // pr-observation atoms carry a terminal pr_state from
-    // 'executing'/'approved' to 'succeeded'/'abandoned'. Closes the
-    // substrate gap where plans stay in 'executing' indefinitely after
-    // their PR merges; the reaper pass handles 'proposed' plans, this
-    // pass handles 'executing' plans whose PR has terminated.
-    //
-    // Pure in-process: no external I/O; cost scales with the count of
-    // pr-observation atoms (bounded inside the tick by maxScan,
-    // default 5000). A reconcile failure logs to errors and leaves
-    // planReconcileReport=null without failing the tick.
+    // 'executing'/'approved' to 'succeeded'/'abandoned'. In-process:
+    // no external I/O; cost scales with the count of pr-observation
+    // atoms, bounded inside the tick by maxScan (default 5000). A
+    // reconcile failure logs to errors and leaves planReconcileReport
+    // null without failing the tick.
     if (this.options.runPlanReconcilePass) {
       try {
         planReconcileReport = await this.planReconcilePass();
@@ -720,13 +704,10 @@ export class LoopRunner {
   }
 
   /**
-   * Run one plan-state reconcile pass. Pure delegate to the
-   * existing `runPlanStateReconcileTick` mechanism; LoopRunner adds
-   * scheduling + audit only. Substrate purity is preserved: the tick
-   * function is in a separate module and continues to be the single
-   * source of truth for the reconcile algorithm. The daemon driver
-   * (scripts/run-approval-cycle.mjs) and the in-process LoopRunner
-   * call the SAME function so observable behavior cannot drift.
+   * Run one plan-state reconcile pass. Pure delegate to
+   * `runPlanStateReconcileTick`; LoopRunner adds scheduling + audit
+   * only. The tick function in a separate module remains the single
+   * source of truth for the reconcile algorithm.
    */
   private async planReconcilePass(): Promise<
     NonNullable<LoopTickReport['planReconcileReport']>
@@ -741,15 +722,13 @@ export class LoopRunner {
   }
 
   /**
-   * Run one pr-observation refresh pass. Pure delegate to the
-   * existing `runPlanObservationRefreshTick` mechanism; LoopRunner
-   * adds scheduling + audit only. The pluggable `PrObservationRefresher`
-   * seam is supplied at construction time via
-   * `LoopOptions.prObservationRefresher`; the framework never knows
-   * how the refresher writes the new observation atom, only that it
-   * does. The freshness threshold is read inside the tick from the
-   * `pol-pr-observation-freshness-threshold-ms` canon atom (default
-   * 5 minutes).
+   * Run one pr-observation refresh pass. Pure delegate to
+   * `runPlanObservationRefreshTick`; LoopRunner adds scheduling +
+   * audit only. The pluggable `PrObservationRefresher` seam is
+   * supplied at construction time via
+   * `LoopOptions.prObservationRefresher`. The freshness threshold
+   * is read inside the tick from canon
+   * `pol-pr-observation-freshness-threshold-ms` (default 5 minutes).
    */
   private async planObservationRefreshPass(
     refresher: PrObservationRefresher,
