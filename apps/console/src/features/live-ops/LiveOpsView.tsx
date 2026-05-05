@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { Activity, Cpu, Eye, GitMerge, Heart, ShieldAlert, Timer, Users, Workflow } from 'lucide-react';
+import { Activity, Cpu, Eye, GitMerge, Heart, Info, ShieldAlert, Timer, Users, Workflow, X } from 'lucide-react';
 import {
   LoadingState,
   ErrorState,
@@ -24,6 +25,8 @@ import {
 import { setRoute } from '@/state/router.store';
 import { planStateTone } from '@/features/plan-state/tones';
 import { pipelineStateTone } from '@/features/pipelines-viewer/tones';
+import { storage } from '@/services/storage.service';
+import { isOperatorTrackingDisabled } from './pulseTrackingDisabled';
 import styles from './LiveOpsView.module.css';
 
 /**
@@ -101,16 +104,111 @@ function PulseIndicator({
 }
 
 function Body({ data }: { data: LiveOpsSnapshot }) {
+  /*
+   * The tracking-disabled banner sits OUTSIDE the responsive
+   * tile-grid (display: grid) so it spans the full row regardless of
+   * how many columns the viewport allocates. Visually it pairs with
+   * the heartbeat tile because that is the symptom; rendering it
+   * above the grid means the explanation reaches the operator's eye
+   * before the flat counters do.
+   */
   return (
-    <div className={styles.grid}>
-      <HeartbeatTile heartbeat={data.heartbeat} />
-      <DaemonPostureTile posture={data.daemon_posture} />
-      <ActiveSessionsTile sessions={data.active_sessions} />
-      <LiveDeliberationsTile plans={data.live_deliberations} />
-      <InFlightExecutionsTile plans={data.in_flight_executions} />
-      <PipelinesTile />
-      <RecentTransitionsTile transitions={data.recent_transitions} />
-      <PrActivityTile prs={data.pr_activity} />
+    <>
+      <PulseTrackingDisabledBanner
+        heartbeat={data.heartbeat}
+        sessions={data.active_sessions}
+      />
+      <div className={styles.grid}>
+        <HeartbeatTile heartbeat={data.heartbeat} />
+        <DaemonPostureTile posture={data.daemon_posture} />
+        <ActiveSessionsTile sessions={data.active_sessions} />
+        <LiveDeliberationsTile plans={data.live_deliberations} />
+        <InFlightExecutionsTile plans={data.in_flight_executions} />
+        <PipelinesTile />
+        <RecentTransitionsTile transitions={data.recent_transitions} />
+        <PrActivityTile prs={data.pr_activity} />
+      </div>
+    </>
+  );
+}
+
+/*
+ * Storage key for the session-scoped dismiss flag. Keyed under the
+ * shared storage.service prefix so we never reach into platform
+ * storage directly (apps/console/CLAUDE.md principle 10). The flag
+ * is sessionStorage-equivalent in semantics: the value lives in
+ * localStorage but the dashboard reads it as a boolean memo, so
+ * clearing localStorage or opening a fresh browser surfaces the
+ * banner again. That is the intended affordance: dismissal is a
+ * "not now" hint, not a permanent silencing.
+ */
+const TRACKING_BANNER_DISMISSED_KEY = 'pulse.tracking-disabled-banner.dismissed';
+
+function PulseTrackingDisabledBanner({
+  heartbeat,
+  sessions,
+}: {
+  heartbeat: LiveOpsHeartbeat;
+  sessions: ReadonlyArray<LiveOpsActiveSession>;
+}) {
+  /*
+   * Initial state reads through the storage service so the dismiss
+   * persists across in-page React remounts (e.g., a tab focus that
+   * forces a refetch + Body re-render). The read is synchronous and
+   * platform-safe (NoopStorageService stub on SSR/Node), so no
+   * useEffect dance is needed.
+   */
+  const [dismissed, setDismissed] = useState<boolean>(
+    () => storage.get<boolean>(TRACKING_BANNER_DISMISSED_KEY) === true,
+  );
+
+  if (!isOperatorTrackingDisabled(heartbeat, sessions)) return null;
+  if (dismissed) return null;
+
+  const handleDismiss = () => {
+    storage.set(TRACKING_BANNER_DISMISSED_KEY, true);
+    setDismissed(true);
+  };
+
+  return (
+    <div
+      className={styles.trackingDisabledBanner}
+      role="status"
+      aria-live="polite"
+      data-testid="live-ops-tracking-disabled-banner"
+    >
+      <span className={styles.trackingDisabledIcon} aria-hidden="true">
+        <Info size={16} strokeWidth={2} />
+      </span>
+      <span className={styles.trackingDisabledBody}>
+        <strong className={styles.trackingDisabledTitle}>
+          Operator session tracking is off.
+        </strong>{' '}
+        <span className={styles.trackingDisabledDetail}>
+          Set <code className={styles.trackingDisabledCode}>LAG_OPERATOR_ID</code>
+          {' '}in your shell profile to enable pulse heartbeat for terminal
+          sessions. See{' '}
+          <a
+            className={styles.trackingDisabledLink}
+            href="https://github.com/stephengardner/layered-autonomous-governance/blob/main/docs/getting-started.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="live-ops-tracking-disabled-link"
+          >
+            docs/getting-started.md
+          </a>
+          {' '}for details.
+        </span>
+      </span>
+      <button
+        type="button"
+        className={styles.trackingDisabledDismiss}
+        onClick={handleDismiss}
+        aria-label="Dismiss operator session tracking hint"
+        data-testid="live-ops-tracking-disabled-dismiss"
+      >
+        <X size={14} strokeWidth={2.5} />
+      </button>
     </div>
   );
 }

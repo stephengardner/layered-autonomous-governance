@@ -82,6 +82,121 @@
   }
 }
 
+/* ---- tracking-disabled banner ---- */
+
+/*
+ * Surfaces the "operator session tracking is off" hint above the
+ * heartbeat tile when the snapshot reports zero activity AND zero
+ * active sessions. The shape pairs with the existing pulseIndicator
+ * + tile aesthetic: pill-radius border, info-tone color-mix tint,
+ * single-row layout that stacks at narrow widths so the dismiss
+ * affordance never crowds the message body on a 390px viewport.
+ */
+.trackingDisabledBanner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: color-mix(in srgb, var(--status-info) 8%, var(--surface-base));
+  border: var(--stroke-hairline) solid
+    color-mix(in srgb, var(--status-info) 35%, transparent);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  line-height: var(--line-height-relaxed);
+}
+
+.trackingDisabledIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  /*
+   * Match the 44x44 minimum touch-target rule for any embedded
+   * interactive child; the icon itself is decorative (aria-hidden),
+   * but pinning the box at 1.75rem keeps the banner heights
+   * visually balanced with the tile icon at the same dimension.
+   */
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--status-info) 16%, var(--surface-raised));
+  color: var(--status-info);
+}
+
+.trackingDisabledBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.trackingDisabledTitle {
+  color: var(--text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.trackingDisabledDetail {
+  color: var(--text-secondary);
+}
+
+.trackingDisabledCode {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: var(--space-px) var(--space-1);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  color: var(--text-primary);
+}
+
+.trackingDisabledLink {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: var(--stroke-hairline);
+  text-underline-offset: 0.15em;
+  transition: color var(--duration-fast) var(--easing-standard);
+}
+
+.trackingDisabledLink:hover {
+  color: var(--accent-hover);
+}
+
+.trackingDisabledLink:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+  border-radius: var(--radius-xs);
+}
+
+.trackingDisabledDismiss {
+  /*
+   * 44x44 minimum touch target per dev-mobile-first-and-mobile-tested.
+   * Icon is centered inside the larger hit area so the visual weight
+   * stays light while a thumb tap reliably hits the affordance on
+   * 390px viewports.
+   */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2.75rem;
+  height: 2.75rem;
+  margin: calc(var(--space-2) * -1);
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  background: transparent;
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard);
+}
+
+.trackingDisabledDismiss:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.trackingDisabledDismiss:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
 /* ---- responsive grid ---- */
 
 .grid {
