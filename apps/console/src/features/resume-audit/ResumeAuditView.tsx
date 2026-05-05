@@ -131,10 +131,21 @@ export function ResumeAuditView() {
           </p>
         </div>
         <div className={styles.refreshGroup}>
+          {/*
+            * The visible label updates every second (from the `now`
+            * tick), so leaving an `aria-live` region here would
+            * cause screen readers to chant "Last refreshed N seconds
+            * ago" every second, which is exactly the disruption
+            * `aria-live` is meant to avoid. The label remains
+            * available to AT in the DOM via this span; routine ticks
+            * are not announced. Should we ever want to announce on
+            * explicit refresh, the right shape is a separate
+            * sr-only live-region element updated only inside
+            * `handleRefresh`, not on the per-second tick.
+            */}
           <span
             className={styles.lastRefreshed}
             data-testid="resume-audit-last-refreshed"
-            aria-live="polite"
           >
             {lastRefreshedLabel}
           </span>
