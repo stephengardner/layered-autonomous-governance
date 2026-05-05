@@ -212,3 +212,86 @@ test.describe('sidebar nav', () => {
     await expect(page.getByTestId('resume-audit-view')).toBeVisible();
   });
 });
+
+test.describe('resume-audit refresh button', () => {
+  test('refetches all three sections without reloading the page', async ({ page }) => {
+    interface Hold {
+      readonly release: () => void;
+      readonly promise: Promise<void>;
+    }
+    const makeHold = (): Hold => {
+      let release!: () => void;
+      const promise = new Promise<void>((r) => { release = r; });
+      return { release, promise };
+    };
+
+    let summaryHits = 0;
+    let recentHits = 0;
+    let resetsHits = 0;
+    const holds: Hold[] = [];
+    let holdNext = false;
+
+    const installRoute = async (
+      glob: string,
+      bump: () => void,
+    ) => {
+      await page.route(glob, async (route) => {
+        bump();
+        if (holdNext) {
+          const h = makeHold();
+          holds.push(h);
+          await h.promise;
+        }
+        await route.continue();
+      });
+    };
+    await installRoute('**/api/resume.summary', () => { summaryHits += 1; });
+    await installRoute('**/api/resume.recent', () => { recentHits += 1; });
+    await installRoute('**/api/resume.resets', () => { resetsHits += 1; });
+
+    await gotoResumeView(page);
+    await expect.poll(
+      () => summaryHits >= 1 && recentHits >= 1 && resetsHits >= 1,
+      { timeout: 10_000 },
+    ).toBe(true);
+
+    const baselineSummary = summaryHits;
+    const baselineRecent = recentHits;
+    const baselineResets = resetsHits;
+
+    await page.evaluate(() => {
+      const w = window as unknown as { __resumeAuditMounted?: number; __resumeAuditUnloaded?: boolean };
+      w.__resumeAuditMounted = Date.now();
+      window.addEventListener('beforeunload', () => { w.__resumeAuditUnloaded = true; });
+    });
+
+    holdNext = true;
+    const refresh = page.getByTestId('resume-audit-refresh');
+    await expect(refresh).toBeVisible();
+    await refresh.click();
+
+    const spinner = page.getByTestId('resume-audit-refresh-spinner');
+    const spinnerActive = async (): Promise<boolean> => {
+      const visible = await spinner.isVisible().catch(() => false);
+      const ariaBusy = await refresh.getAttribute('aria-busy').catch(() => null);
+      return visible || ariaBusy === 'true';
+    };
+    await expect.poll(spinnerActive, { timeout: 5_000 }).toBe(true);
+
+    await expect.poll(() => holds.length, { timeout: 10_000 }).toBe(3);
+    holds.forEach((h) => h.release());
+
+    await expect.poll(() => summaryHits - baselineSummary).toBe(1);
+    await expect.poll(() => recentHits - baselineRecent).toBe(1);
+    await expect.poll(() => resetsHits - baselineResets).toBe(1);
+
+    await expect(refresh).toHaveAttribute('aria-busy', 'false');
+
+    const sentinel = await page.evaluate(() => {
+      const w = window as unknown as { __resumeAuditMounted?: number; __resumeAuditUnloaded?: boolean };
+      return { mounted: w.__resumeAuditMounted, unloaded: w.__resumeAuditUnloaded };
+    });
+    expect(sentinel.mounted, 'mount sentinel survives refresh (no reload)').toBeDefined();
+    expect(sentinel.unloaded, 'beforeunload should not fire').toBeFalsy();
+  });
+});
