@@ -288,17 +288,14 @@ describe('GitWorktreeProvider release branch cleanup', () => {
     // The acquire-time cred-copy try/catch already removes the
     // worktree on failure; the branch deletion was the missing leg
     // that produced the same collision-on-retry symptom for a
-    // pipeline whose cred-copy step crashed. Use an `execImpl`
-    // override that simulates a copy error AFTER worktree-add
-    // succeeds; the rollback must drop both the worktree AND the
-    // branch.
-    // We trigger the cred-copy by handing a real role that is
-    // provisioned in the test fixture (`lag-ceo`) and override the
-    // implementation of `copyFile` is unreachable, so we instead
-    // simulate by wrapping execImpl to throw once the branch ref
-    // exists. Simpler approach: arrange a copyFile-side failure by
-    // pointing copyCredsForRoles at a role whose `.json` is a
-    // directory (stat() succeeds, copyFile() throws EISDIR).
+    // pipeline whose cred-copy step crashed.
+    //
+    // Trigger cred-copy failure by creating a *directory* where the
+    // provider expects a JSON file: stat() succeeds (a directory IS
+    // a dirent), but copyFile() throws EISDIR. The acquire() rollback
+    // must then remove both the newly-created worktree AND the
+    // agentic/<id> branch so a retry with the same correlationId is
+    // not blocked by a leftover ref.
     const dir = await mkdtemp(join(tmpdir(), 'lag-cred-rollback-'));
     try {
       await execa('git', ['init', '-q', '-b', 'main', dir]);
