@@ -513,9 +513,3 @@
     transform: rotate(180deg);
   }
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .sectionChevron {
-    transition: none;
-  }
-}
