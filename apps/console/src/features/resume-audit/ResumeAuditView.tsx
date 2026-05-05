@@ -1,10 +1,12 @@
 import { useState } from 'react';
+import type { MouseEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { Activity, AlertCircle, ArrowRightLeft, Clock3, RotateCcw, Users } from 'lucide-react';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
-import { setRoute, routeHref, routeForAtomId } from '@/state/router.store';
+import { setRoute, routeHref, routeForAtomId, type Route } from '@/state/router.store';
+import { formatRelative } from '@/features/pipelines-viewer/PipelinesView';
 import {
   getResumeRecent,
   getResumeResets,
@@ -192,6 +194,7 @@ function PrincipalRatioCard({
 }) {
   const ratioPct = stats.ratio === null ? null : Math.round(stats.ratio * 100);
   const tone = ratioToneClass(stats.ratio);
+  const reducedMotion = useReducedMotion();
 
   return (
     <motion.article
@@ -199,18 +202,10 @@ function PrincipalRatioCard({
       data-testid="resume-audit-principal-card"
       data-principal-id={stats.principal_id}
       data-ratio={stats.ratio === null ? 'no-data' : ratioPct ?? 0}
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18, delay: Math.min(index * 0.025, 0.3) }}
-      onClick={(e) => {
-        if (e.defaultPrevented || e.button !== 0) return;
-        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-        const target = e.target as HTMLElement;
-        if (target.closest('a, button, input, textarea, select, pre')) return;
-        if (window.getSelection()?.toString()) return;
-        e.preventDefault();
-        setRoute('principals', stats.principal_id);
-      }}
+      initial={reducedMotion ? false : { opacity: 0, y: 6 }}
+      animate={reducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
+      transition={{ duration: reducedMotion ? 0 : 0.18, delay: reducedMotion ? 0 : Math.min(index * 0.025, 0.3) }}
+      onClick={makeCardNav('principals', stats.principal_id)}
     >
       <header className={styles.principalCardHead}>
         <h4 className={styles.principalName}>
@@ -218,12 +213,7 @@ function PrincipalRatioCard({
             className={styles.principalLink}
             href={routeHref('principals', stats.principal_id)}
             data-testid="resume-audit-principal-link"
-            onClick={(e) => {
-              if (e.defaultPrevented || e.button !== 0) return;
-              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-              e.preventDefault();
-              setRoute('principals', stats.principal_id);
-            }}
+            onClick={makeNav('principals', stats.principal_id)}
           >
             {stats.principal_id}
           </a>
@@ -343,27 +333,23 @@ function RecentResumedRow({ session }: { session: ResumeAuditRecentSession }) {
   const priorRoute = session.resumed_from_atom_id
     ? routeForAtomId(session.resumed_from_atom_id)
     : null;
+  const reducedMotion = useReducedMotion();
 
   return (
     <motion.li
       className={styles.recentRow}
       data-testid="resume-audit-recent-row"
       data-session-id={session.session_atom_id}
-      initial={{ opacity: 0 }}
+      initial={reducedMotion ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
-      transition={{ duration: 0.16 }}
+      transition={{ duration: reducedMotion ? 0 : 0.16 }}
     >
       <div className={styles.recentRowHead}>
         <a
           className={styles.recentSessionId}
           href={routeHref(sessionRoute, session.session_atom_id)}
           data-testid="resume-audit-recent-session-link"
-          onClick={(e) => {
-            if (e.defaultPrevented || e.button !== 0) return;
-            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-            e.preventDefault();
-            setRoute(sessionRoute, session.session_atom_id);
-          }}
+          onClick={makeNav(sessionRoute, session.session_atom_id)}
         >
           {session.session_atom_id}
         </a>
@@ -381,14 +367,7 @@ function RecentResumedRow({ session }: { session: ResumeAuditRecentSession }) {
             className={styles.recentPriorLink}
             href={routeHref(priorRoute, session.resumed_from_atom_id)}
             data-testid="resume-audit-recent-prior-link"
-            onClick={(e) => {
-              if (e.defaultPrevented || e.button !== 0) return;
-              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-              e.preventDefault();
-              if (session.resumed_from_atom_id) {
-                setRoute(priorRoute, session.resumed_from_atom_id);
-              }
-            }}
+            onClick={makeNav(priorRoute, session.resumed_from_atom_id)}
           >
             from {session.resumed_from_atom_id}
           </a>
@@ -502,27 +481,23 @@ function ResetHelpButton() {
 
 function ResetRow({ record }: { record: ResumeAuditResetRecord }) {
   const route = routeForAtomId(record.atom_id);
+  const reducedMotion = useReducedMotion();
   return (
     <motion.li
       className={styles.resetRow}
       data-testid="resume-audit-reset-row"
       data-reset-id={record.atom_id}
       data-consumed={record.consumed ? 'true' : 'false'}
-      initial={{ opacity: 0 }}
+      initial={reducedMotion ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
-      transition={{ duration: 0.16 }}
+      transition={{ duration: reducedMotion ? 0 : 0.16 }}
     >
       <div className={styles.resetRowHead}>
         <a
           className={styles.resetAtomLink}
           href={routeHref(route, record.atom_id)}
           data-testid="resume-audit-reset-atom-link"
-          onClick={(e) => {
-            if (e.defaultPrevented || e.button !== 0) return;
-            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-            e.preventDefault();
-            setRoute(route, record.atom_id);
-          }}
+          onClick={makeNav(route, record.atom_id)}
         >
           {record.atom_id}
         </a>
@@ -558,16 +533,58 @@ function ResetRow({ record }: { record: ResumeAuditResetRecord }) {
 }
 
 // ---------------------------------------------------------------------------
-// Format helpers (shared with sibling viewers; same shape as
-// pipelines-viewer's formatters per `dev-extract-at-n=2`).
+// Internal-link click guard (extracted at N=2 within this file per
+// `dev-extract-helpers-at-n-2`).
+//
+// Five sites in this view (ratio-card body, principal-name link, recent-row
+// body, recent prior-link, reset-row body, reset atom link) repeat the same
+// shape: bail on modifier-or-non-primary clicks, prevent the default
+// navigation, then call setRoute. Centralizing the predicate keeps the
+// behavior consistent and lets a future tweak (e.g. a navigation analytic)
+// land once.
+//
+// Cross-feature extraction (pulling this into a shared util alongside the
+// 10 other call sites in this codebase) is scoped out: each feature owns
+// its own click-handler shape today, and a substrate-wide refactor is a
+// separate ship. This helper unblocks the inside-the-file duplication
+// while preserving the larger seam.
 // ---------------------------------------------------------------------------
 
-function formatRelative(iso: string): string {
-  const ts = Date.parse(iso);
-  if (!Number.isFinite(ts)) return iso;
-  const ageSec = Math.max(0, Math.round((Date.now() - ts) / 1000));
-  if (ageSec < 60) return `${ageSec}s ago`;
-  if (ageSec < 3600) return `${Math.round(ageSec / 60)}m ago`;
-  if (ageSec < 86_400) return `${(ageSec / 3600).toFixed(1)}h ago`;
-  return new Date(ts).toLocaleString();
+function isPlainLeftClick(e: MouseEvent): boolean {
+  if (e.defaultPrevented) return false;
+  if (e.button !== 0) return false;
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return false;
+  return true;
+}
+
+/**
+ * Anchor-style onClick: bail on modifier/non-primary, otherwise prevent
+ * default and call setRoute. Used by every <a href={routeHref(...)}> in
+ * this view so the modified-click semantics (open in new tab, etc.)
+ * survive while plain-left-click is intercepted into pushState.
+ */
+function makeNav(route: Route, id?: string) {
+  return (e: MouseEvent) => {
+    if (!isPlainLeftClick(e)) return;
+    e.preventDefault();
+    setRoute(route, id);
+  };
+}
+
+/**
+ * Card-body onClick: same modified-click bail, plus skip when the click
+ * landed on an interactive element inside the card (anchors, buttons,
+ * inputs, code blocks) and skip when the user has a text selection
+ * active. The card-as-a-link affordance must coexist with the inner
+ * anchors and the user's ability to highlight text without navigating.
+ */
+function makeCardNav(route: Route, id?: string) {
+  return (e: MouseEvent) => {
+    if (!isPlainLeftClick(e)) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('a, button, input, textarea, select, pre')) return;
+    if (window.getSelection()?.toString()) return;
+    e.preventDefault();
+    setRoute(route, id);
+  };
 }

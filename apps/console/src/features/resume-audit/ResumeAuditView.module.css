@@ -174,7 +174,7 @@
 .principalCard:hover {
   border-color: var(--border-strong);
   box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
+  transform: translateY(calc(-1 * var(--stroke-hairline)));
 }
 
 .principalCard:focus-within {
@@ -585,4 +585,31 @@
   color: var(--text-secondary);
   overflow-x: auto;
   white-space: pre;
+}
+
+/* ---------------------------------------------------------------------------
+ * Reduced-motion fallback per `dev-web-interaction-app-grade-discipline`.
+ * Every interactive transition this view defines is disabled when the
+ * user has prefers-reduced-motion: reduce set. Applied to the explicit
+ * transition lists above (window-chip hover, card hover/focus, ratio
+ * fill width, recent + reset row hovers, help button).
+ * ------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .windowChip,
+  .principalCard,
+  .principalLink,
+  .ratioFill,
+  .recentRow,
+  .resetRow,
+  .recentSessionId,
+  .resetAtomLink,
+  .recentPriorLink,
+  .helpButton {
+    transition: none;
+  }
+
+  .principalCard:hover {
+    transform: none;
+  }
 }
