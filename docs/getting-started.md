@@ -27,7 +27,7 @@ Three daemon modes plus a terminal session share the same `.lag/` substrate:
 ## Operator commands
 
 - `lag-run-loop`: autonomous tick daemon (decay, TTL, promotion, canon render).
-  - `--reap-stale-plans`: also abandon plans stuck in `proposed` past the TTL (default 72h). Requires `--reaper-principal` (or `LAG_REAPER_PRINCIPAL` env, or falls through to the loop's own principal). Run `node scripts/bootstrap-lag-loop-principal.mjs` once to provision the default `lag-loop` attribution principal.
+  - `--reap-stale-plans`: also abandon plans stuck in `proposed` past the TTL (default 24h warn / 72h abandon). Requires `--reaper-principal` (or `LAG_REAPER_PRINCIPAL` env, or falls through to the loop's own principal). Run `node scripts/bootstrap-lag-loop-principal.mjs` once to provision the default `lag-loop` attribution principal. TTLs resolve canon-policy first, then env / CLI fallback, then hardcoded defaults; override via the `pol-reaper-ttls` canon policy atom (preferred; seed via `node scripts/bootstrap-reaper-canon.mjs`) or the `--reaper-warn-ms` / `--reaper-abandon-ms` CLI flags.
 - `lag-respond`: interactive human-approval prompt for pending notifications.
 - `lag-compromise`: incident response; cascades taint when a principal is marked compromised.
 - `lag-actors`: per-role GitHub App identity provisioning.

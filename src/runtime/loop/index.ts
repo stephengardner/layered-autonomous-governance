@@ -1,6 +1,7 @@
 export { decayedConfidence, shouldUpdateConfidence } from './decay.js';
 export { ttlExpirePatch, type TtlExpireOptions } from './ttl.js';
 export { LoopRunner } from './runner.js';
+export { readReaperTtlsFromCanon } from './reaper-ttls.js';
 export {
   DEFAULT_HALF_LIVES,
   type CanonTarget,
