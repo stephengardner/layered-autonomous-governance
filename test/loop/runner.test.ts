@@ -2,12 +2,59 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { LoopRunner } from '../../src/loop/runner.js';
 import { DEFAULT_HALF_LIVES } from '../../src/loop/types.js';
-import type { AtomId, PrincipalId, Time } from '../../src/types.js';
+import { DEFAULT_REAPER_TTLS } from '../../src/runtime/plans/reaper.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
 import { samplePlanAtom, samplePrincipal, sampleAtom } from '../fixtures.js';
 
 const principal = 'loop-test' as PrincipalId;
 
 const REAPER_NOW_ISO = '2026-04-26T20:00:00.000Z';
+
+/**
+ * Build a `pol-reaper-ttls` policy atom with the given warn / abandon
+ * pair under metadata.policy.subject='reaper-ttls'. Mirrors the shape
+ * the bootstrap-reaper-canon.mjs script writes.
+ */
+function reaperTtlsPolicyAtom(
+  id: string,
+  warnMs: unknown,
+  abandonMs: unknown,
+): Atom {
+  return {
+    schema_version: 1,
+    id: id as AtomId,
+    content: 'reaper TTLs',
+    type: 'directive',
+    layer: 'L3',
+    provenance: {
+      kind: 'operator-seeded',
+      source: { agent_id: 'bootstrap' },
+      derived_from: [],
+    },
+    confidence: 1,
+    created_at: REAPER_NOW_ISO as Time,
+    last_reinforced_at: REAPER_NOW_ISO as Time,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: 'apex-agent' as PrincipalId,
+    taint: 'clean',
+    metadata: {
+      policy: {
+        subject: 'reaper-ttls',
+        warn_ms: warnMs,
+        abandon_ms: abandonMs,
+      },
+    },
+  };
+}
 
 describe('LoopRunner.tick basics', () => {
   it('first tick runs decay, increments counter, logs audit', async () => {
@@ -312,5 +359,232 @@ describe('LoopRunner.tick reaper integration', () => {
     expect(second.reaperReport?.abandoned).toBe(1);
     const recovered = await host.atoms.get('p-recovery' as AtomId);
     expect(recovered?.plan_state).toBe('abandoned');
+  });
+});
+
+/**
+ * TTL resolution chain tests:
+ *   canon `pol-reaper-ttls` > LoopOptions env / CLI override > DEFAULT_REAPER_TTLS
+ *
+ * Each case asserts both the bucket result of the sweep (the visible
+ * effect of which TTLs were applied) and the stderr log line that
+ * names the source. The log assertion makes the resolution path
+ * directly observable so a future refactor that silently drops a rung
+ * surfaces here, not in production.
+ *
+ * Helper: install a console.error capture and return the captured
+ * calls + a restore fn. Direct property replacement (vs. vi.spyOn)
+ * because the vitest config in this repo runs with `globals: false`
+ * and the spy-based interception has been unreliable in that mode.
+ */
+function captureStderr(): {
+  readonly calls: ReadonlyArray<ReadonlyArray<unknown>>;
+  restore: () => void;
+} {
+  const original = console.error;
+  const captured: unknown[][] = [];
+  // Wrap as `typeof console.error` so we don't reach for an `any` cast
+  // (the architectural guard rejects `any` in tracked TS sources).
+  const replacement: typeof console.error = (...args: unknown[]): void => {
+    captured.push(args);
+  };
+  console.error = replacement;
+  return {
+    calls: captured,
+    restore: () => {
+      console.error = original;
+    },
+  };
+}
+
+describe('LoopRunner.tick reaper TTL resolution chain', () => {
+  // Ages chosen so each test seed lands UNAMBIGUOUSLY in one bucket
+  // for the ttls under test. The clock pin is REAPER_NOW_ISO
+  // (2026-04-26T20:00:00.000Z); ages are computed from there.
+  const NOW_MS = new Date(REAPER_NOW_ISO).getTime();
+
+  it('canon policy atom WINS over env when both are present', async () => {
+    const host = createMemoryHost();
+    host.clock.setTime(REAPER_NOW_ISO);
+    await host.principals.put(samplePrincipal({ id: 'lag-loop' as PrincipalId }));
+    // Canon: warn=1h, abandon=2h. Env: warn=24h, abandon=72h.
+    // Plan age = 90 minutes (between 1h and 2h). Under canon, plan
+    // is in WARN bucket. Under env, plan would be FRESH.
+    await host.atoms.put(
+      reaperTtlsPolicyAtom('pol-reaper-ttls-default', 60 * 60 * 1000, 2 * 60 * 60 * 1000),
+    );
+    const planAgeMs = 90 * 60 * 1000; // 90 minutes
+    const planCreatedAt = new Date(NOW_MS - planAgeMs).toISOString();
+    await host.atoms.put(samplePlanAtom('p-canon-test', planCreatedAt));
+    // Capture stderr so we can assert the source label.
+    const cap = captureStderr();
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runReaperPass: true,
+      reaperPrincipal: 'lag-loop',
+      reaperWarnMs: 24 * 60 * 60 * 1000,
+      reaperAbandonMs: 72 * 60 * 60 * 1000,
+    });
+    const report = await runner.tick();
+    cap.restore();
+    // Canon TTL applied -> plan is in WARN bucket (not FRESH).
+    expect(report.reaperReport).not.toBeNull();
+    expect(report.reaperReport?.warned).toBe(1);
+    expect(report.reaperReport?.fresh).toBe(0);
+    // Source label confirms canon path was chosen.
+    const lines = cap.calls.map((c) => String(c[0]));
+    expect(
+      lines.some((c) => c.includes('[reaper] using TTLs from canon-policy')),
+    ).toBe(true);
+  });
+
+  it('falls through to env fallback when no canon atom exists', async () => {
+    const host = createMemoryHost();
+    host.clock.setTime(REAPER_NOW_ISO);
+    await host.principals.put(samplePrincipal({ id: 'lag-loop' as PrincipalId }));
+    // No canon atom seeded. Env: warn=1h, abandon=2h.
+    // Plan age = 90 minutes -> WARN under env TTLs.
+    const planAgeMs = 90 * 60 * 1000;
+    const planCreatedAt = new Date(NOW_MS - planAgeMs).toISOString();
+    await host.atoms.put(samplePlanAtom('p-env-test', planCreatedAt));
+    const cap = captureStderr();
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runReaperPass: true,
+      reaperPrincipal: 'lag-loop',
+      reaperWarnMs: 60 * 60 * 1000,
+      reaperAbandonMs: 2 * 60 * 60 * 1000,
+    });
+    const report = await runner.tick();
+    cap.restore();
+    expect(report.reaperReport).not.toBeNull();
+    expect(report.reaperReport?.warned).toBe(1);
+    expect(report.reaperReport?.fresh).toBe(0);
+    const lines = cap.calls.map((c) => String(c[0]));
+    expect(
+      lines.some(
+        (c) =>
+          c.includes('[reaper] using TTLs from env')
+          && !c.includes('canon-policy'),
+      ),
+    ).toBe(true);
+  });
+
+  it('falls through to DEFAULT_REAPER_TTLS when neither canon nor env override is supplied', async () => {
+    const host = createMemoryHost();
+    host.clock.setTime(REAPER_NOW_ISO);
+    await host.principals.put(samplePrincipal({ id: 'lag-loop' as PrincipalId }));
+    // No canon atom and no LoopOptions override -> hardcoded floor
+    // (24h warn / 72h abandon) applies.
+    // Plan age = 30 minutes -> FRESH under defaults.
+    const planAgeMs = 30 * 60 * 1000;
+    const planCreatedAt = new Date(NOW_MS - planAgeMs).toISOString();
+    await host.atoms.put(samplePlanAtom('p-default-test', planCreatedAt));
+    const cap = captureStderr();
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runReaperPass: true,
+      reaperPrincipal: 'lag-loop',
+      // No reaperWarnMs / reaperAbandonMs supplied: env-override is false.
+    });
+    const report = await runner.tick();
+    cap.restore();
+    expect(report.reaperReport).not.toBeNull();
+    expect(report.reaperReport?.fresh).toBe(1);
+    expect(report.reaperReport?.warned).toBe(0);
+    expect(report.reaperReport?.abandoned).toBe(0);
+    const lines = cap.calls.map((c) => String(c[0]));
+    expect(
+      lines.some((c) =>
+        c.includes(
+          `[reaper] using TTLs from defaults: warn=${DEFAULT_REAPER_TTLS.staleWarnMs}ms `
+            + `abandon=${DEFAULT_REAPER_TTLS.staleAbandonMs}ms`,
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('falls through to env when canon atom is malformed (and emits a warning)', async () => {
+    const host = createMemoryHost();
+    host.clock.setTime(REAPER_NOW_ISO);
+    await host.principals.put(samplePrincipal({ id: 'lag-loop' as PrincipalId }));
+    // Malformed: abandon_ms <= warn_ms (would merge buckets). The
+    // reader emits a stderr WARN and returns null; the loop falls
+    // through to env. Env TTLs put the plan in WARN.
+    await host.atoms.put(
+      reaperTtlsPolicyAtom('pol-reaper-ttls-default', 5_000, 5_000),
+    );
+    const planAgeMs = 90 * 60 * 1000;
+    const planCreatedAt = new Date(NOW_MS - planAgeMs).toISOString();
+    await host.atoms.put(samplePlanAtom('p-malformed-test', planCreatedAt));
+    const cap = captureStderr();
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runReaperPass: true,
+      reaperPrincipal: 'lag-loop',
+      reaperWarnMs: 60 * 60 * 1000,
+      reaperAbandonMs: 2 * 60 * 60 * 1000,
+    });
+    const report = await runner.tick();
+    cap.restore();
+    // Env path applied -> plan in WARN bucket.
+    expect(report.reaperReport).not.toBeNull();
+    expect(report.reaperReport?.warned).toBe(1);
+    const lines = cap.calls.map((c) => String(c[0]));
+    // (1) Reader logged the malformed-payload warning.
+    expect(
+      lines.some(
+        (c) =>
+          c.includes('[reaper-ttls] WARN')
+          && c.includes('reaper-ttls policy atom')
+          && c.includes('malformed payload'),
+      ),
+    ).toBe(true);
+    // (2) Loop logged the env-source label (NOT canon-policy).
+    expect(
+      lines.some(
+        (c) =>
+          c.includes('[reaper] using TTLs from env')
+          && !c.includes('canon-policy'),
+      ),
+    ).toBe(true);
+  });
+
+  it('canon-policy edit takes effect on the NEXT tick (re-read every pass)', async () => {
+    const host = createMemoryHost();
+    host.clock.setTime(REAPER_NOW_ISO);
+    await host.principals.put(samplePrincipal({ id: 'lag-loop' as PrincipalId }));
+    // Plan age = 90 min. Tick 1 with canon TTLs (1h/2h) -> WARN.
+    await host.atoms.put(
+      reaperTtlsPolicyAtom('pol-reaper-ttls-default', 60 * 60 * 1000, 2 * 60 * 60 * 1000),
+    );
+    const planAgeMs = 90 * 60 * 1000;
+    const planCreatedAt = new Date(NOW_MS - planAgeMs).toISOString();
+    await host.atoms.put(samplePlanAtom('p-canon-edit-test', planCreatedAt));
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runReaperPass: true,
+      reaperPrincipal: 'lag-loop',
+    });
+    const tick1 = await runner.tick();
+    expect(tick1.reaperReport?.warned).toBe(1);
+    // Operator edits canon: warn=2h, abandon=3h. Plan now FRESH.
+    // Replace by writing a NEW atom id and superseding the old, since
+    // the AtomStore puts are content-immutable. The new atom takes
+    // precedence by being clean + non-superseded; the prior atom is
+    // marked superseded so the reader skips it.
+    await host.atoms.update('pol-reaper-ttls-default' as AtomId, {
+      superseded_by: ['pol-reaper-ttls-tighter' as AtomId],
+    });
+    await host.atoms.put(
+      reaperTtlsPolicyAtom(
+        'pol-reaper-ttls-tighter',
+        2 * 60 * 60 * 1000,
+        3 * 60 * 60 * 1000,
+      ),
+    );
+    const tick2 = await runner.tick();
+    expect(tick2.reaperReport?.warned).toBe(0);
+    expect(tick2.reaperReport?.fresh).toBe(1);
   });
 });
