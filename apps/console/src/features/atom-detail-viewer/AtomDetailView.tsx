@@ -17,6 +17,7 @@ import {
   type AnyAtom,
 } from '@/services/atoms.service';
 import { atomTypeTone } from '@/features/atom-type-tones/tones';
+import { StageContextPanel } from '@/features/stage-context/StageContextPanel';
 import {
   routeForAtomId,
   routeHref,
@@ -222,6 +223,8 @@ function AtomDetailBody({ atom }: { atom: AnyAtom }) {
       </Section>
 
       <Renderer atom={atom} />
+
+      <StageContextPanel atomId={atom.id} />
 
       <RefList
         title="Derived from"
