@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import type { UseQueryResult } from '@tanstack/react-query';
 import { motion, useReducedMotion } from 'framer-motion';
-import { Activity, AlertCircle, ArrowRightLeft, Clock3, RotateCcw, Users } from 'lucide-react';
+import { Activity, AlertCircle, ArrowRightLeft, Clock3, RefreshCw, RotateCcw, Users } from 'lucide-react';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { setRoute, routeHref, routeForAtomId, type Route } from '@/state/router.store';
@@ -12,12 +13,23 @@ import {
   getResumeResets,
   getResumeSummary,
   type ResumeAuditPrincipalStats,
+  type ResumeAuditRecentResponse,
   type ResumeAuditRecentSession,
   type ResumeAuditResetRecord,
+  type ResumeAuditResetsResponse,
   type ResumeAuditSummary,
 } from '@/services/resume-audit.service';
 import { toErrorMessage } from '@/services/errors';
 import styles from './ResumeAuditView.module.css';
+
+/**
+ * Module-scoped relative-time formatter. One instance reused across
+ * renders so each tick pays only the formatter call, not an allocator
+ * round-trip. Locale fixed to 'en' until a console-wide i18n source
+ * appears (the second consumer is the upgrade trigger per
+ * `dev-dry-extract-at-second-duplication`).
+ */
+const RELATIVE_TIME_FORMATTER = new Intl.RelativeTimeFormat('en', { numeric: 'always' });
 
 /**
  * Resume audit dashboard.
@@ -39,26 +51,106 @@ import styles from './ResumeAuditView.module.css';
  * Mobile-first per `dev-web-mobile-first-required`: single-column at
  * <60rem, two-column ratio grid + side-by-side recent + resets at
  * larger widths. No useEffect for data; TanStack Query owns lifecycle.
+ *
+ * Three queries are held at this root so the Refresh control can drive
+ * a coordinated refetch across all sections (per the `Last refreshed`
+ * indicator below). Section components consume the query results via
+ * props so each section still owns its own loading / error / empty
+ * branches.
  */
 export function ResumeAuditView() {
   const [windowHours, setWindowHours] = useState<number>(24);
 
+  const summaryQuery = useQuery({
+    queryKey: ['resume-audit', 'summary', windowHours],
+    queryFn: ({ signal }) => getResumeSummary(windowHours, signal),
+  });
+  const recentQuery = useQuery({
+    queryKey: ['resume-audit', 'recent'],
+    queryFn: ({ signal }) => getResumeRecent(20, signal),
+  });
+  const resetsQuery = useQuery({
+    queryKey: ['resume-audit', 'resets'],
+    queryFn: ({ signal }) => getResumeResets(20, signal),
+  });
+
+  const someFetching =
+    summaryQuery.isFetching || recentQuery.isFetching || resetsQuery.isFetching;
+
+  // Last-refreshed indicator state. A 1-second tick drives a re-render
+  // that re-computes the elapsed-seconds label in render. The `now`
+  // separation keeps the formatter pure of `Date.now()` side-effects
+  // and lets the "click resets to 0s" semantics work via a single
+  // `setLastRefreshedAt(Date.now())` call inside the Refresh handler.
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<number>(() => Date.now());
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const handleRefresh = () => {
+    setLastRefreshedAt(Date.now());
+    void Promise.all([
+      summaryQuery.refetch(),
+      recentQuery.refetch(),
+      resetsQuery.refetch(),
+    ]);
+  };
+
+  const elapsedSeconds = Math.max(0, Math.round((now - lastRefreshedAt) / 1000));
+  const lastRefreshedLabel = `Last refreshed ${RELATIVE_TIME_FORMATTER.format(-elapsedSeconds, 'second')}`;
+
   return (
     <section className={styles.view} data-testid="resume-audit-view">
       <header className={styles.intro}>
-        <h2 className={styles.heroTitle}>Resume audit</h2>
-        <p className={styles.heroSubtitle}>
-          Cross-actor view of resume-vs-fresh-spawn behavior. The
-          substrate writes resume telemetry on each agent-session
-          atom; this dashboard projects those fields so an operator
-          can see whether actors are inheriting prior context as
-          intended, or silently fresh-spawning every iteration.
-        </p>
+        <div className={styles.introText}>
+          <h2 className={styles.heroTitle}>Resume audit</h2>
+          <p className={styles.heroSubtitle}>
+            Cross-actor view of resume-vs-fresh-spawn behavior. The
+            substrate writes resume telemetry on each agent-session
+            atom; this dashboard projects those fields so an operator
+            can see whether actors are inheriting prior context as
+            intended, or silently fresh-spawning every iteration.
+          </p>
+        </div>
+        <div className={styles.refreshGroup}>
+          <span
+            className={styles.lastRefreshed}
+            data-testid="resume-audit-last-refreshed"
+            aria-live="polite"
+          >
+            {lastRefreshedLabel}
+          </span>
+          <button
+            type="button"
+            className={styles.refreshButton}
+            onClick={handleRefresh}
+            disabled={someFetching}
+            aria-busy={someFetching}
+            aria-label="Refresh"
+            data-testid="resume-audit-refresh"
+          >
+            <RefreshCw
+              size={14}
+              strokeWidth={2}
+              aria-hidden="true"
+              className={someFetching ? styles.refreshSpinning : ''}
+              data-testid={someFetching ? 'resume-audit-refresh-spinner' : undefined}
+            />
+            <span className={styles.refreshLabel}>Refresh</span>
+          </button>
+        </div>
       </header>
 
-      <SummarySection windowHours={windowHours} onWindowChange={setWindowHours} />
-      <RecentResumedSection />
-      <RecentResetsSection />
+      <SummarySection
+        windowHours={windowHours}
+        onWindowChange={setWindowHours}
+        query={summaryQuery}
+      />
+      <RecentResumedSection query={recentQuery} />
+      <RecentResetsSection query={resetsQuery} />
     </section>
   );
 }
@@ -78,14 +170,10 @@ const WINDOW_OPTIONS: ReadonlyArray<{ readonly hours: number; readonly label: st
 interface SummarySectionProps {
   readonly windowHours: number;
   readonly onWindowChange: (next: number) => void;
+  readonly query: UseQueryResult<ResumeAuditSummary>;
 }
 
-function SummarySection({ windowHours, onWindowChange }: SummarySectionProps) {
-  const query = useQuery({
-    queryKey: ['resume-audit', 'summary', windowHours],
-    queryFn: ({ signal }) => getResumeSummary(windowHours, signal),
-  });
-
+function SummarySection({ windowHours, onWindowChange, query }: SummarySectionProps) {
   return (
     <section className={styles.section} aria-labelledby="resume-audit-summary-heading">
       <header className={styles.sectionHead}>
@@ -287,12 +375,11 @@ function ratioToneClass(ratio: number | null): string {
 // Section 2: recent resumed sessions.
 // ---------------------------------------------------------------------------
 
-function RecentResumedSection() {
-  const query = useQuery({
-    queryKey: ['resume-audit', 'recent'],
-    queryFn: ({ signal }) => getResumeRecent(20, signal),
-  });
+interface RecentResumedSectionProps {
+  readonly query: UseQueryResult<ResumeAuditRecentResponse>;
+}
 
+function RecentResumedSection({ query }: RecentResumedSectionProps) {
   return (
     <section className={styles.section} aria-labelledby="resume-audit-recent-heading">
       <header className={styles.sectionHead}>
@@ -387,12 +474,11 @@ function RecentResumedRow({ session }: { session: ResumeAuditRecentSession }) {
 // Section 3: recent reset signals.
 // ---------------------------------------------------------------------------
 
-function RecentResetsSection() {
-  const query = useQuery({
-    queryKey: ['resume-audit', 'resets'],
-    queryFn: ({ signal }) => getResumeResets(20, signal),
-  });
+interface RecentResetsSectionProps {
+  readonly query: UseQueryResult<ResumeAuditResetsResponse>;
+}
 
+function RecentResetsSection({ query }: RecentResetsSectionProps) {
   return (
     <section className={styles.section} aria-labelledby="resume-audit-resets-heading">
       <header className={styles.sectionHead}>

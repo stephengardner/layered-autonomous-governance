@@ -213,6 +213,54 @@ test.describe('sidebar nav', () => {
   });
 });
 
+test.describe('resume-audit last-refreshed indicator', () => {
+  test('renders "0 seconds ago" on mount, ticks to 1 second after one second', async ({ page }) => {
+    /*
+     * Use Playwright's clock fixture so the test does not pay a
+     * real-time wait. `installFake` freezes the page's `Date.now()`
+     * and `setInterval`/`setTimeout` to a deterministic origin; we
+     * then advance by exactly 1000ms and assert the relative-time
+     * label flipped from "0 seconds" to "1 second".
+     */
+    await page.clock.install({ time: new Date('2026-05-05T14:00:00Z') });
+    await gotoResumeView(page);
+
+    const indicator = page.getByTestId('resume-audit-last-refreshed');
+    await expect(indicator).toBeVisible();
+    /*
+     * On mount, lastRefreshedAt and now are both Date.now() so the
+     * elapsed-seconds clamp evaluates to 0. `Intl.RelativeTimeFormat`
+     * with `numeric: 'always'` emits "0 seconds ago" for 0.
+     */
+    await expect(indicator).toHaveText(/Last refreshed 0 seconds? ago/);
+
+    await page.clock.fastForward(1100);
+    await expect(indicator).toHaveText(/Last refreshed 1 second ago/);
+
+    await page.clock.fastForward(2000);
+    await expect(indicator).toHaveText(/Last refreshed 3 seconds ago/);
+  });
+
+  test('clicking Refresh resets the indicator back to 0 seconds', async ({ page }) => {
+    await page.clock.install({ time: new Date('2026-05-05T14:00:00Z') });
+    await gotoResumeView(page);
+
+    const indicator = page.getByTestId('resume-audit-last-refreshed');
+    await page.clock.fastForward(5000);
+    await expect(indicator).toHaveText(/Last refreshed 5 seconds ago/);
+
+    /*
+     * Click the Refresh button - onClick must call
+     * setLastRefreshedAt(Date.now()) synchronously so the indicator
+     * snaps back to "0 seconds ago" on the next render. The button
+     * also kicks off the three refetches but those are not the
+     * subject of this test.
+     */
+    await page.getByTestId('resume-audit-refresh').click();
+    await expect(indicator).toHaveText(/Last refreshed 0 seconds? ago/);
+  });
+});
+
 test.describe('resume-audit refresh button', () => {
   test('refetches all three sections without reloading the page', async ({ page }) => {
     interface Hold {
