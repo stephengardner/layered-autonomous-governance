@@ -36,8 +36,8 @@ import type { PrObservationRefresher } from '../runtime/plans/pr-observation-ref
  *
  * Returning `null` from the factory (or omitting it entirely)
  * activates the silent-skip path documented on
- * `LoopOptions.runPlanObservationRefreshPass`: the pass logs once
- * per tick and does no work.
+ * `LoopOptions.runPlanObservationRefreshPass`: the pass warns once
+ * per runner and otherwise does no work.
  */
 export type PrObservationRefresherFactory =
   () => Promise<PrObservationRefresher | null> | PrObservationRefresher | null;
