@@ -61,9 +61,17 @@ function mostRecentAgentTurnFromSnapshot(
   data: LiveOpsSnapshot | undefined,
 ): string | null {
   if (!data) return null;
+  // Compare parsed epoch values rather than strings: ISO strings with
+  // different precision/offset variants (`...Z` vs `...+00:00`, sub-
+  // millisecond suffixes, etc.) can mis-order under lexicographic
+  // comparison. The original ISO string is preserved on `best` so the
+  // returned value still flows through computeLiveOpsStatus's parser.
   let best: string | null = null;
+  let bestTs = Number.NEGATIVE_INFINITY;
   for (const session of data.active_sessions) {
-    if (session.last_turn_at && (!best || session.last_turn_at > best)) {
+    const ts = session.last_turn_at ? Date.parse(session.last_turn_at) : NaN;
+    if (Number.isFinite(ts) && ts > bestTs) {
+      bestTs = ts;
       best = session.last_turn_at;
     }
   }

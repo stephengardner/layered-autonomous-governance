@@ -63,41 +63,38 @@ async function stubSnapshot(page: Page, opts: SnapshotOpts) {
   );
 }
 
+/**
+ * Shared arrange: stub both endpoints, navigate to root, return the
+ * located badge. Extracted at N=2 (canon: dev-dry-extract-at-second-
+ * duplication) so the test bodies focus on the assertion that
+ * differs between cases (state attribute + visible text).
+ */
+async function openLiveOpsAndGetBadge(page: Page, lastTurnAt: string | null) {
+  await stubPipelines(page);
+  await stubSnapshot(page, { lastTurnAt });
+  await page.goto('/');
+  const badge = page.getByTestId('live-ops-status-badge');
+  await expect(badge).toBeVisible();
+  return badge;
+}
+
 test.describe('Live Ops freshness badge', () => {
   test('shows Running when the most recent agent turn is fresh', async ({ page }) => {
-    await stubPipelines(page);
     const fresh = new Date(Date.now() - 5_000).toISOString();
-    await stubSnapshot(page, { lastTurnAt: fresh });
-
-    await page.goto('/');
-
-    const badge = page.getByTestId('live-ops-status-badge');
-    await expect(badge).toBeVisible();
+    const badge = await openLiveOpsAndGetBadge(page, fresh);
     await expect(badge).toHaveAttribute('data-state', 'running');
     await expect(badge).toContainText('Running');
   });
 
   test('shows Idle when the most recent agent turn is stale', async ({ page }) => {
-    await stubPipelines(page);
     const stale = new Date(Date.now() - 120_000).toISOString();
-    await stubSnapshot(page, { lastTurnAt: stale });
-
-    await page.goto('/');
-
-    const badge = page.getByTestId('live-ops-status-badge');
-    await expect(badge).toBeVisible();
+    const badge = await openLiveOpsAndGetBadge(page, stale);
     await expect(badge).toHaveAttribute('data-state', 'idle');
     await expect(badge).toContainText('Idle');
   });
 
   test('shows Idle when there are no active sessions', async ({ page }) => {
-    await stubPipelines(page);
-    await stubSnapshot(page, { lastTurnAt: null });
-
-    await page.goto('/');
-
-    const badge = page.getByTestId('live-ops-status-badge');
-    await expect(badge).toBeVisible();
+    const badge = await openLiveOpsAndGetBadge(page, null);
     await expect(badge).toHaveAttribute('data-state', 'idle');
   });
 });
