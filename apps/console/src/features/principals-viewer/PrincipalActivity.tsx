@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchActorActivity, type ActorActivityEntry } from '@/services/actor-activity.service';
+import { toErrorMessage } from '@/services/errors';
 import { ErrorState } from '@/components/state-display/StateDisplay';
 import { routeForAtomId, setRoute } from '@/state/router.store';
 import styles from './PrincipalActivity.module.css';
@@ -58,7 +59,7 @@ export function PrincipalActivity({ principalId, limit = 25 }: Props) {
         <h3 className={styles.heading}>Recent activity</h3>
         <ErrorState
           title="Failed to load activity"
-          message={query.error instanceof Error ? query.error.message : String(query.error)}
+          message={toErrorMessage(query.error)}
           testId="principal-activity-error-state"
         />
       </section>

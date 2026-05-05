@@ -26,6 +26,7 @@ import { setRoute } from '@/state/router.store';
 import { planStateTone } from '@/features/plan-state/tones';
 import { pipelineStateTone } from '@/features/pipelines-viewer/tones';
 import { storage } from '@/services/storage.service';
+import { toErrorMessage } from '@/services/errors';
 import { isOperatorTrackingDisabled } from './pulseTrackingDisabled';
 import styles from './LiveOpsView.module.css';
 
@@ -253,7 +254,7 @@ function PipelinesTile() {
          */
         <ErrorState
           title="Failed to load pipelines"
-          message={query.error instanceof Error ? query.error.message : String(query.error)}
+          message={toErrorMessage(query.error)}
           testId="live-ops-pipelines-error"
         />
       )}

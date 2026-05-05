@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getPrincipalSkill } from '@/services/principals.service';
+import { toErrorMessage } from '@/services/errors';
 import { ErrorState } from '@/components/state-display/StateDisplay';
 import styles from './PrincipalSkill.module.css';
 
@@ -51,7 +52,7 @@ export function PrincipalSkill({ principalId }: Props) {
         <h3 className={styles.heading}>Skill</h3>
         <ErrorState
           title="Failed to load skill content"
-          message={query.error instanceof Error ? query.error.message : String(query.error)}
+          message={toErrorMessage(query.error)}
           testId="principal-skill-error-state"
         />
       </section>
