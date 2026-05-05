@@ -39,6 +39,16 @@ node scripts/ingest.mjs --source claudecode:./transcripts.jsonl
 node scripts/bootstrap.mjs
 ```
 
+## Pulse heartbeat for terminal sessions (optional)
+
+The Live Ops Pulse dashboard counts agent activity from `agent-session` and `agent-turn` atoms. LAG actor flows (PrFix, code-author, resume-author) mint these automatically. To make the dashboard reflect operator-led terminal work too, the SessionStart and PostToolUse hooks in `.claude/hooks/` mint operator session/turn atoms, but ONLY when `LAG_OPERATOR_ID` is exported in the shell that launches Claude Code:
+
+```bash
+export LAG_OPERATOR_ID=<your-operator-principal-id>   # must exist in .lag/principals/
+```
+
+Without it, the hooks skip silently (by design: no silent-default fallback per inv-governance-before-autonomy) and the Pulse heartbeat stays at zero during hands-on work. Set it once in your shell profile and the dashboard warms up on next session.
+
 ## What to read next
 
 - [`docs/architecture.md`](architecture.md) for the governance model.
