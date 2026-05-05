@@ -177,8 +177,13 @@ test.describe('resume-audit dashboard', () => {
     // Click the principal name link inside the card.
     await firstCard.getByTestId('resume-audit-principal-link').click();
 
-    // Routes to /principals/<id>.
-    await expect(page).toHaveURL(new RegExp(`/principals/${encodeURIComponent(principalId!).replace(/\./g, '\\.')}`));
+    // Routes to /principals/<id>. encodeURIComponent + a full
+    // regex-metacharacter escape on the encoded id keeps the URL
+    // assertion robust against any principal-id charset (dots,
+    // hyphens, parens, etc.) without relying on a partial escape.
+    const encodedId = encodeURIComponent(principalId!);
+    const escapedForRegex = encodedId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await expect(page).toHaveURL(new RegExp(`/principals/${escapedForRegex}`));
   });
 });
 
