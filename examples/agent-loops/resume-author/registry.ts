@@ -116,7 +116,7 @@ export function wrapIfEnabled<TInput, TResult>(
       ? host.resetAtom.isSet(workItemKey)
       : false;
     // Phase 1 routing: both branches delegate to `fallback`. The contract
-    // under test is the order — identify-then-reset-check — and that a
+    // under test is the order (identify-then-reset-check) and that a
     // reset signal selects the fresh-spawn path. Later phases swap in the
     // per-descriptor ladder for the non-reset branch.
     if (shouldReset) return fallback(input);
