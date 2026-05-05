@@ -4,7 +4,7 @@
  * shared values (gap, dot size, pulse keyframe) read alongside the
  * component that consumes them.
  *
- * No hardcoded px / hex / rgba — every primitive resolves through a
+ * No hardcoded px / hex / rgba -- every primitive resolves through a
  * design token. Stylelint enforces this; CR also flagged the prior
  * inline-style approach for the same reason.
  */
@@ -47,7 +47,7 @@
   background: var(--status-success);
   /*
    * The pulse cadence (~1.6s) intentionally exceeds the design-token
-   * --duration-slow (320ms) by an order of magnitude — those tokens
+   * --duration-slow (320ms) by an order of magnitude -- those tokens
    * govern UI transitions, not infinite animations. Hardcoding the
    * literal here is the right call rather than minting a single-use
    * "--duration-pulse" token.

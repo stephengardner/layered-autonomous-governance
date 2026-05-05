@@ -50,7 +50,7 @@ const REFRESH_INTERVAL_MS = 2000;
 
 /*
  * Until the snapshot payload carries `most_recent_agent_turn_at`
- * directly (server-side change deferred to a follow-up PR — see
+ * directly (server-side change deferred to a follow-up PR -- see
  * apps/console/server/live-ops-types.ts), derive the timestamp from
  * `active_sessions[].last_turn_at`. Any turn fresh enough to flip
  * the badge to Running (<60s) is by definition inside the 15-minute

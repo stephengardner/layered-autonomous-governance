@@ -14,7 +14,7 @@ export type LiveOpsStatus = 'running' | 'idle';
 /**
  * Pure helper. `now` is injected so unit tests can pin a clock
  * without mocking `Date.now()`. Null/undefined input degrades to
- * 'idle' rather than throwing — the badge never crashes a header.
+ * 'idle' rather than throwing -- the badge never crashes a header.
  */
 export function computeLiveOpsStatus(
   mostRecent: string | null | undefined,

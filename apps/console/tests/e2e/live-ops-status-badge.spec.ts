@@ -4,7 +4,7 @@ import { test, expect, type Page } from '@playwright/test';
  * E2E coverage for the Live Ops freshness badge. Uses request
  * interception to seed deterministic snapshot payloads so the test
  * does not need a running atom store. Timestamps in fixtures are
- * computed against real Date.now() at test time — the badge's clock
+ * computed against real Date.now() at test time -- the badge's clock
  * is never mocked in-browser (per plan-atom guidance), so the
  * relative freshness math holds against the true wall clock.
  */
