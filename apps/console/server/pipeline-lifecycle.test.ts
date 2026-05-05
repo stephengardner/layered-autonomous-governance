@@ -180,15 +180,24 @@ describe('parseLegacyStatusCountsFromContent', () => {
     expect(counts.red).toBe(1);
   });
 
-  it('treats `error` and `cancelled` legacy statuses as red', () => {
+  it('treats `error`, `cancelled`, `timed_out`, `action_required` as red', () => {
+    /*
+     * Red bucket aligned with parseCheckCountsFromContent: any
+     * GitHub conclusion that fails a merge gate counts. Drift
+     * between the two parsers would silently mislead the verdict
+     * ladder when a legacy CodeRabbit status `timed_out` (which is
+     * a real CI-side state) lands.
+     */
     const content = [
-      'legacy statuses: 2',
+      'legacy statuses: 4',
       '  - first: error',
       '  - second: cancelled',
+      '  - third: timed_out',
+      '  - fourth: action_required',
     ].join('\n');
     const counts = parseLegacyStatusCountsFromContent(content);
-    expect(counts.total).toBe(2);
-    expect(counts.red).toBe(2);
+    expect(counts.total).toBe(4);
+    expect(counts.red).toBe(4);
   });
 
   it('returns zero when content has no legacy-statuses header', () => {

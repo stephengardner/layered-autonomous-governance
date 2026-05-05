@@ -36,29 +36,19 @@ import type {
   PipelineLifecycleObservation,
   PipelineLifecycleSourceAtom,
 } from './pipeline-lifecycle-types.js';
+import { readObject, readString } from './projection-helpers.js';
 
 /**
- * Coerce an unknown metadata value to a non-empty string, or null.
- * Mirrors the readString helper in plan-state-lifecycle.ts so the
- * three projections share a guard shape.
+ * Coerce an unknown metadata value to a finite number, or null.
+ * Local because this module's contract returns `null` on missing /
+ * non-numeric values (vs pipelines.ts which returns `0`). A future
+ * canon-driven alignment of the two contracts will move this into
+ * projection-helpers.ts; for now the differing fallback shape keeps
+ * each module's downstream guards intact.
  */
-function readString(meta: Readonly<Record<string, unknown>>, key: string): string | null {
-  const v = meta[key];
-  return typeof v === 'string' && v.length > 0 ? v : null;
-}
-
 function readNumber(meta: Readonly<Record<string, unknown>>, key: string): number | null {
   const v = meta[key];
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
-}
-
-function readObject(
-  meta: Readonly<Record<string, unknown>>,
-  key: string,
-): Readonly<Record<string, unknown>> | null {
-  const v = meta[key];
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-  return v as Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -302,11 +292,21 @@ export function parseLegacyStatusCountsFromContent(content: string): {
     if (!match || !match[1]) continue;
     total += 1;
     const state = match[1].toLowerCase();
+    // Red bucket mirrors parseCheckCountsFromContent's red set so the
+    // two parsers agree on what a "red" GitHub status looks like:
+    // failure / failed / error / cancelled / timed_out / action_required.
+    // Aligning here matters because the legacy-status surface and the
+    // check-runs surface BOTH report a CR-failure as a red signal in
+    // the verdict ladder; if their definitions of "red" drift, a
+    // legacy-status timed_out (which legitimately fails a merge gate)
+    // would silently project as green and mislead the verdict.
     if (
       state === 'failure'
       || state === 'failed'
       || state === 'error'
       || state === 'cancelled'
+      || state === 'timed_out'
+      || state === 'action_required'
     ) {
       red += 1;
     }
