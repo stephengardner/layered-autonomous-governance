@@ -1,7 +1,7 @@
 # Resume-By-Default Extension to Non-PrFix Actor Handoffs
 
 > **Status:** proposed; needs operator approval before implementation.
-
+>
 > **Predecessor:** `docs/superpowers/specs/2026-04-25-resume-author-agent-loop-adapter-design.md` (PR #171). This spec extends the resume-by-default substrate from PrFixActor to the broader actor surface. Where this spec defers to PR #171's design (threat model, data flow, capture/rehydrate ladder, default-deny construction guards), it cites the section explicitly rather than restating it.
 
 ## 0. Future-proofing checklist (per `dev-design-decisions-3-month-review`)
@@ -14,7 +14,7 @@ This design must survive a 3-month-later review with 10x more actors, 10x more c
 | `dev-indie-floor-org-ceiling` | Indie default is opt-in: `pol-resume-strategy-<principal-id>` ships absent for every actor except `pr-fix-actor` (where PR #171 already wires it). A solo developer running `run-cto-actor.mjs` on a typo-fix gets fresh-spawn and never surprise-restores stale context. Org-ceiling deployments flip the dial via canon edit per actor. See section 5. |
 | `dev-substrate-not-prescription` | The resume-strategy registry is a pluggable substrate primitive (a `Map<PrincipalId, ResumeStrategyDescriptor>`); concrete walk functions and capture closures live in `examples/agent-loops/resume-author/walks/` per actor. The substrate provides the seam; specific actor knowledge stays in examples + canon policy. See section 3. |
 | `dev-easy-vs-pluggability-tradeoff` | The "easy" path would be ship a `ResumeCtoActorAdapter`, then a `ResumeCodeAuthorAdapter`, then a `ResumeAuditorAdapter`, copy-pasting the wrapper N times. Rejected: per `dev-extract-helpers-at-n-2`, this is exactly the duplication-to-extract pattern PR #171 anticipated. The wrapper is already actor-neutral; the missing piece is the per-actor walk-fn registry. See section 3 + 8. |
-| `dev-no-org-shape-in-src` | The registry primitive is one `Map`-shaped indirection in `src/`; per-actor walk-fns and policy-atom keys live entirely in `examples/` + `.lag/atoms/`. No actor names enter `src/`. See section 7. |
+| `dev-no-org-shape-in-src` | The registry primitive lives in `examples/agent-loops/resume-author/registry.ts` next to the PR #171 wrapper; per-actor walk-fns and policy-atom keys live in `examples/agent-loops/resume-author/walks/<actor-id>/` + `.lag/atoms/`. No actor names enter `src/`. The substrate primitives in `src/` (the `AgentLoopAdapter` interface, the `SessionResumeStrategy` interface, and the `CandidateSession` shape from PR #171) remain unchanged. See section 7. |
 | `inv-conflict-detection-at-write-time` | Capture-side `onSessionPersist` continues to fire synchronously on session-end before the session atom is finalized; broader actor coverage does not change this. |
 | `inv-l3-requires-human-default` | No L3 promotion; resume capture writes session atoms at L0 (unchanged from PR #171). |
 | `inv-design-kill-switch-first` | Wrapper inherits the substrate's existing kill-switch behavior on every actor it wraps. Both resume + fallback paths abort cooperatively via `AgentLoopInput.signal` (PR #171 §0). |
@@ -110,10 +110,19 @@ export class ResumeStrategyRegistry {
   /** Returns undefined if no descriptor is registered for the principal. */
   get(principalId: PrincipalId): ResumeStrategyDescriptor | undefined;
   /**
-   * Wrap the given fallback adapter with `ResumeAuthorAgentLoopAdapter` IF
-   * a descriptor is registered for the given principal AND the policy
-   * atom `pol-resume-strategy-<principal-id>` resolves to enabled. Otherwise
-   * returns the fallback unchanged.
+   * Returns an adapter that, on each `acquire(input)`, decides whether to
+   * resume or fresh-spawn based on the registered descriptor, the policy
+   * atom `pol-resume-strategy-<principal-id>`, and any unconsumed
+   * `resume-reset-<principal-id>-<work-item-key>` atom matching this
+   * invocation's `AgentLoopInput`. If no descriptor is registered OR the
+   * policy atom resolves to disabled, returns the fallback unchanged at
+   * construction time so there is no per-invocation overhead in the
+   * indie-floor default case.
+   *
+   * When wrapping IS active, reset evaluation runs inside the returned
+   * adapter's `acquire` path because the reset atom's key is derived from
+   * `AgentLoopInput` via the descriptor's `identifyWorkItem` callback,
+   * which is only callable per-invocation.
    */
   wrapIfEnabled(
     fallback: AgentLoopAdapter,
@@ -124,6 +133,8 @@ export class ResumeStrategyRegistry {
 ```
 
 The registry is a **runner-side** construct: each runner script (`run-cto-actor.mjs`, `run-code-author.mjs`, `run-pr-fix.mjs`, etc.) constructs the registry, registers its descriptor, and calls `wrapIfEnabled` to produce the adapter it passes to the actor. The registry never reaches into the actor's apply path; the actor sees an opaque `AgentLoopAdapter` interface as before.
+
+Construction-time work in `wrapIfEnabled`: descriptor lookup, policy-atom resolution, fallback short-circuit when disabled. Per-invocation work inside the returned adapter: `identifyWorkItem(input)` to derive the work-item key, AtomStore lookup for an unconsumed `resume-reset-<principal-id>-<work-item-key>` atom, candidate-walk + strategy iteration on no-reset, fresh-spawn delegation on reset-found. This split keeps the indie-floor zero-overhead property (no work-item key derivation when policy is off) while letting reset enforcement use the per-invocation input.
 
 ### 3.2 Why a registry vs per-actor wrappers
 
@@ -247,7 +258,7 @@ For `pr-fix-actor` (PR #171), the wrapper's three implicit conditions roughly co
 
 ### 6.3 Operator-reset escape hatch
 
-`operator-reset` is the substrate's "I changed my mind, throw away the prior session" signal. The operator writes a `resume-reset-<principal-id>-<work-item-key>` atom (e.g. `resume-reset-cto-actor-intent-abc123`); the registry's wrap-time policy resolution checks for the reset atom and skips resume on a hit. The reset atom has its own L0 layer and is consumed-and-archived after one use (the registry writes a `resume-reset-consumed` atom referencing it so a re-run does not silently re-reset).
+`operator-reset` is the substrate's "I changed my mind, throw away the prior session" signal. The operator writes a `resume-reset-<principal-id>-<work-item-key>` atom (e.g. `resume-reset-cto-actor-intent-abc123`); the wrapped adapter's per-invocation `acquire` path checks for the reset atom and skips resume on a hit. The reset atom has its own L0 layer and is consumed-and-archived after one use (the wrapper writes a `resume-reset-consumed` atom referencing it so a re-run does not silently re-reset).
 
 Without this escape hatch, an operator who wants to "start fresh" on a stuck work-item has no canonical way to opt out; their only path is to flip the canon policy atom off, run, then flip it back on, which is heavy and easy to forget. Operator-reset is the lightweight escape.
 
@@ -262,7 +273,9 @@ metadata.reset.reason: string (operator-supplied free text)
 provenance.principal: <operator-principal-id>
 ```
 
-The wrapper's `wrapIfEnabled` at construction time queries the AtomStore for any unconsumed reset atom matching the current principal + work-item. Match -> skip resume + write `resume-reset-consumed`. No match -> proceed with the strategy ladder.
+The reset check runs at invocation time inside the returned adapter's `acquire(input)` path, NOT at `wrapIfEnabled` construction time. The wrapped adapter calls `descriptor.identifyWorkItem(input)` to derive the per-invocation key, then queries the AtomStore for any unconsumed `resume-reset-<principal-id>-<work-item-key-encoded>` atom matching the current principal + work-item. Match -> skip resume + write `resume-reset-consumed` (referencing the matched reset atom and the new session atom that fresh-spawned in its place). No match -> proceed with the strategy ladder.
+
+Construction time cannot enforce this because `wrapIfEnabled` runs once per runner-script invocation but the work-item key is only known once `AgentLoopInput` arrives at `acquire`. A single runner script may invoke the same wrapped adapter against multiple work-items in sequence (e.g. a batch CTO planning run across several intents); each invocation gets its own reset check.
 
 ## 7. Audit chain
 
@@ -278,17 +291,18 @@ metadata.agent_session.extra.resume_strategy_used  // strategy.name; absent on f
 
 ### 7.2 New audit field on the wrapper
 
-The registry's wrapper-construction step writes an additional field on the resumed session atom:
+The wrapped adapter writes an additional field on the session atom at the end of each `acquire(input)` call:
 
 ```text
-metadata.agent_session.extra.resume_attempt: 'resumed' | 'fresh-spawn-no-strategy' | 'fresh-spawn-fallback' | 'fresh-spawn-reset'
+metadata.agent_session.extra.resume_attempt: 'resumed' | 'fresh-spawn-no-strategy' | 'fresh-spawn-fallback' | 'fresh-spawn-reset' | 'fresh-spawn-policy-disabled'
 ```
 
 `resume_attempt` distinguishes:
 - `'resumed'`: a strategy resolved AND the resume invocation returned `completed`.
 - `'fresh-spawn-no-strategy'`: no strategy resolved; the wrapper delegated directly.
 - `'fresh-spawn-fallback'`: a strategy resolved but the resume invocation returned non-`completed`; the wrapper delegated to fresh-spawn.
-- `'fresh-spawn-reset'`: an operator-reset atom was found; resume was skipped.
+- `'fresh-spawn-reset'`: an unconsumed operator-reset atom was found at invocation time; resume was skipped.
+- `'fresh-spawn-policy-disabled'`: `wrapIfEnabled` short-circuited at construction time because the policy atom resolved to disabled; the underlying adapter was returned untouched, but if a runner explicitly tracks audit completeness it MAY write this field on every session atom for that principal so the resume-vs-fresh-spawn ratio in the PR4 dashboard reflects the off-policy fraction. Indie-floor runners do NOT need this to ship; the dashboard treats absence as "not in scope for this principal."
 
 This is the field the PR4 dashboard projects to compute the resume-vs-fresh-spawn ratio per actor.
 
@@ -368,7 +382,7 @@ Lands the `ResumeStrategyRegistry` primitive in `examples/agent-loops/resume-aut
 
 Acceptance: `node scripts/run-pr-fix.mjs` continues to work bit-identically (the registry has one entry for `pr-fix-actor` mirroring PR #171's hard-coded wiring); a new `register()` call for `cto-actor` does not affect `run-pr-fix.mjs` runs.
 
-Estimated size: ~250 LOC in src + tests, cleanly split from current PR #171 code.
+Estimated size: ~250 LOC in `examples/agent-loops/resume-author/` + tests, cleanly split from current PR #171 code.
 
 ### 11.2 PR2: Per-actor walks for `cto-actor` + `code-author`
 
