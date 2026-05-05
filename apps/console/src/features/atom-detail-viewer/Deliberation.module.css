@@ -1,0 +1,205 @@
+/*
+ * Deliberation surface styling.
+ *
+ * The shell + spacing match the surrounding atom-detail viewer
+ * (`AtomDetailView.module.css`) and the canon-card panel
+ * (`CanonCard.module.css`) so the surface reads identically inside
+ * either parent. Visual primitives reused: section card, attribute
+ * row, ref chip, option card.
+ *
+ * What is NEW for this surface:
+ *   - `.principleChip`        clickable canon-id link
+ *   - `.principleChipMissing` strikethrough + muted variant for ids
+ *                             that do not resolve to a canon atom
+ *   - `.whatBreaksCallout`    quote-bar callout for the regret check;
+ *                             same shape as DeliberationView's revisit
+ *                             callout so the operator's mental model
+ *                             of "what does this look like" stays
+ *                             consistent across surfaces.
+ */
+
+.deliberation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.subSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.subSectionHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+
+.subSectionHeaderIcon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-tertiary);
+}
+
+.subSectionTitle {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+
+.subSectionCount {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-medium);
+}
+
+.chipList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.principleItem {
+  display: inline-flex;
+}
+
+/*
+ * Touch targets meet the 44x44 css-pixel minimum per
+ * dev-mobile-first-required (canon). A canon-id chip is short, so
+ * the visible chip is small but the inline-flex anchor reserves 44px
+ * of vertical hit area via min-height.
+ */
+.principleChip,
+.principleChipMissing {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem; /* 44px at base 16 */
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-pill);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  text-decoration: none;
+  word-break: break-all;
+  transition:
+    border-color var(--duration-fast) var(--easing-standard),
+    color var(--duration-fast) var(--easing-standard),
+    background var(--duration-fast) var(--easing-standard);
+}
+
+.principleChip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-raised));
+}
+
+.principleChip:focus-visible,
+.principleChipMissing:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+  border-radius: var(--radius-pill);
+}
+
+/*
+ * Missing variant: the id was cited as a principle but did not
+ * resolve to an existing canon atom. Strikethrough + muted color +
+ * dashed border reads as "this citation is broken" without taking up
+ * real estate the way an inline error would. The clickable anchor
+ * still routes (lets the operator open the (empty) target detail
+ * view if they want to confirm) but the visual is clearly demoted.
+ */
+.principleChipMissing {
+  text-decoration: line-through;
+  color: var(--text-muted);
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--status-warning) 35%, transparent);
+  background: color-mix(in srgb, var(--status-warning) 6%, var(--surface-raised));
+  cursor: help;
+}
+
+.principleChipMissing:hover {
+  color: var(--status-warning);
+  border-color: color-mix(in srgb, var(--status-warning) 55%, transparent);
+}
+
+.optionList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.optionItem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border-radius: var(--radius-sm);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-left: var(--stroke-rail) solid var(--border-strong);
+}
+
+.optionTitle {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  line-height: var(--line-height-tight);
+}
+
+.optionReason {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  line-height: var(--line-height-relaxed);
+}
+
+/*
+ * What-breaks callout: quoted block with an accent-colored left rail
+ * so the regret check reads as the load-bearing statement it is. The
+ * shape mirrors `DeliberationView.module.css .revisitText` so an
+ * operator switching between the two views sees the same visual.
+ */
+.whatBreaksCallout {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  line-height: var(--line-height-relaxed);
+  padding: var(--space-4) var(--space-5);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-left: var(--stroke-rail) solid var(--accent);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.refList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.refItem {
+  display: inline-flex;
+  align-items: center;
+}

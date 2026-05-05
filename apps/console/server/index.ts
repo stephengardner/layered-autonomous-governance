@@ -643,6 +643,33 @@ async function handleAtomGet(id: string): Promise<Atom | null> {
 }
 
 /*
+ * Batched existence check. Returns one boolean per requested id so the
+ * caller can render a "missing-atom" affordance without round-tripping
+ * a separate atoms.get per id.
+ *
+ * Why batched: a plan with N principles_applied would otherwise fire
+ * N parallel HTTP calls. The atomIndex Map is already in memory, so
+ * the server-side cost is O(N) Map lookups; the network cost goes from
+ * N requests to 1.
+ *
+ * Duplicates in the input array are preserved in the output so the
+ * caller can build a same-order Map<id, exists> without re-pairing.
+ * Empty input returns an empty array.
+ */
+async function handleAtomsExists(ids: ReadonlyArray<string>): Promise<ReadonlyArray<{ id: string; exists: boolean }>> {
+  /*
+   * Defensive priming: if the watcher is still cold, prime once so we
+   * never report `exists: false` for an atom that's actually on disk.
+   * After the first call the atomIndex is hot and subsequent batches
+   * are O(N) Map lookups.
+   */
+  if (!atomIndexPrimed) {
+    await readAllAtoms();
+  }
+  return ids.map((id) => ({ id, exists: atomIndex.has(`${id}.json`) }));
+}
+
+/*
  * Stage context handler: project the soul + upstream chain + canon-at-
  * runtime for a pipeline-stage atom. Returns the empty-shape response
  * (stage:null + empty arrays) when the atom is not a pipeline-stage
@@ -2687,6 +2714,42 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'atoms-references-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/atoms.exists' && req.method === 'POST') {
+    /*
+     * Batched existence check: { ids: string[] } -> { id, exists }[].
+     * Used by the deliberation surface to apply a "missing-atom"
+     * affordance to principle citations whose target id does not
+     * resolve to any atom in the store. A plan citing N principles
+     * pays one round trip instead of N atoms.get calls.
+     *
+     * Hard cap on input size protects the server from a malformed
+     * caller asking for tens of thousands of ids at once. The cap
+     * matches the deliberation list cap (DELIBERATION_LIST_CAP=200)
+     * times a small per-plan ceiling -- a real plan never approaches
+     * 500 principles, so a request beyond that is malformed by
+     * definition.
+     */
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const raw = body['ids'];
+    if (!Array.isArray(raw)) {
+      sendErr(req, res, 400, 'missing-ids', 'atoms.exists requires { ids: string[] }');
+      return;
+    }
+    const MAX_IDS = 500;
+    if (raw.length > MAX_IDS) {
+      sendErr(req, res, 400, 'too-many-ids', `atoms.exists rejects more than ${MAX_IDS} ids per call`);
+      return;
+    }
+    const ids = raw.filter((v): v is string => typeof v === 'string' && v.length > 0);
+    try {
+      const data = await handleAtomsExists(ids);
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'atoms-exists-failed', (err as Error).message);
     }
     return;
   }

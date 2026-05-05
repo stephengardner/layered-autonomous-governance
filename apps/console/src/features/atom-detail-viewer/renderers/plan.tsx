@@ -1,6 +1,7 @@
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { Section, AttrRow } from '../Section';
-import { asString, asStringArray, asRecord } from './helpers';
+import { Deliberation } from '../Deliberation';
+import { asString, asRecord } from './helpers';
 import styles from '../AtomDetailView.module.css';
 import type { AtomRendererProps } from './types';
 
@@ -16,17 +17,18 @@ import type { AtomRendererProps } from './types';
  * A "View lifecycle" link is the right seam if/when the operator wants
  * the chain view from this page; today the AtomRef hover-card already
  * carries a "Open in Plans" hint via routeForAtomId.
+ *
+ * Deliberation surfacing (alternatives_rejected, principles_applied,
+ * what_breaks_if_revisit, derived_from) is delegated to the shared
+ * `<Deliberation>` component so the plan view, the canon-card view,
+ * and any future detail view that hosts a deliberation block all read
+ * the same. Per canon `dev-extract-at-n-equals-two`, that surface was
+ * extracted from the original inline rendering in this file plus the
+ * (similar) inline rendering in CanonCard at the second-instance bar.
  */
 export function PlanRenderer({ atom }: AtomRendererProps) {
   const meta = asRecord(atom.metadata) ?? {};
   const title = asString(meta['title']);
-  const principles = asStringArray(meta['principles_applied']);
-  const alternatives = Array.isArray(meta['alternatives_rejected'])
-    ? meta['alternatives_rejected']
-    : [];
-  const whatBreaks
-    = asString(meta['what_breaks_if_revisit'])
-    ?? asString(meta['what_breaks_if_revisited']);
   const delegation = asRecord(meta['delegation']);
   const dispatch = asRecord(meta['dispatch_result']);
   const subActor = delegation ? asString(delegation['sub_actor_principal_id']) : null;
@@ -46,6 +48,16 @@ export function PlanRenderer({ atom }: AtomRendererProps) {
         {title && <p className={styles.title} data-testid="atom-detail-plan-title">{title}</p>}
         <pre className={styles.proseBody}>{atom.content || '(no body)'}</pre>
       </Section>
+
+      {/*
+        Deliberation comes ABOVE delegation/dispatch because the
+        operator's first question on a plan detail view is "why did
+        the planner pick this path?" -- principles, alternatives,
+        regret check, and ancestors all answer that. The delegation
+        + dispatch records below answer "what is the planner doing
+        about it next?" which is a follow-up read.
+      */}
+      <Deliberation atom={atom} />
 
       {(approvedVia || approvedAt || approvedIntentId) && (
         <Section title="Approval" testId="atom-detail-plan-approval">
@@ -91,58 +103,6 @@ export function PlanRenderer({ atom }: AtomRendererProps) {
           {dispatchMessage && (
             <pre className={styles.codeBlock}>{dispatchMessage}</pre>
           )}
-        </Section>
-      )}
-
-      {alternatives.length > 0 && (
-        <Section
-          title={`Alternatives rejected (${alternatives.length})`}
-          testId="atom-detail-plan-alternatives"
-        >
-          <ul className={styles.optionList}>
-            {alternatives.map((raw, i) => {
-              if (typeof raw === 'string') {
-                return (
-                  <li key={i} className={styles.option}>
-                    <span className={styles.optionTitle}>{raw}</span>
-                  </li>
-                );
-              }
-              const obj = asRecord(raw);
-              const option = obj ? asString(obj['option']) : null;
-              const reason = obj ? asString(obj['reason']) : null;
-              return (
-                <li key={i} className={styles.option}>
-                  <span className={styles.optionTitle}>{option ?? '(unnamed option)'}</span>
-                  {reason && <span className={styles.optionReason}>{reason}</span>}
-                </li>
-              );
-            })}
-          </ul>
-        </Section>
-      )}
-
-      {principles.length > 0 && (
-        <Section
-          title={`Principles applied (${principles.length})`}
-          testId="atom-detail-plan-principles"
-        >
-          <ul className={styles.refList}>
-            {principles.map((p) => (
-              <li key={p} className={styles.refItem}>
-                <AtomRef id={p} />
-              </li>
-            ))}
-          </ul>
-        </Section>
-      )}
-
-      {whatBreaks && (
-        <Section
-          title="What breaks if revisited"
-          testId="atom-detail-plan-what-breaks"
-        >
-          <p className={styles.sectionBody}>{whatBreaks}</p>
         </Section>
       )}
     </>

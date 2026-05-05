@@ -162,3 +162,27 @@ export async function getAuditChain(
     throw err;
   }
 }
+
+/**
+ * Batched atom-existence check. Given a list of ids, returns one
+ * `{id, exists}` per input id (in the same order, duplicates preserved).
+ *
+ * The deliberation surface uses this to apply a "missing-atom"
+ * treatment to principle citations whose target id does not resolve
+ * to any atom in the store. A plan citing N principles pays one round
+ * trip; the server resolves all N from the in-memory atomIndex.
+ *
+ * Empty input short-circuits without a network call so a render that
+ * happens to have zero ids is free at the network layer.
+ */
+export async function existsAtoms(
+  ids: ReadonlyArray<string>,
+  signal?: AbortSignal,
+): Promise<ReadonlyArray<{ readonly id: string; readonly exists: boolean }>> {
+  if (ids.length === 0) return [];
+  return transport.call<ReadonlyArray<{ readonly id: string; readonly exists: boolean }>>(
+    'atoms.exists',
+    { ids },
+    signal ? { signal } : undefined,
+  );
+}
