@@ -77,18 +77,19 @@ export function ResumeAuditView() {
   const someFetching =
     summaryQuery.isFetching || recentQuery.isFetching || resetsQuery.isFetching;
 
-  // Last-refreshed indicator state. A 1-second tick drives a re-render
-  // that re-computes the elapsed-seconds label in render. The `now`
-  // separation keeps the formatter pure of `Date.now()` side-effects
-  // and lets the "click resets to 0s" semantics work via a single
-  // `setLastRefreshedAt(Date.now())` call inside the Refresh handler.
+  /*
+   * Last-refreshed instant (the explicit-action floor for the
+   * indicator). Refresh button + window-chip change each call
+   * `setLastRefreshedAt(Date.now())` so the indicator snaps to 0s
+   * for any path that *intentionally* produces fresh data. The
+   * `LastRefreshedIndicator` leaf folds in each query's
+   * `dataUpdatedAt` so auto-refetch under TanStack Query's 30s
+   * `staleTime` is also reflected without going through these
+   * handlers. The tick lives in the leaf so only the label
+   * re-renders each second; the parent dashboard tree is not
+   * invalidated by the 1Hz timer per the `no-jank` guideline.
+   */
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number>(() => Date.now());
-  const [now, setNow] = useState<number>(() => Date.now());
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
 
   const handleRefresh = () => {
     setLastRefreshedAt(Date.now());
@@ -114,30 +115,6 @@ export function ResumeAuditView() {
     setLastRefreshedAt(Date.now());
   };
 
-  /*
-   * Fold each query's `dataUpdatedAt` into the displayed timestamp
-   * so the indicator reflects actual data freshness, not only the
-   * paths that explicitly bump `lastRefreshedAt`. The global
-   * QueryClient ships `staleTime: 30_000`, so any of the three
-   * useQuery hooks can auto-refetch on remount or window focus
-   * after 30s without going through handleRefresh /
-   * handleWindowChange. Without this max(...), the indicator would
-   * report e.g. "Last refreshed 2 minutes ago" against just-loaded
-   * data, regressing the same staleness bug the window-chip thread
-   * was about. The tracked `lastRefreshedAt` remains in the max so
-   * the click-resets-to-0 semantics for the explicit Refresh path
-   * stay untouched (the click bumps it past the queries' updated
-   * timestamps before the optimistic-set landing).
-   */
-  const effectiveLastRefreshedAt = Math.max(
-    lastRefreshedAt,
-    summaryQuery.dataUpdatedAt,
-    recentQuery.dataUpdatedAt,
-    resetsQuery.dataUpdatedAt,
-  );
-  const elapsedSeconds = Math.max(0, Math.round((now - effectiveLastRefreshedAt) / 1000));
-  const lastRefreshedLabel = `Last refreshed ${RELATIVE_TIME_FORMATTER.format(-elapsedSeconds, 'second')}`;
-
   return (
     <section className={styles.view} data-testid="resume-audit-view">
       <header className={styles.intro}>
@@ -152,24 +129,12 @@ export function ResumeAuditView() {
           </p>
         </div>
         <div className={styles.refreshGroup}>
-          {/*
-            * The visible label updates every second (from the `now`
-            * tick), so leaving an `aria-live` region here would
-            * cause screen readers to chant "Last refreshed N seconds
-            * ago" every second, which is exactly the disruption
-            * `aria-live` is meant to avoid. The label remains
-            * available to AT in the DOM via this span; routine ticks
-            * are not announced. Should we ever want to announce on
-            * explicit refresh, the right shape is a separate
-            * sr-only live-region element updated only inside
-            * `handleRefresh`, not on the per-second tick.
-            */}
-          <span
-            className={styles.lastRefreshed}
-            data-testid="resume-audit-last-refreshed"
-          >
-            {lastRefreshedLabel}
-          </span>
+          <LastRefreshedIndicator
+            lastRefreshedAt={lastRefreshedAt}
+            summaryUpdatedAt={summaryQuery.dataUpdatedAt}
+            recentUpdatedAt={recentQuery.dataUpdatedAt}
+            resetsUpdatedAt={resetsQuery.dataUpdatedAt}
+          />
           <button
             type="button"
             className={styles.refreshButton}
@@ -199,6 +164,83 @@ export function ResumeAuditView() {
       <RecentResumedSection query={recentQuery} />
       <RecentResetsSection query={resetsQuery} />
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Last-refreshed indicator (leaf component).
+//
+// Owns the 1-second `now` tick locally so only this leaf re-renders
+// each second; the parent dashboard + its three section subtrees are
+// not invalidated by the timer per the `no-jank` interaction
+// guideline. `dataUpdatedAt` props are read each render and folded
+// into the displayed timestamp via Math.max so the indicator reflects
+// actual data freshness (auto-refetch + explicit Refresh + window-chip
+// change all update it) rather than only the paths that bump the
+// parent's tracked `lastRefreshedAt`.
+// ---------------------------------------------------------------------------
+
+interface LastRefreshedIndicatorProps {
+  readonly lastRefreshedAt: number;
+  readonly summaryUpdatedAt: number;
+  readonly recentUpdatedAt: number;
+  readonly resetsUpdatedAt: number;
+}
+
+function LastRefreshedIndicator({
+  lastRefreshedAt,
+  summaryUpdatedAt,
+  recentUpdatedAt,
+  resetsUpdatedAt,
+}: LastRefreshedIndicatorProps) {
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  /*
+   * Fold each query's `dataUpdatedAt` into the displayed timestamp
+   * so the indicator reflects actual data freshness, not only the
+   * paths that explicitly bump `lastRefreshedAt`. The global
+   * QueryClient ships `staleTime: 30_000`, so any of the three
+   * useQuery hooks can auto-refetch on remount or window focus
+   * after 30s without going through handleRefresh /
+   * handleWindowChange. Without this max(...), the indicator would
+   * report e.g. "Last refreshed 2 minutes ago" against just-loaded
+   * data. The tracked `lastRefreshedAt` remains in the max so the
+   * click-resets-to-0 semantics for the explicit Refresh path stay
+   * untouched (the click bumps it past the queries' updated
+   * timestamps before the optimistic-set landing).
+   */
+  const effectiveLastRefreshedAt = Math.max(
+    lastRefreshedAt,
+    summaryUpdatedAt,
+    recentUpdatedAt,
+    resetsUpdatedAt,
+  );
+  const elapsedSeconds = Math.max(0, Math.round((now - effectiveLastRefreshedAt) / 1000));
+  const lastRefreshedLabel = `Last refreshed ${RELATIVE_TIME_FORMATTER.format(-elapsedSeconds, 'second')}`;
+
+  /*
+   * The visible label updates every second (from the `now` tick),
+   * so leaving an `aria-live` region here would cause screen
+   * readers to chant "Last refreshed N seconds ago" every second,
+   * which is exactly the disruption `aria-live` is meant to avoid.
+   * The label remains available to AT in the DOM via this span;
+   * routine ticks are not announced. Should we ever want to announce
+   * on explicit refresh, the right shape is a separate sr-only
+   * live-region element written only inside the parent's
+   * `handleRefresh`, not on the per-second tick.
+   */
+  return (
+    <span
+      className={styles.lastRefreshed}
+      data-testid="resume-audit-last-refreshed"
+    >
+      {lastRefreshedLabel}
+    </span>
   );
 }
 

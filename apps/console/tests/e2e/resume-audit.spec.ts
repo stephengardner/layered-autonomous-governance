@@ -214,15 +214,18 @@ test.describe('sidebar nav', () => {
 });
 
 test.describe('resume-audit last-refreshed indicator', () => {
-  test('renders "0 seconds ago" on mount, ticks to 1 second after one second', async ({ page }) => {
-    /*
-     * Use Playwright's clock fixture so the test does not pay a
-     * real-time wait. `installFake` freezes the page's `Date.now()`
-     * and `setInterval`/`setTimeout` to a deterministic origin; we
-     * then advance by exactly 1000ms and assert the relative-time
-     * label flipped from "0 seconds" to "1 second".
-     */
+  /*
+   * Each test in this describe block freezes the page clock to a
+   * deterministic origin, then calls `fastForward(...)` to drive the
+   * 1-second tick without paying a real-time wait. Hoisted into a
+   * `beforeEach` so the install line is single-source per CR feedback
+   * (DRY at N=2 within this describe block).
+   */
+  test.beforeEach(async ({ page }) => {
     await page.clock.install({ time: new Date('2026-05-05T14:00:00Z') });
+  });
+
+  test('renders "0 seconds ago" on mount, ticks to 1 second after one second', async ({ page }) => {
     await gotoResumeView(page);
 
     const indicator = page.getByTestId('resume-audit-last-refreshed');
@@ -242,7 +245,6 @@ test.describe('resume-audit last-refreshed indicator', () => {
   });
 
   test('clicking Refresh resets the indicator back to 0 seconds', async ({ page }) => {
-    await page.clock.install({ time: new Date('2026-05-05T14:00:00Z') });
     await gotoResumeView(page);
 
     const indicator = page.getByTestId('resume-audit-last-refreshed');
@@ -268,7 +270,6 @@ test.describe('resume-audit last-refreshed indicator', () => {
      * stale-data semantics against just-loaded data. Regression
      * guard for the CR-flagged window-chip-change path.
      */
-    await page.clock.install({ time: new Date('2026-05-05T14:00:00Z') });
     await gotoResumeView(page);
 
     const indicator = page.getByTestId('resume-audit-last-refreshed');
