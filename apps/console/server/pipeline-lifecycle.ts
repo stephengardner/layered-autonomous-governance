@@ -1,0 +1,417 @@
+/**
+ * Pure projection: pipeline_id -> post-dispatch lifecycle.
+ *
+ * The deep planning pipeline emits a chain of stage atoms that the
+ * existing /api/pipelines.detail surface renders. After dispatch-stage
+ * exits, the chain continues but the events live in DIFFERENT atom
+ * types that the pipelines projection alone never sees:
+ *
+ *   pipeline -> dispatch-record (counts: scanned/dispatched/failed)
+ *      -> plan (the plan-stage's output atom; its metadata.pipeline_id
+ *         points back at us)
+ *      -> code-author-invoked observation (executor result + PR url)
+ *      -> pr-observation atoms (CI + CR + merge-state snapshots)
+ *      -> plan-merge-settled (canonical "merged" signal)
+ *
+ * This module stitches that downstream chain so the operator sees the
+ * full intent-to-merge picture in one place. It is pure (no I/O, no
+ * globals, no time): the handler in server/index.ts feeds the full
+ * atom array; this module folds it into a wire shape.
+ *
+ * Read-only by construction. Writes route through existing CLIs per
+ * apps/console/CLAUDE.md. Mirrors the pure-helper pattern used by
+ * pipelines.ts and plan-state-lifecycle.ts so the three projections
+ * compose cleanly in handlePipelineLifecycle.
+ *
+ * The projection deliberately does NOT duplicate the pipelines.ts
+ * stage rollup: the post-dispatch view starts where the pipelines.ts
+ * view ends. Callers stack the two for the full top-to-bottom render.
+ */
+import type {
+  PipelineLifecycle,
+  PipelineLifecycleCheckCounts,
+  PipelineLifecycleCodeAuthorInvocation,
+  PipelineLifecycleDispatchRecord,
+  PipelineLifecycleMerge,
+  PipelineLifecycleObservation,
+  PipelineLifecycleSourceAtom,
+} from './pipeline-lifecycle-types.js';
+
+/**
+ * Coerce an unknown metadata value to a non-empty string, or null.
+ * Mirrors the readString helper in plan-state-lifecycle.ts so the
+ * three projections share a guard shape.
+ */
+function readString(meta: Readonly<Record<string, unknown>>, key: string): string | null {
+  const v = meta[key];
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+function readNumber(meta: Readonly<Record<string, unknown>>, key: string): number | null {
+  const v = meta[key];
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+function readObject(
+  meta: Readonly<Record<string, unknown>>,
+  key: string,
+): Readonly<Record<string, unknown>> | null {
+  const v = meta[key];
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  return v as Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Live-atom filter: same shape as pipelines.ts so a tainted or
+ * superseded atom does not slip into the lifecycle projection.
+ */
+function isCleanLive(atom: PipelineLifecycleSourceAtom): boolean {
+  if (atom.taint && atom.taint !== 'clean') return false;
+  if (atom.superseded_by && atom.superseded_by.length > 0) return false;
+  return true;
+}
+
+/**
+ * Pick the dispatch-record atom whose metadata.pipeline_id matches.
+ * The runtime emits at most one per pipeline; a re-run would write a
+ * new atom rather than supersede the old one, but if multiple are
+ * found we return the most recent so the operator sees current state.
+ */
+function pickDispatchRecord(
+  atoms: ReadonlyArray<PipelineLifecycleSourceAtom>,
+  pipelineId: string,
+): PipelineLifecycleSourceAtom | null {
+  let chosen: PipelineLifecycleSourceAtom | null = null;
+  for (const atom of atoms) {
+    if (atom.type !== 'dispatch-record') continue;
+    if (!isCleanLive(atom)) continue;
+    const meta = (atom.metadata ?? {}) as Record<string, unknown>;
+    if (readString(meta, 'pipeline_id') !== pipelineId) continue;
+    if (!chosen || atom.created_at > chosen.created_at) chosen = atom;
+  }
+  return chosen;
+}
+
+/**
+ * Pick the plan atom whose metadata.pipeline_id matches the requested
+ * pipeline. A pipeline produces exactly one plan via the plan-stage,
+ * but we still pick the most recent if more are present so a re-run
+ * surfaces the live plan rather than a stale one.
+ */
+function pickPlanAtom(
+  atoms: ReadonlyArray<PipelineLifecycleSourceAtom>,
+  pipelineId: string,
+): PipelineLifecycleSourceAtom | null {
+  let chosen: PipelineLifecycleSourceAtom | null = null;
+  for (const atom of atoms) {
+    if (atom.type !== 'plan') continue;
+    if (!isCleanLive(atom)) continue;
+    const meta = (atom.metadata ?? {}) as Record<string, unknown>;
+    if (readString(meta, 'pipeline_id') !== pipelineId) continue;
+    if (!chosen || atom.created_at > chosen.created_at) chosen = atom;
+  }
+  return chosen;
+}
+
+/**
+ * Pick the most recent code-author-invoked observation atom whose
+ * metadata.plan_id matches. The executor writes one per dispatch; a
+ * re-dispatch produces a fresh atom, so picking the latest gives the
+ * live invocation result. Mirrors the latest-wins semantics
+ * handlePlanLifecycle uses for the same atom kind.
+ */
+function pickCodeAuthorInvoked(
+  atoms: ReadonlyArray<PipelineLifecycleSourceAtom>,
+  planId: string,
+): PipelineLifecycleSourceAtom | null {
+  let chosen: PipelineLifecycleSourceAtom | null = null;
+  for (const atom of atoms) {
+    if (atom.type !== 'observation') continue;
+    if (!isCleanLive(atom)) continue;
+    const meta = (atom.metadata ?? {}) as Record<string, unknown>;
+    const kind = readString(meta, 'kind');
+    if (kind !== 'code-author-invoked' && (kind === null || !kind.endsWith('-invoked'))) continue;
+    if (readString(meta, 'plan_id') !== planId) continue;
+    if (!chosen || atom.created_at > chosen.created_at) chosen = atom;
+  }
+  return chosen;
+}
+
+/**
+ * Pick the most recent pr-observation atom that derives from the plan.
+ * One per HEAD update; the latest is the canonical "current state of
+ * the PR" view. Mirrors handlePlanLifecycle's pr-observation pick.
+ */
+function pickPrObservation(
+  atoms: ReadonlyArray<PipelineLifecycleSourceAtom>,
+  planId: string,
+): PipelineLifecycleSourceAtom | null {
+  let chosen: PipelineLifecycleSourceAtom | null = null;
+  for (const atom of atoms) {
+    if (atom.type !== 'observation') continue;
+    if (!isCleanLive(atom)) continue;
+    const meta = (atom.metadata ?? {}) as Record<string, unknown>;
+    if (readString(meta, 'kind') !== 'pr-observation') continue;
+    if (readString(meta, 'plan_id') !== planId) continue;
+    if (!chosen || atom.created_at > chosen.created_at) chosen = atom;
+  }
+  return chosen;
+}
+
+/**
+ * Pick the plan-merge-settled atom for the plan. The reconciler writes
+ * one when the PR observation reports MERGED; pick the latest so a
+ * superseded re-merge surfaces correctly.
+ */
+function pickMergeSettled(
+  atoms: ReadonlyArray<PipelineLifecycleSourceAtom>,
+  planId: string,
+): PipelineLifecycleSourceAtom | null {
+  let chosen: PipelineLifecycleSourceAtom | null = null;
+  for (const atom of atoms) {
+    if (atom.type !== 'plan-merge-settled') continue;
+    if (!isCleanLive(atom)) continue;
+    const meta = (atom.metadata ?? {}) as Record<string, unknown>;
+    if (readString(meta, 'plan_id') !== planId) continue;
+    if (!chosen || atom.created_at > chosen.created_at) chosen = atom;
+  }
+  return chosen;
+}
+
+/**
+ * Parse the check-runs section of a pr-observation atom's `content`
+ * string into per-state counts.
+ *
+ * Why parse content: the metadata block carries `counts.check_runs`
+ * (an integer total) but does NOT break out per-state counts; the
+ * substrate emits the per-check states only inside the human-readable
+ * content for now. Parsing the content gives the UI three numbers
+ * (green / red / pending) without a substrate change, and the parser
+ * is forward-compatible: if a future atom shape adds a structured
+ * `check_states` array, this function can prefer that and fall back
+ * to the line-parser only when missing.
+ *
+ * Format the runner emits today:
+ *   `check-runs: <N>`
+ *   `  - <name>: <state>`
+ * where <state> is one of github's check-run conclusions
+ * (success / failure / cancelled / skipped / queued / in_progress /
+ * timed_out / action_required / neutral / pending). Mapping:
+ *   green   <- success, neutral, skipped
+ *   red     <- failure, timed_out, cancelled, action_required
+ *   pending <- queued, in_progress, pending, anything unrecognized
+ *
+ * Unrecognized states bucket as `pending` (loud-fail fallback) so an
+ * unexpected substrate addition doesn't silently inflate the green
+ * count.
+ */
+export function parseCheckCountsFromContent(content: string): PipelineLifecycleCheckCounts {
+  let green = 0;
+  let red = 0;
+  let pending = 0;
+  let total = 0;
+  // Split lines and scan only the indented `  - <name>: <state>` rows
+  // emitted under the `check-runs:` header. The runner uses 2-space
+  // indent + " - " prefix today; the regex is forgiving on whitespace.
+  const lines = content.split('\n');
+  for (const line of lines) {
+    const match = line.match(/^\s+-\s+.+?:\s+([a-z_]+)\s*$/i);
+    if (!match || !match[1]) continue;
+    const state = match[1].toLowerCase();
+    total += 1;
+    if (state === 'success' || state === 'neutral' || state === 'skipped') {
+      green += 1;
+    } else if (
+      state === 'failure'
+      || state === 'failed'
+      || state === 'timed_out'
+      || state === 'cancelled'
+      || state === 'action_required'
+    ) {
+      red += 1;
+    } else {
+      // queued / in_progress / pending / anything else.
+      pending += 1;
+    }
+  }
+  return { total, green, red, pending };
+}
+
+/**
+ * Project the pipeline post-dispatch lifecycle from the atom set.
+ *
+ * Returns a fully-populated lifecycle envelope: every block is an
+ * optional field that is null when the corresponding atom is not in
+ * the store. The UI renders progressively: when `dispatch_record` is
+ * null, only the "PR pending" placeholder shows; when each downstream
+ * block lands, its row materializes.
+ *
+ * Pure: deterministic for a given input, no globals, no time.
+ */
+export function buildPipelineLifecycle(
+  atoms: ReadonlyArray<PipelineLifecycleSourceAtom>,
+  pipelineId: string,
+): PipelineLifecycle {
+  const dispatchAtom = pickDispatchRecord(atoms, pipelineId);
+  const planAtom = pickPlanAtom(atoms, pipelineId);
+
+  /*
+   * Dispatch record block. Surfaces the three counts the dispatch-stage
+   * emits + the substrate-side dispatch_status. When `failed > 0`, the
+   * dispatch-record atom itself does NOT carry the error_message: the
+   * dispatcher writes that to the plan atom's metadata.dispatch_result.
+   * We pull it from there if available so the operator sees the cause
+   * inline rather than having to grep the plan atom.
+   */
+  let dispatchBlock: PipelineLifecycleDispatchRecord | null = null;
+  if (dispatchAtom) {
+    const meta = (dispatchAtom.metadata ?? {}) as Record<string, unknown>;
+    const stageOutput = readObject(meta, 'stage_output');
+    const planMeta = (planAtom?.metadata ?? {}) as Record<string, unknown>;
+    const dispatchResult = readObject(planMeta, 'dispatch_result');
+    const errorMessage = dispatchResult && dispatchResult['kind'] === 'error'
+      ? readString(dispatchResult, 'message')
+      : null;
+    dispatchBlock = {
+      atom_id: dispatchAtom.id,
+      pipeline_id: pipelineId,
+      dispatch_status: stageOutput ? readString(stageOutput, 'dispatch_status') : null,
+      scanned: stageOutput ? (readNumber(stageOutput, 'scanned') ?? 0) : 0,
+      dispatched: stageOutput ? (readNumber(stageOutput, 'dispatched') ?? 0) : 0,
+      failed: stageOutput ? (readNumber(stageOutput, 'failed') ?? 0) : 0,
+      cost_usd: stageOutput ? (readNumber(stageOutput, 'cost_usd') ?? 0) : 0,
+      error_message: errorMessage,
+      at: dispatchAtom.created_at,
+    };
+  }
+
+  // Bail early if no plan atom exists -- there's nothing post-plan to
+  // project. Operator sees "Dispatch outcome" alone, which is correct:
+  // a pipeline that hasn't reached plan-stage hasn't reached dispatch.
+  if (!planAtom) {
+    return {
+      pipeline_id: pipelineId,
+      plan_id: null,
+      dispatch_record: dispatchBlock,
+      code_author_invoked: null,
+      observation: null,
+      merge: null,
+    };
+  }
+
+  const planId = planAtom.id;
+  const codeAuthorAtom = pickCodeAuthorInvoked(atoms, planId);
+  const prObservationAtom = pickPrObservation(atoms, planId);
+  const mergeAtom = pickMergeSettled(atoms, planId);
+
+  /*
+   * Code-author invocation block. The executor_result kind is either
+   * 'dispatched' (PR opened) or 'error' (silent-skip with reason +
+   * stage). When 'error' we pull the reason + stage so the UI can
+   * distinguish "drafter ran but couldn't apply" from "PR opened
+   * cleanly" without re-fetching the atom.
+   */
+  let codeAuthorBlock: PipelineLifecycleCodeAuthorInvocation | null = null;
+  if (codeAuthorAtom) {
+    const meta = (codeAuthorAtom.metadata ?? {}) as Record<string, unknown>;
+    const executorResult = readObject(meta, 'executor_result');
+    const correlationId = readString(meta, 'correlation_id');
+    const kind = executorResult ? readString(executorResult, 'kind') : null;
+    codeAuthorBlock = {
+      atom_id: codeAuthorAtom.id,
+      plan_id: planId,
+      correlation_id: correlationId,
+      kind: kind === 'dispatched' || kind === 'error' ? kind : null,
+      pr_number: executorResult ? readNumber(executorResult, 'pr_number') : null,
+      pr_html_url: executorResult ? readString(executorResult, 'pr_html_url') : null,
+      branch_name: executorResult ? readString(executorResult, 'branch_name') : null,
+      commit_sha: executorResult ? readString(executorResult, 'commit_sha') : null,
+      reason: executorResult && kind === 'error' ? readString(executorResult, 'reason') : null,
+      stage: executorResult && kind === 'error' ? readString(executorResult, 'stage') : null,
+      at: codeAuthorAtom.created_at,
+    };
+  }
+
+  /*
+   * PR observation block. The pr-observation atom captures the most
+   * recent CI + CR + merge-state snapshot. We surface:
+   *   - pr_state          OPEN | CLOSED | MERGED
+   *   - merge_state_status BEHIND | DIRTY | BLOCKED | UNSTABLE | CLEAN
+   *   - mergeable          boolean
+   *   - check counts       parsed per-state from content
+   *   - submitted_reviews / line_comments / body_nits  (CR signal)
+   *
+   * The CR verdict (approved / has-findings / pending / missing) is a
+   * derived signal the UI computes from the counts, NOT a metadata
+   * field on the atom; see PipelineLifecycle.tsx for the resolver.
+   */
+  let observationBlock: PipelineLifecycleObservation | null = null;
+  if (prObservationAtom) {
+    const meta = (prObservationAtom.metadata ?? {}) as Record<string, unknown>;
+    const counts = readObject(meta, 'counts');
+    const prRef = readObject(meta, 'pr');
+    const mergeable = meta['mergeable'] === true || meta['mergeable'] === false
+      ? (meta['mergeable'] as boolean)
+      : null;
+    observationBlock = {
+      atom_id: prObservationAtom.id,
+      plan_id: planId,
+      pr_number: prRef ? readNumber(prRef, 'number') : null,
+      pr_state: readString(meta, 'pr_state'),
+      pr_title: readString(meta, 'pr_title'),
+      head_sha: readString(meta, 'head_sha'),
+      mergeable,
+      merge_state_status: readString(meta, 'merge_state_status'),
+      observed_at: readString(meta, 'observed_at') ?? prObservationAtom.created_at,
+      submitted_reviews: counts ? (readNumber(counts, 'submitted_reviews') ?? 0) : 0,
+      line_comments: counts ? (readNumber(counts, 'line_comments') ?? 0) : 0,
+      body_nits: counts ? (readNumber(counts, 'body_nits') ?? 0) : 0,
+      check_counts: parseCheckCountsFromContent(prObservationAtom.content),
+    };
+  }
+
+  /*
+   * Merge block. Sourced from plan-merge-settled (canonical "merged"
+   * signal written by the reconciler). The atom carries the PR ref
+   * + target_plan_state; we surface settled_at + the merger via the
+   * principal_id of the settling actor (typically pr-landing-agent).
+   *
+   * Optional: when no plan-merge-settled atom exists but the latest
+   * pr-observation reports pr_state=MERGED, we still render the row
+   * with `settled_at` from the observation so the UI doesn't lose the
+   * merged-but-not-yet-reconciled state. Same fallback handlePlanLifecycle
+   * uses for late-arriving reconciliations.
+   */
+  let mergeBlock: PipelineLifecycleMerge | null = null;
+  if (mergeAtom) {
+    const meta = (mergeAtom.metadata ?? {}) as Record<string, unknown>;
+    mergeBlock = {
+      atom_id: mergeAtom.id,
+      plan_id: planId,
+      pr_state: readString(meta, 'pr_state'),
+      target_plan_state: readString(meta, 'target_plan_state'),
+      merge_commit_sha: null,
+      settled_at: readString(meta, 'settled_at') ?? mergeAtom.created_at,
+      merger_principal_id: mergeAtom.principal_id,
+    };
+  } else if (observationBlock && observationBlock.pr_state === 'MERGED') {
+    mergeBlock = {
+      atom_id: null,
+      plan_id: planId,
+      pr_state: 'MERGED',
+      target_plan_state: null,
+      merge_commit_sha: observationBlock.head_sha,
+      settled_at: observationBlock.observed_at,
+      merger_principal_id: null,
+    };
+  }
+
+  return {
+    pipeline_id: pipelineId,
+    plan_id: planId,
+    dispatch_record: dispatchBlock,
+    code_author_invoked: codeAuthorBlock,
+    observation: observationBlock,
+    merge: mergeBlock,
+  };
+}
