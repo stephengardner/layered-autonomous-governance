@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { buildPipelineLifecycle, parseCheckCountsFromContent } from './pipeline-lifecycle';
+import {
+  buildPipelineLifecycle,
+  parseCheckCountsFromContent,
+  parseLegacyStatusCountsFromContent,
+} from './pipeline-lifecycle';
 import type { PipelineLifecycleSourceAtom } from './pipeline-lifecycle-types';
 
 /*
@@ -77,6 +81,47 @@ describe('parseCheckCountsFromContent', () => {
     expect(counts.pending).toBe(2);
   });
 
+  it('does NOT count bullets that appear OUTSIDE the check-runs block', () => {
+    /*
+     * Regression: an earlier shape of the parser matched any indented
+     * `- name: state` line anywhere in the content, which inflated
+     * counts when other sections (legacy statuses, future bullet
+     * groups) appeared. The parser must scope strictly to bullets
+     * AFTER `check-runs:` and BEFORE the next top-level header.
+     */
+    const content = [
+      'check-runs: 2',
+      '  - first: success',
+      '  - second: success',
+      'legacy statuses: 3',
+      '  - bogus_first: failure',
+      '  - bogus_second: failure',
+      '  - bogus_third: failure',
+      'unresolved line comments: 0',
+    ].join('\n');
+    const counts = parseCheckCountsFromContent(content);
+    expect(counts.total).toBe(2);
+    expect(counts.green).toBe(2);
+    expect(counts.red).toBe(0);
+    expect(counts.pending).toBe(0);
+  });
+
+  it('returns zero when content has no check-runs header', () => {
+    /*
+     * If the substrate emits only legacy-statuses bullets without a
+     * check-runs section, the parser MUST return 0 (no checks to
+     * count) rather than counting the legacy bullets. Defends against
+     * the "any bullet anywhere" anti-shape.
+     */
+    const content = [
+      'legacy statuses: 1',
+      '  - CodeRabbit: failure',
+    ].join('\n');
+    const counts = parseCheckCountsFromContent(content);
+    expect(counts.total).toBe(0);
+    expect(counts.red).toBe(0);
+  });
+
   it('matches the real-world content shape the runner emits', () => {
     // Verbatim shape from a recent pr-observation atom in this repo.
     const content = [
@@ -113,6 +158,45 @@ describe('parseCheckCountsFromContent', () => {
     expect(counts.green).toBe(3);
     expect(counts.red).toBe(4);
     expect(counts.pending).toBe(10);
+  });
+});
+
+describe('parseLegacyStatusCountsFromContent', () => {
+  it('returns zero counts for empty input', () => {
+    expect(parseLegacyStatusCountsFromContent('')).toEqual({ total: 0, red: 0 });
+  });
+
+  it('counts red conclusions only inside the legacy-statuses block', () => {
+    const content = [
+      'check-runs: 1',
+      '  - irrelevant: failure',
+      'legacy statuses: 2',
+      '  - CodeRabbit: success',
+      '  - other: failure',
+      'unresolved line comments: 0',
+    ].join('\n');
+    const counts = parseLegacyStatusCountsFromContent(content);
+    expect(counts.total).toBe(2);
+    expect(counts.red).toBe(1);
+  });
+
+  it('treats `error` and `cancelled` legacy statuses as red', () => {
+    const content = [
+      'legacy statuses: 2',
+      '  - first: error',
+      '  - second: cancelled',
+    ].join('\n');
+    const counts = parseLegacyStatusCountsFromContent(content);
+    expect(counts.total).toBe(2);
+    expect(counts.red).toBe(2);
+  });
+
+  it('returns zero when content has no legacy-statuses header', () => {
+    const content = [
+      'check-runs: 1',
+      '  - one: failure',
+    ].join('\n');
+    expect(parseLegacyStatusCountsFromContent(content)).toEqual({ total: 0, red: 0 });
   });
 });
 
@@ -331,6 +415,53 @@ describe('buildPipelineLifecycle: pr-observation + merge', () => {
     type: 'plan',
     created_at: NOW,
     metadata: { pipeline_id: 'pipeline-test-8' },
+  });
+
+  it('surfaces legacy_statuses + legacy_statuses_red parsed from the observation content', () => {
+    /*
+     * The legacy-statuses surface is load-bearing because the
+     * `CodeRabbit` legacy status posts there; canon
+     * dev-multi-surface-review-observation requires reading it.
+     * Assert that the projection lifts the parsed-from-content red
+     * count + the metadata-reported total into the observation block,
+     * AND that the check-runs counts do not leak from the legacy
+     * bullets (regression coverage for the "any bullet" parser bug).
+     */
+    const obs = atom({
+      id: 'pr-observation-with-legacy-failure',
+      type: 'observation',
+      created_at: NOW,
+      content: [
+        'check-runs: 1',
+        '  - whatever: success',
+        'legacy statuses: 1',
+        '  - CodeRabbit: failure',
+        'unresolved line comments: 0',
+      ].join('\n'),
+      metadata: {
+        kind: 'pr-observation',
+        plan_id: 'plan-feat-cto-actor-pipeline-test-8-0',
+        head_sha: 'sha2',
+        observed_at: NOW,
+        pr_state: 'OPEN',
+        merge_state_status: 'BLOCKED',
+        counts: {
+          line_comments: 0,
+          body_nits: 0,
+          submitted_reviews: 0,
+          check_runs: 1,
+          legacy_statuses: 1,
+        },
+      },
+    });
+    const result = buildPipelineLifecycle([plan, obs], 'pipeline-test-8');
+    expect(result.observation?.legacy_statuses).toBe(1);
+    expect(result.observation?.legacy_statuses_red).toBe(1);
+    // check_counts should reflect ONLY the check-runs section, not
+    // the legacy-status bullet that appears below it.
+    expect(result.observation?.check_counts.total).toBe(1);
+    expect(result.observation?.check_counts.green).toBe(1);
+    expect(result.observation?.check_counts.red).toBe(0);
   });
 
   it('surfaces the latest pr-observation snapshot with parsed check counts', () => {

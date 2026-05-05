@@ -194,6 +194,9 @@ function pickMergeSettled(
  * Format the runner emits today:
  *   `check-runs: <N>`
  *   `  - <name>: <state>`
+ *   ... <bullets continue> ...
+ *   `legacy statuses: <M>`             <- next top-level header
+ *   ... or `unresolved line comments: <K>` etc.
  * where <state> is one of github's check-run conclusions
  * (success / failure / cancelled / skipped / queued / in_progress /
  * timed_out / action_required / neutral / pending). Mapping:
@@ -204,17 +207,43 @@ function pickMergeSettled(
  * Unrecognized states bucket as `pending` (loud-fail fallback) so an
  * unexpected substrate addition doesn't silently inflate the green
  * count.
+ *
+ * Scoping: the parser ONLY consumes bullets that appear AFTER a
+ * `check-runs:` header line and BEFORE the next top-level header
+ * (any non-blank, non-indented line that isn't a bullet). This
+ * prevents bullets in adjacent sections (`legacy statuses:` body,
+ * future bullet groups, etc.) from inflating the counts. If the
+ * substrate emits no `check-runs:` header, total = 0 is the correct
+ * projection: there are no checks to count.
  */
 export function parseCheckCountsFromContent(content: string): PipelineLifecycleCheckCounts {
   let green = 0;
   let red = 0;
   let pending = 0;
   let total = 0;
-  // Split lines and scan only the indented `  - <name>: <state>` rows
-  // emitted under the `check-runs:` header. The runner uses 2-space
-  // indent + " - " prefix today; the regex is forgiving on whitespace.
+  let inCheckRunsBlock = false;
+  // Detect the block boundary explicitly so a future change to the
+  // emit shape (extra section between check-runs and legacy statuses)
+  // doesn't silently leak adjacent bullets into the count. The block
+  // ends when we see another top-level (non-indented) header line.
   const lines = content.split('\n');
   for (const line of lines) {
+    if (/^check-runs:\s*\d+/i.test(line)) {
+      // Header for the section we want; start counting subsequent bullets.
+      inCheckRunsBlock = true;
+      continue;
+    }
+    if (!inCheckRunsBlock) continue;
+    // A top-level header (non-indented, non-empty, non-bullet) ends
+    // the block. Lines like `legacy statuses: 0`, `unresolved line
+    // comments: 0`, `body-scoped nits: 0`, or any other left-anchored
+    // header break out cleanly. Blank lines alone are tolerated (some
+    // emitters wrap groups in blank padding) and do not terminate the
+    // block.
+    if (/^[A-Za-z]/.test(line)) {
+      inCheckRunsBlock = false;
+      continue;
+    }
     const match = line.match(/^\s+-\s+.+?:\s+([a-z_]+)\s*$/i);
     if (!match || !match[1]) continue;
     const state = match[1].toLowerCase();
@@ -235,6 +264,54 @@ export function parseCheckCountsFromContent(content: string): PipelineLifecycleC
     }
   }
   return { total, green, red, pending };
+}
+
+/**
+ * Parse the legacy-statuses section of a pr-observation atom's
+ * `content`. Mirrors parseCheckCountsFromContent but scoped to the
+ * separate `legacy statuses: <N>` block. Legacy statuses use the
+ * same GitHub state vocabulary; the meaningful split is "any red"
+ * (a hard merge gate, e.g. CodeRabbit failure) vs "all green"
+ * (advisory). Today the substrate emits per-status states the same
+ * way it does check-runs.
+ *
+ * Returns total + red counts. A count of 0 in both fields can mean
+ * either "no statuses observed" or "no `legacy statuses:` header in
+ * content"; consumers distinguish via the metadata.counts.legacy_statuses
+ * field separately.
+ */
+export function parseLegacyStatusCountsFromContent(content: string): {
+  total: number;
+  red: number;
+} {
+  let total = 0;
+  let red = 0;
+  let inBlock = false;
+  const lines = content.split('\n');
+  for (const line of lines) {
+    if (/^legacy\s+statuses:\s*\d+/i.test(line)) {
+      inBlock = true;
+      continue;
+    }
+    if (!inBlock) continue;
+    if (/^[A-Za-z]/.test(line)) {
+      inBlock = false;
+      continue;
+    }
+    const match = line.match(/^\s+-\s+.+?:\s+([a-z_]+)\s*$/i);
+    if (!match || !match[1]) continue;
+    total += 1;
+    const state = match[1].toLowerCase();
+    if (
+      state === 'failure'
+      || state === 'failed'
+      || state === 'error'
+      || state === 'cancelled'
+    ) {
+      red += 1;
+    }
+  }
+  return { total, red };
 }
 
 /**
@@ -353,6 +430,7 @@ export function buildPipelineLifecycle(
     const mergeable = meta['mergeable'] === true || meta['mergeable'] === false
       ? (meta['mergeable'] as boolean)
       : null;
+    const legacy = parseLegacyStatusCountsFromContent(prObservationAtom.content);
     observationBlock = {
       atom_id: prObservationAtom.id,
       plan_id: planId,
@@ -366,6 +444,15 @@ export function buildPipelineLifecycle(
       submitted_reviews: counts ? (readNumber(counts, 'submitted_reviews') ?? 0) : 0,
       line_comments: counts ? (readNumber(counts, 'line_comments') ?? 0) : 0,
       body_nits: counts ? (readNumber(counts, 'body_nits') ?? 0) : 0,
+      // counts.legacy_statuses is the total reported by the runner;
+      // the per-state break-down (red vs green) is parsed from the
+      // content text the same way check-runs are parsed. Per canon
+      // dev-multi-surface-review-observation, the legacy-status
+      // surface is load-bearing because the `CodeRabbit` legacy
+      // status posts there and a red entry is a hard merge-gate
+      // signal the verdict logic must consider.
+      legacy_statuses: counts ? (readNumber(counts, 'legacy_statuses') ?? 0) : 0,
+      legacy_statuses_red: legacy.red,
       check_counts: parseCheckCountsFromContent(prObservationAtom.content),
     };
   }

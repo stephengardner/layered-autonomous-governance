@@ -115,6 +115,16 @@ export interface PipelineLifecycleObservation {
   readonly submitted_reviews: number;
   readonly line_comments: number;
   readonly body_nits: number;
+  /** Total legacy-status entries reported by the substrate. */
+  readonly legacy_statuses: number;
+  /**
+   * Count of legacy statuses in a red conclusion (failure / error /
+   * cancelled). The legacy `CodeRabbit` status posts here; if it
+   * fails, this is the load-bearing signal that the merge gate is
+   * blocked. Parsed from the pr-observation content text the same
+   * way check-runs are parsed.
+   */
+  readonly legacy_statuses_red: number;
   readonly check_counts: PipelineLifecycleCheckCounts;
 }
 

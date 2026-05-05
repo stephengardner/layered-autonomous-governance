@@ -386,19 +386,34 @@ function PrRow({ data }: { data: PipelineLifecycleData }) {
  * Derive the CR review verdict from a pr-observation snapshot.
  *
  * The substrate's pr-observation atom does NOT currently store CR's
- * specific review decision in metadata; that field is a derived signal.
- * We compute it from the counts the atom DOES record:
+ * specific review decision in metadata; that field is a derived
+ * signal. Per canon `dev-multi-surface-review-observation`, ALL
+ * surfaces must be queried before deriving a single verdict:
+ * submitted reviews, line comments, body nits, legacy statuses
+ * (where the `CodeRabbit` legacy status posts), and the merge state.
+ * A single-surface read collapses to a misleading verdict.
  *
- *   - approved      : >= 1 submitted review AND zero CR comments
- *   - has-findings  : >= 1 submitted review AND >0 CR comments
- *   - pending       : zero submitted reviews
+ * Verdict ladder (ordered by precedence):
  *
- * This is intentionally a heuristic with a known imprecision: the
- * actor that submits a review is not always CodeRabbit (an operator
- * could review the PR personally and the count goes up). Treating
- * any review as "the verdict" is the right indie-floor default; the
- * org-ceiling deployment that needs perfect attribution can (a) read
- * the per-review actor list from the `submittedReviews` array on a
+ *   - has-findings  : a red legacy status (CodeRabbit failed) OR
+ *                     mergeStateStatus is BLOCKED / DIRTY OR
+ *                     >= 1 submitted review with line/body comments.
+ *                     The multi-surface read says "something is
+ *                     blocking the merge gate".
+ *   - approved      : >= 1 submitted review AND zero CR comments AND
+ *                     no red legacy statuses AND mergeStateStatus
+ *                     is CLEAN or UNSTABLE. UNSTABLE alone is not a
+ *                     verdict-blocker; a non-required check pending
+ *                     does not invalidate the review.
+ *   - pending       : everything else (no engagement on any of the
+ *                     surfaces above).
+ *
+ * Imprecision intentionally accepted: the actor that submits a
+ * review is not always CodeRabbit (an operator could review the PR
+ * personally and the count goes up). Treating any review as "the
+ * verdict" is the right indie-floor default; the org-ceiling
+ * deployment that needs perfect attribution can (a) read the
+ * per-review actor list from the `submittedReviews` array on a
  * future atom shape, or (b) post-process by filtering on the CR
  * principal id. Both are extension paths, not regressions.
  *
@@ -411,6 +426,17 @@ function deriveReviewVerdict(obs: PipelineLifecycleObservation): {
   label: string;
   tone: 'success' | 'warning' | 'info' | 'muted';
 } {
+  // Hard-blocking surfaces first. A red legacy status (CodeRabbit
+  // failure is the canonical signal here) or a BLOCKED/DIRTY merge
+  // state surfaces "has findings" regardless of submitted-review
+  // counts. This is the multi-surface check the canon directive
+  // specifically requires before collapsing to a single verdict.
+  if (obs.legacy_statuses_red > 0) {
+    return { label: 'has findings', tone: 'warning' };
+  }
+  if (obs.merge_state_status === 'BLOCKED' || obs.merge_state_status === 'DIRTY') {
+    return { label: 'has findings', tone: 'warning' };
+  }
   if (obs.submitted_reviews === 0) {
     return { label: 'pending', tone: 'info' };
   }
@@ -449,6 +475,12 @@ function ReviewRow({ data }: { data: PipelineLifecycleData }) {
           <code className={styles.metaCode}>{obs.line_comments}</code>
           <span className={styles.metaLabel}>Body nits</span>
           <code className={styles.metaCode}>{obs.body_nits}</code>
+          <span className={styles.metaLabel}>Legacy statuses</span>
+          <code className={styles.metaCode}>
+            {obs.legacy_statuses_red > 0
+              ? `${obs.legacy_statuses_red}/${obs.legacy_statuses} red`
+              : `${obs.legacy_statuses} ok`}
+          </code>
         </div>
       }
     />
