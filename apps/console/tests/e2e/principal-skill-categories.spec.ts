@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
 
 /**
  * Empty-state differentiation for the PrincipalSkill panel.
@@ -11,95 +12,182 @@ import { test, expect } from '@playwright/test';
  * category on a `data-category` attribute so the four shapes are
  * independently testable.
  *
- * Each test pins a real principal that lives in the .lag/principals/
- * fixture so the spec runs against ground truth, not a synthetic
- * stub. Mapping principal id to expected category:
+ * Discovery, not hardcoding: a previous draft of this spec pinned
+ * specific principal ids (apex-agent, claude-agent, cto-actor,
+ * code-author). That coupled the test to one org's concrete shape
+ * and would false-fail on a fresh install or a divergent fixture.
+ * Per the same substrate discipline that keeps role names out of
+ * src/, the spec discovers principals at runtime via
+ * /api/principals.list + /api/principals.skill and selects ONE
+ * representative per category from whatever the store contains. If
+ * no principal in the live store classifies into a given category,
+ * that test skips rather than false-fails.
  *
- *   apex-agent     -> authority-root (role==='apex')
- *   claude-agent   -> authority-anchor (role==='agent', signs >=1 child)
- *   cto-actor      -> actor-with-skill (.claude/skills/cto-actor/SKILL.md)
- *   code-author    -> actor-skill-debt (leaf agent, no SKILL.md)
- *
- * The spec is project-agnostic; the principal-mobile spec carries the
- * mobile-viewport assertions for the panel chrome (no horizontal
- * scroll, 44px touch targets), so we do not redo those here.
+ * Coverage shape:
+ *   - One representative principal per category found by querying
+ *     the same skill endpoint the UI consumes.
+ *   - Each test asserts the data-category landmark + the visible
+ *     copy phrase that distinguishes the branch from its peers.
+ *   - Mobile viewport assertions (no horizontal scroll, 44px touch
+ *     targets) live in principal-mobile.spec.ts and are not redone
+ *     here.
  */
 
-test.describe('principal-skill empty-state categories', () => {
-  test('apex-agent renders authority-root empty state', async ({ page }) => {
-    await page.goto('/principals/apex-agent');
-    await expect(page.getByTestId('principal-card')).toBeVisible({ timeout: 10_000 });
+type Category =
+  | 'authority-root'
+  | 'authority-anchor'
+  | 'actor-with-skill'
+  | 'actor-skill-debt';
 
-    /*
-     * Wait for the fetch to settle and assert the empty branch with
-     * the exact data-category we expect. The locator combines the
-     * legacy testId (so existing parity tests stay valid) with the
-     * new attribute discriminator.
-     */
+interface PrincipalListEntry {
+  readonly id: string;
+}
+
+interface PrincipalSkillResponse {
+  readonly category: Category;
+  readonly content: string | null;
+}
+
+/**
+ * Validate the API envelope and extract the array of principals. The
+ * console server returns either `{ ok: true, data: [...] }` or a bare
+ * array (legacy shape); anything else is an envelope error. Returns
+ * the array or null on shape mismatch so callers can decide whether
+ * to skip vs fail.
+ */
+function extractPrincipalArray(body: unknown): ReadonlyArray<PrincipalListEntry> | null {
+  if (Array.isArray(body)) return body as ReadonlyArray<PrincipalListEntry>;
+  if (body && typeof body === 'object' && 'data' in body) {
+    const data = (body as { data: unknown }).data;
+    if (Array.isArray(data)) return data as ReadonlyArray<PrincipalListEntry>;
+  }
+  return null;
+}
+
+/**
+ * Same envelope-aware extraction for the per-principal skill response.
+ * Returns null when the wire shape does not match what the test
+ * expects so the discovery loop can skip the principal cleanly.
+ */
+function extractSkillResponse(body: unknown): PrincipalSkillResponse | null {
+  if (body && typeof body === 'object' && 'category' in body) {
+    return body as PrincipalSkillResponse;
+  }
+  if (body && typeof body === 'object' && 'data' in body) {
+    const data = (body as { data: unknown }).data;
+    if (data && typeof data === 'object' && 'category' in data) {
+      return data as PrincipalSkillResponse;
+    }
+  }
+  return null;
+}
+
+/**
+ * Walk every principal id in the store and return the first id whose
+ * skill response classifies into the requested category. Returns null
+ * when the live store contains no principal of that category so the
+ * caller can skip rather than false-fail. Cap the walk at the first
+ * match because one representative is enough to exercise the empty-
+ * state branch; the classifier itself is unit-tested exhaustively.
+ */
+async function findPrincipalByCategory(
+  request: APIRequestContext,
+  category: Category,
+): Promise<string | null> {
+  const listRes = await request.post('/api/principals.list');
+  expect(listRes.ok(), 'principals.list endpoint should return 200').toBe(true);
+  const principals = extractPrincipalArray(await listRes.json());
+  if (principals === null) {
+    throw new Error('principals.list returned an unexpected payload shape');
+  }
+  for (const p of principals) {
+    const skillRes = await request.post('/api/principals.skill', {
+      data: { principal_id: p.id },
+    });
+    if (!skillRes.ok()) continue;
+    const skill = extractSkillResponse(await skillRes.json());
+    if (skill !== null && skill.category === category) return p.id;
+  }
+  return null;
+}
+
+/**
+ * Common navigation: drive the page to /principals/<id>, wait for
+ * the principal-card to mount, and return. Each test then asserts
+ * its category-specific landmark and copy. Pulling the navigation
+ * into a helper keeps the tests focused on the assertion they own.
+ */
+async function gotoPrincipal(page: Page, id: string): Promise<void> {
+  await page.goto(`/principals/${encodeURIComponent(id)}`);
+  await expect(page.getByTestId('principal-card')).toBeVisible({ timeout: 10_000 });
+}
+
+test.describe('principal-skill empty-state categories', () => {
+  test('renders the authority-root empty state for an apex principal', async ({ page, request }) => {
+    const id = await findPrincipalByCategory(request, 'authority-root');
+    test.skip(id === null, 'no authority-root principal in fixture');
+    await gotoPrincipal(page, id!);
+
     const empty = page.locator('[data-testid="principal-skill-empty"][data-category="authority-root"]');
     await expect(empty).toBeVisible({ timeout: 10_000 });
-
     /*
-     * The visible copy must carry the by-design framing. Asserting
-     * the phrase rather than the whole sentence keeps the test
-     * resilient to minor copy edits while still catching the
-     * "fell back to skill-debt copy" regression.
+     * Phrase-level assertion (not whole sentence) keeps the test
+     * resilient to copy edits while still catching the regression
+     * where the renderer fell back to actor-skill-debt copy for an
+     * authority-root principal.
      */
     await expect(empty).toContainText('authority root');
     await expect(empty).toContainText('by design');
   });
 
-  test('claude-agent renders authority-anchor empty state', async ({ page }) => {
-    await page.goto('/principals/claude-agent');
-    await expect(page.getByTestId('principal-card')).toBeVisible({ timeout: 10_000 });
+  test('renders the authority-anchor empty state for a trust-relay principal', async ({ page, request }) => {
+    const id = await findPrincipalByCategory(request, 'authority-anchor');
+    test.skip(id === null, 'no authority-anchor principal in fixture');
+    await gotoPrincipal(page, id!);
 
     const empty = page.locator('[data-testid="principal-skill-empty"][data-category="authority-anchor"]');
     await expect(empty).toBeVisible({ timeout: 10_000 });
-
     /*
-     * "trust-relay" is the substantive distinction the empty-state
-     * copy carries: claude-agent is the parent that signs the leaf
-     * actors. If a regression collapses anchor copy back to leaf-debt
-     * copy, this assertion fails.
+     * "trust-relay" + "signs other" together pin the substantive
+     * distinction the empty-state copy carries: an anchor is the
+     * parent that signs leaf actors, not a leaf itself. If a
+     * regression collapses anchor copy back to leaf-debt copy, this
+     * assertion fails.
      */
     await expect(empty).toContainText('trust-relay');
     await expect(empty).toContainText('signs other');
   });
 
-  test('cto-actor renders actor-with-skill content (markdown)', async ({ page }) => {
+  test('renders the actor-with-skill content panel when a SKILL.md exists', async ({ page, request }) => {
     /*
-     * cto-actor ships a SKILL.md in this repo, so the response should
-     * carry content and the renderer should take the content branch.
-     * The content panel exposes data-category="actor-with-skill" so
-     * the empty-vs-content selection is visible to Playwright without
-     * scraping the markdown body.
+     * actor-with-skill is the only category that takes the content
+     * branch instead of an empty state. The data-category attribute
+     * lives on the content panel so Playwright can assert the
+     * empty-vs-content selection without scraping the markdown body.
      */
-    await page.goto('/principals/cto-actor');
-    await expect(page.getByTestId('principal-card')).toBeVisible({ timeout: 10_000 });
+    const id = await findPrincipalByCategory(request, 'actor-with-skill');
+    test.skip(id === null, 'no actor-with-skill principal in fixture');
+    await gotoPrincipal(page, id!);
 
     const content = page.locator('[data-testid="principal-skill-content"][data-category="actor-with-skill"]');
     await expect(content).toBeVisible({ timeout: 10_000 });
   });
 
-  test('code-author renders actor-skill-debt empty state', async ({ page }) => {
-    /*
-     * code-author is a leaf principal (signed by claude-agent, signs
-     * no children, no SKILL.md). It must classify as actor-skill-debt
-     * so the empty surface flags real authoring debt rather than
-     * reading as by-design absence.
-     */
-    await page.goto('/principals/code-author');
-    await expect(page.getByTestId('principal-card')).toBeVisible({ timeout: 10_000 });
+  test('renders the actor-skill-debt empty state for a leaf actor with no SKILL.md', async ({ page, request }) => {
+    const id = await findPrincipalByCategory(request, 'actor-skill-debt');
+    test.skip(id === null, 'no actor-skill-debt principal in fixture');
+    await gotoPrincipal(page, id!);
 
     const empty = page.locator('[data-testid="principal-skill-empty"][data-category="actor-skill-debt"]');
     await expect(empty).toBeVisible({ timeout: 10_000 });
-
     /*
      * Skill-debt copy must reference the missing SKILL.md path AND
      * frame the absence as authoring debt; both signals together
-     * separate this branch from the by-design branches.
+     * separate this branch from the by-design branches. The path
+     * assertion uses the discovered id so it stays accurate
+     * regardless of which leaf actor we picked.
      */
-    await expect(empty).toContainText('.claude/skills/code-author/SKILL.md');
+    await expect(empty).toContainText(`.claude/skills/${id}/SKILL.md`);
     await expect(empty).toContainText('authoring debt');
   });
 });

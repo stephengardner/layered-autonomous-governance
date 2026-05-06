@@ -122,13 +122,18 @@ describe('classifyPrincipal', () => {
       })).toBe('actor-skill-debt');
     });
 
-    it('returns actor-skill-debt for an unknown role (defensive fallback)', () => {
+    it('returns actor-skill-debt for role===human (no human branch yet)', () => {
       /*
-       * An unrecognized role string (operator drift, fixture bug, new
-       * role added without classifier update) falls through to the
-       * skill-debt branch. The empty-state surface for an unknown role
-       * reading as "no playbook authored" is more honest than reading
-       * as "by design no playbook" since we cannot prove design intent.
+       * `human` is a canonical role the classifier knows about (see the
+       * principal-classifier.ts comment listing apex/agent/human/...).
+       * The classifier deliberately has no human-specific branch today,
+       * so a role===human principal falls through to the default
+       * skill-debt arm. This is intentional fallback rather than an
+       * "unrecognized role" surprise: until a human-specific empty-state
+       * copy is authored, "no playbook authored" is more honest than a
+       * by-design framing we cannot prove. Pinning the behaviour here
+       * makes a future addition of a human branch a deliberate edit
+       * rather than a silent regression.
        */
       expect(classifyPrincipal({
         role: 'human',
