@@ -76,6 +76,33 @@ function diffPolicyAtom(existing, expected) {
         + `expected=${JSON.stringify(expected.principal_id)}`,
     );
   }
+  // Lifecycle integrity: a stored atom that has been quarantined,
+  // tainted, or superseded would otherwise show "in sync" on the
+  // policy fields but be silently inert at runtime (the canon
+  // reader skips tainted + superseded atoms). Compare these surfaces
+  // so a re-run after a manual taint or supersede surfaces drift
+  // explicitly rather than reporting clean.
+  if (existing.scope !== expected.scope) {
+    diffs.push(`scope: ${JSON.stringify(existing.scope)} -> ${JSON.stringify(expected.scope)}`);
+  }
+  if (existing.taint !== expected.taint) {
+    diffs.push(`taint: ${JSON.stringify(existing.taint)} -> ${JSON.stringify(expected.taint)}`);
+  }
+  if (JSON.stringify(existing.supersedes ?? []) !== JSON.stringify(expected.supersedes ?? [])) {
+    diffs.push(
+      `supersedes: stored=${JSON.stringify(existing.supersedes ?? [])} `
+        + `expected=${JSON.stringify(expected.supersedes ?? [])}`,
+    );
+  }
+  if (
+    JSON.stringify(existing.superseded_by ?? [])
+    !== JSON.stringify(expected.superseded_by ?? [])
+  ) {
+    diffs.push(
+      `superseded_by: stored=${JSON.stringify(existing.superseded_by ?? [])} `
+        + `expected=${JSON.stringify(expected.superseded_by ?? [])}`,
+    );
+  }
   const ev = existing.provenance ?? {};
   const xv = expected.provenance;
   if (ev.kind !== xv.kind) {

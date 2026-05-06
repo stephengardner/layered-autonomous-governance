@@ -182,11 +182,19 @@ export function createTelegramPlanProposalNotifier(options = {}) {
 
 The factory is the place that reads env vars; the LoopRunner stays env-agnostic.
 
-### `scripts/lib/telegram-plan-trigger-format.mjs` (extracted -- pure formatter)
+### `scripts/lib/plan-summary.mjs` (extracted -- pure formatter)
 
-Per `dev-dry-extract-at-second-duplication`: the plan summary extraction (title from first markdown heading, rest as body) appears in `plan-approve-telegram.mjs` AND `plan-discuss-telegram.mjs` already; this is the third instance. Extract to a shared formatter that all three consumers import. Pure helper -- no I/O, fully unit-testable. The formatter exports `formatPlanForTelegram(plan)` returning `{ title, body, summary, message }`.
+Per `dev-dry-extract-at-second-duplication`: the plan summary extraction (title from first markdown heading, rest as body) appears in `scripts/lib/plan-approve-telegram.mjs::formatPlanSummary` AND inline inside `scripts/plan-discuss-telegram.mjs` already; this is the third call site once the auto-trigger adapter lands. Extract to a shared pure formatter that all three consumers import. Pure helper -- no I/O, fully unit-testable.
 
-Wait -- actually looking at the existing code: `plan-approve-telegram.mjs` uses `formatPlanSummary` from `lib/plan-approve-telegram.mjs`, and `plan-discuss-telegram.mjs` has its own inline. Two existing instances + one new = three. Extract is mandatory. The shared module lives at `scripts/lib/plan-summary.mjs` and the existing two helpers re-export from it (zero behavior change).
+Canonical contract:
+
+- Shared module: `scripts/lib/plan-summary.mjs`.
+- Exported function: `extractPlanTitleAndBody(plan)` returning `{ title: string, body: string }` -- the FULL untrimmed body (truncation is a per-consumer concern).
+- Existing `scripts/lib/plan-approve-telegram.mjs::formatPlanSummary` becomes a thin wrapper that calls `extractPlanTitleAndBody`, then truncates the body at the approve-script's 600-char preview budget. Same signature, zero behavior change for existing callers.
+- `scripts/plan-discuss-telegram.mjs` replaces the inline IIFE with a call to `extractPlanTitleAndBody`. Discuss uses the FULL body.
+- The new auto-trigger adapter (`scripts/lib/telegram-plan-trigger.mjs::formatTelegramMessage`) calls `extractPlanTitleAndBody` and applies its own 3000-char body cap + Telegram-specific footer.
+
+Three consumers, one heading-detection implementation, three different truncation strategies. The DRY extraction is the heading-detection part.
 
 ## Idempotence Atom Schema
 

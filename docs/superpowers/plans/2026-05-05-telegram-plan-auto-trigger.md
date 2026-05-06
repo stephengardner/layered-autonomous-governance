@@ -131,9 +131,11 @@ node scripts/git-as.mjs lag-ceo git commit -m "feat(types): register telegram-pu
 
 **Files:**
 - Create: `scripts/lib/plan-summary.mjs`
-- Test: `test/scripts/lib/plan-summary.test.ts`
+- Test: `test/scripts/plan-summary.test.ts`
 
 The same logic ships inline in `plan-discuss-telegram.mjs:441-456` and as `formatPlanSummary` exported from `scripts/lib/plan-approve-telegram.mjs`. The new auto-trigger adapter is the third caller. Extract first.
+
+The shared module exports `extractPlanTitleAndBody(plan)` returning `{ title, body }` where `body` is the FULL untruncated body. Truncation is a per-consumer concern: approve uses a 600-char preview, the auto-trigger adapter caps at 3000 chars, discuss uses the full body. Existing `formatPlanSummary` in `scripts/lib/plan-approve-telegram.mjs` becomes a thin wrapper that calls `extractPlanTitleAndBody` then truncates -- zero behavior change for existing callers.
 
 - [ ] **Step 2.1: Read existing inline implementation**
 
@@ -145,44 +147,44 @@ Confirm both versions agree: pull `^#{1,3}\s+(.+)$` as title, body is everything
 
 - [ ] **Step 2.2: Write the failing test**
 
-Create `test/scripts/lib/plan-summary.test.ts`:
+Create `test/scripts/plan-summary.test.ts`:
 
 ```typescript
 import { describe, expect, it } from 'vitest';
-import { formatPlanSummary } from '../../../scripts/lib/plan-summary.mjs';
+import { extractPlanTitleAndBody } from '../../scripts/lib/plan-summary.mjs';
 
-describe('formatPlanSummary', () => {
+describe('extractPlanTitleAndBody', () => {
   it('extracts title from first markdown heading', () => {
     const plan = { id: 'p1', content: '# Add a feature\n\nBody line.\nSecond line.' };
-    expect(formatPlanSummary(plan)).toEqual({
+    expect(extractPlanTitleAndBody(plan)).toEqual({
       title: 'Add a feature',
       body: 'Body line.\nSecond line.',
     });
   });
   it('falls back to id-bearing title when no heading', () => {
     const plan = { id: 'p2', content: 'Body without heading.' };
-    expect(formatPlanSummary(plan)).toEqual({
+    expect(extractPlanTitleAndBody(plan)).toEqual({
       title: '(no title - id p2)',
       body: 'Body without heading.',
     });
   });
   it('handles empty content', () => {
     const plan = { id: 'p3', content: '' };
-    expect(formatPlanSummary(plan)).toEqual({
+    expect(extractPlanTitleAndBody(plan)).toEqual({
       title: '(no title - id p3)',
       body: '',
     });
   });
   it('handles null/undefined content', () => {
     const plan = { id: 'p4' };
-    expect(formatPlanSummary(plan)).toEqual({
+    expect(extractPlanTitleAndBody(plan)).toEqual({
       title: '(no title - id p4)',
       body: '',
     });
   });
   it('accepts h1 / h2 / h3', () => {
-    expect(formatPlanSummary({ id: 'p5', content: '## H2 title\n\nbody' }).title).toBe('H2 title');
-    expect(formatPlanSummary({ id: 'p6', content: '### H3 title\n\nbody' }).title).toBe('H3 title');
+    expect(extractPlanTitleAndBody({ id: 'p5', content: '## H2 title\n\nbody' }).title).toBe('H2 title');
+    expect(extractPlanTitleAndBody({ id: 'p6', content: '### H3 title\n\nbody' }).title).toBe('H3 title');
   });
 });
 ```
@@ -211,9 +213,9 @@ Create `scripts/lib/plan-summary.mjs`:
  * @param {{ id?: string; content?: string | null }} plan
  * @returns {{ title: string; body: string }}
  */
-export function formatPlanSummary(plan) {
-  const id = plan && typeof plan.id === 'string' ? plan.id : '(unknown)';
-  const content = plan && typeof plan.content === 'string' ? plan.content : '';
+export function extractPlanTitleAndBody(plan) {
+  const id = plan && typeof plan.id === 'string' ? plan.id : null;
+  const content = plan && plan.content != null ? String(plan.content) : '';
   const lines = content.split('\n');
   let title = '';
   let bodyStart = 0;
@@ -225,31 +227,34 @@ export function formatPlanSummary(plan) {
       break;
     }
   }
+  const fallbackTitle = id ? `(no title - id ${id})` : '(no title)';
   return {
-    title: title || `(no title - id ${id})`,
+    title: title || fallbackTitle,
     body: lines.slice(bodyStart).join('\n').trim(),
   };
 }
 ```
 
-Run: `npx vitest run test/scripts/lib/plan-summary.test.ts`. Expected: PASS (5/5).
+Run: `npx vitest run test/scripts/plan-summary.test.ts`. Expected: PASS.
 
 - [ ] **Step 2.4: Migrate existing callers**
 
-`scripts/lib/plan-approve-telegram.mjs`: replace existing `export function formatPlanSummary` with `export { formatPlanSummary } from './plan-summary.mjs';`. Verify no other behavior change in the file.
+`scripts/lib/plan-approve-telegram.mjs`: keep the existing `formatPlanSummary` signature but make it a thin wrapper that calls `extractPlanTitleAndBody` then truncates the body at the existing 600-char preview budget. Zero behavior change for existing callers.
 
-`scripts/plan-discuss-telegram.mjs`: replace the inline IIFE at lines ~441-456 with:
+`scripts/plan-discuss-telegram.mjs`: replace the inline IIFE at lines ~441-456 with a direct call:
 
 ```javascript
-import { formatPlanSummary } from './lib/plan-summary.mjs';
+import { extractPlanTitleAndBody } from './lib/plan-summary.mjs';
 // ...
-const summary = formatPlanSummary(plan);
+const summary = extractPlanTitleAndBody(plan);
 ```
+
+Discuss uses the FULL body (no truncation); the inline IIFE was already doing that.
 
 Run all existing tests:
 
 ```bash
-npx vitest run test/scripts/lib/plan-approve-telegram.test.ts test/scripts/plan-approve-telegram.test.ts 2>&1 | tail -20
+npx vitest run test/scripts/plan-approve-telegram.test.ts test/scripts/plan-discuss-telegram.test.ts 2>&1 | tail -20
 ```
 
 Expected: green. If a test fails, the migration is wrong (regression -- fix before commit).
