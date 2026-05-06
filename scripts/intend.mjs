@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createFileHost } from '../dist/adapters/file/index.js';
-import { parseIntendArgs, computeExpiresAt, buildIntentAtom } from './lib/intend.mjs';
+import { parseIntendArgs, computeExpiresAt, buildIntentAtom, buildCtoSpawnArgs } from './lib/intend.mjs';
 import { spawnNode } from './lib/spawn-node.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,6 +59,29 @@ async function main() {
   await host.atoms.put(atom);
   console.log(`[intend] wrote ${atom.id} (expires ${expiresAt})`);
 
+  // Default --invokers path for the --trigger spawn AND for the manual
+  // fallback echo. The operator's intent declares allowed_sub_actors
+  // (which always includes code-author for autonomous-solve), so the
+  // run-cto-actor child must register that sub-actor on its
+  // SubActorRegistry or the dispatch-stage will fail-loud at the end of
+  // the deep pipeline with "principal code-author is not registered".
+  // Without this default the operator would have to remember to pass
+  // --invokers manually on every trigger, and the indie-floor "just run
+  // intend.mjs --trigger and it works" story falls over. The canonical
+  // invokers module is the same one run-approval-cycle.mjs uses, so the
+  // intent-trigger path and the daemon path share one wiring path.
+  // Operators with a deployment-specific invokers module override via
+  // --invokers (parsed by run-cto-actor.mjs); this default is the
+  // pluggable indie-floor seam, not a hardcoded coupling.
+  const defaultInvokersPath = resolve(REPO_ROOT, 'scripts/invokers/autonomous-dispatch.mjs');
+  const runCtoActorPath = resolve(REPO_ROOT, 'scripts/run-cto-actor.mjs');
+  const ctoSpawnArgs = buildCtoSpawnArgs({
+    runCtoActorPath,
+    request: args.request,
+    atomId: atom.id,
+    invokersPath: defaultInvokersPath,
+  });
+
   if (args.trigger) {
     console.log(`[intend] triggering CTO with intent id: ${atom.id}`);
     // Spawn through scripts/lib/spawn-node.mjs so the CTO child
@@ -66,11 +89,7 @@ async function main() {
     // whatever the shell PATH points at, which on nvm-managed hosts
     // can be an older version that fails to parse the modern ES
     // features the spawned scripts use.
-    const result = await spawnNode([
-      resolve(REPO_ROOT, 'scripts/run-cto-actor.mjs'),
-      '--request', args.request,
-      '--intent-id', atom.id,
-    ], { stdio: 'inherit', reject: false });
+    const result = await spawnNode(ctoSpawnArgs, { stdio: 'inherit', reject: false });
     // result.failed is the discriminator, NOT exitCode. In execa v9
     // a signal-killed (SIGKILL/SIGTERM) child or a spawn-time error
     // (e.g. ENOENT for a missing scripts/run-cto-actor.mjs) leaves
@@ -86,11 +105,12 @@ async function main() {
       process.exit(childCode);
     }
   } else {
-    // Print process.execPath for the manual fallback so a no-trigger
-    // re-run pins to the same interpreter the runtime-hardening fix
-    // gives the --trigger path. Bare `node` here would reintroduce
-    // the same PATH/shim mismatch on nvm-managed hosts.
-    console.log(`[intend] no --trigger; invoke manually:\n  ${process.execPath} scripts/run-cto-actor.mjs --request "${args.request}" --intent-id ${atom.id}`);
+    // Render the same argv the trigger path would have spawned so a
+    // manual re-run matches byte-for-byte (including --invokers).
+    // process.execPath pins to this script's interpreter; bare `node`
+    // would reintroduce the PATH/shim mismatch on nvm-managed hosts.
+    const flagsEcho = ctoSpawnArgs.slice(1).map((s) => /\s/.test(s) ? `"${s}"` : s).join(' ');
+    console.log(`[intend] no --trigger; invoke manually:\n  ${process.execPath} ${runCtoActorPath} ${flagsEcho}`);
   }
 }
 

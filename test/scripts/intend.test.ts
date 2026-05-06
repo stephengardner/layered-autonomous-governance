@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { parseIntendArgs, buildIntentAtom, computeExpiresAt } from '../../scripts/lib/intend.mjs';
+import {
+  parseIntendArgs,
+  buildIntentAtom,
+  computeExpiresAt,
+  buildCtoSpawnArgs,
+} from '../../scripts/lib/intend.mjs';
 
 describe('parseIntendArgs', () => {
   it('parses required --request + --scope + --blast-radius', () => {
@@ -63,6 +68,48 @@ describe('computeExpiresAt', () => {
   });
   it('rejects invalid format', () => {
     expect(() => computeExpiresAt('tomorrow', now)).toThrow();
+  });
+});
+
+describe('buildCtoSpawnArgs', () => {
+  const baseSpec = {
+    runCtoActorPath: '/repo/scripts/run-cto-actor.mjs',
+    request: 'add a hover tooltip',
+    atomId: 'intent-abc-2026-05-06T03-18-38-365Z',
+    invokersPath: '/repo/scripts/invokers/autonomous-dispatch.mjs',
+  };
+
+  it('always includes --invokers in the spawn argv', () => {
+    const argv = buildCtoSpawnArgs(baseSpec);
+    const idx = argv.indexOf('--invokers');
+    expect(idx).toBeGreaterThan(-1);
+    expect(argv[idx + 1]).toBe(baseSpec.invokersPath);
+  });
+
+  it('preserves canonical positional + flag order', () => {
+    const argv = buildCtoSpawnArgs(baseSpec);
+    expect(argv).toEqual([
+      baseSpec.runCtoActorPath,
+      '--request', baseSpec.request,
+      '--intent-id', baseSpec.atomId,
+      '--invokers', baseSpec.invokersPath,
+    ]);
+  });
+
+  it('rejects empty runCtoActorPath', () => {
+    expect(() => buildCtoSpawnArgs({ ...baseSpec, runCtoActorPath: '' })).toThrow(/runCtoActorPath/);
+  });
+
+  it('rejects empty invokersPath', () => {
+    expect(() => buildCtoSpawnArgs({ ...baseSpec, invokersPath: '' })).toThrow(/invokersPath/);
+  });
+
+  it('rejects empty request', () => {
+    expect(() => buildCtoSpawnArgs({ ...baseSpec, request: '' })).toThrow(/request/);
+  });
+
+  it('rejects empty atomId', () => {
+    expect(() => buildCtoSpawnArgs({ ...baseSpec, atomId: '' })).toThrow(/atomId/);
   });
 });
 

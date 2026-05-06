@@ -64,6 +64,40 @@ export function computeExpiresAt(raw, now) {
   return new Date(now.getTime() + totalMs).toISOString();
 }
 
+/**
+ * Build the argv array intend.mjs --trigger spawns onto run-cto-actor.mjs.
+ * Pinning this here (rather than inline in scripts/intend.mjs) lets a
+ * regression test assert that --invokers is always present for the
+ * trigger path; without it the deep planning pipeline succeeds through
+ * brainstorm/spec/plan/review and only fails-loud at dispatch-stage
+ * with "principal code-author is not registered". Operators with a
+ * deployment-specific invokers module pass --invokers <override-path>
+ * to intend.mjs (parsed by run-cto-actor.mjs and last-wins on argv);
+ * this builder seeds the indie-floor default so the zero-config
+ * `intend.mjs --request "..." --trigger` flow works end-to-end.
+ */
+export function buildCtoSpawnArgs(spec) {
+  const { runCtoActorPath, request, atomId, invokersPath } = spec;
+  if (typeof runCtoActorPath !== 'string' || runCtoActorPath.length === 0) {
+    throw new Error('buildCtoSpawnArgs: runCtoActorPath is required');
+  }
+  if (typeof request !== 'string' || request.length === 0) {
+    throw new Error('buildCtoSpawnArgs: request is required');
+  }
+  if (typeof atomId !== 'string' || atomId.length === 0) {
+    throw new Error('buildCtoSpawnArgs: atomId is required');
+  }
+  if (typeof invokersPath !== 'string' || invokersPath.length === 0) {
+    throw new Error('buildCtoSpawnArgs: invokersPath is required');
+  }
+  return [
+    runCtoActorPath,
+    '--request', request,
+    '--intent-id', atomId,
+    '--invokers', invokersPath,
+  ];
+}
+
 export function buildIntentAtom(spec) {
   const {
     request, scope, blastRadius, subActors, minConfidence,
