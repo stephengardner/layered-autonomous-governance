@@ -70,9 +70,25 @@ export async function readNumericCanonPolicy(
   options: NumericCanonPolicyOptions,
 ): Promise<number> {
   const PAGE_SIZE = 200;
+  // Bounded scan keeps cost predictable as the directive volume grows.
+  // Canon policies are L3-promoted directives; same-subject atoms outside
+  // L3 are not policies and must not influence the dial. The pair (layer
+  // filter + MAX_SCAN cap) closes both concerns: the filter narrows the
+  // candidate set to the governance-bearing layer, and the cap bounds
+  // the worst case (a deployment with thousands of L3 directives still
+  // completes in a single tick).
+  const MAX_SCAN = 5_000;
+  let seen = 0;
   let cursor: string | undefined;
   do {
-    const page = await host.atoms.query({ type: ['directive'] }, PAGE_SIZE, cursor);
+    const remaining = MAX_SCAN - seen;
+    if (remaining <= 0) break;
+    const page = await host.atoms.query(
+      { type: ['directive'], layer: ['L3'] },
+      Math.min(PAGE_SIZE, remaining),
+      cursor,
+    );
+    seen += page.atoms.length;
     for (const atom of page.atoms) {
       if (atom.taint !== 'clean') continue;
       if (atom.superseded_by.length > 0) continue;
