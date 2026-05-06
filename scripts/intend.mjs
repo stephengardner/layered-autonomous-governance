@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createFileHost } from '../dist/adapters/file/index.js';
-import { parseIntendArgs, computeExpiresAt, buildIntentAtom, buildCtoSpawnArgs } from './lib/intend.mjs';
+import { parseIntendArgs, computeExpiresAt, buildIntentAtom, buildCtoSpawnArgs, shellQuote } from './lib/intend.mjs';
 import { spawnNode } from './lib/spawn-node.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,27 +59,30 @@ async function main() {
   await host.atoms.put(atom);
   console.log(`[intend] wrote ${atom.id} (expires ${expiresAt})`);
 
-  // Default --invokers path for the --trigger spawn AND for the manual
-  // fallback echo. The operator's intent declares allowed_sub_actors
-  // (which always includes code-author for autonomous-solve), so the
-  // run-cto-actor child must register that sub-actor on its
-  // SubActorRegistry or the dispatch-stage will fail-loud at the end of
-  // the deep pipeline with "principal code-author is not registered".
-  // Without this default the operator would have to remember to pass
-  // --invokers manually on every trigger, and the indie-floor "just run
-  // intend.mjs --trigger and it works" story falls over. The canonical
-  // invokers module is the same one run-approval-cycle.mjs uses, so the
-  // intent-trigger path and the daemon path share one wiring path.
-  // Operators with a deployment-specific invokers module override via
-  // --invokers (parsed by run-cto-actor.mjs); this default is the
-  // pluggable indie-floor seam, not a hardcoded coupling.
+  // Operator override of --invokers wins; otherwise default to the
+  // canonical autonomous-dispatch registrar. The operator's intent
+  // declares allowed_sub_actors (which always includes code-author
+  // for autonomous-solve), so the run-cto-actor child must register
+  // that sub-actor on its SubActorRegistry or the dispatch-stage will
+  // fail-loud at the end of the deep pipeline with "principal
+  // code-author is not registered". Without a default the operator
+  // would have to remember the flag on every trigger, and the indie-
+  // floor "just run intend.mjs --trigger and it works" story falls
+  // over. The canonical invokers module is the same one
+  // run-approval-cycle.mjs uses, so the intent-trigger path and the
+  // daemon path share one wiring path. Deployments override via
+  // `intend.mjs --invokers <path>`; this is the pluggable seam, not a
+  // hardcoded coupling.
   const defaultInvokersPath = resolve(REPO_ROOT, 'scripts/invokers/autonomous-dispatch.mjs');
+  const invokersPath = args.invokersPath !== null
+    ? resolve(args.invokersPath)
+    : defaultInvokersPath;
   const runCtoActorPath = resolve(REPO_ROOT, 'scripts/run-cto-actor.mjs');
   const ctoSpawnArgs = buildCtoSpawnArgs({
     runCtoActorPath,
     request: args.request,
     atomId: atom.id,
-    invokersPath: defaultInvokersPath,
+    invokersPath,
   });
 
   if (args.trigger) {
@@ -109,8 +112,11 @@ async function main() {
     // manual re-run matches byte-for-byte (including --invokers).
     // process.execPath pins to this script's interpreter; bare `node`
     // would reintroduce the PATH/shim mismatch on nvm-managed hosts.
-    const flagsEcho = ctoSpawnArgs.slice(1).map((s) => /\s/.test(s) ? `"${s}"` : s).join(' ');
-    console.log(`[intend] no --trigger; invoke manually:\n  ${process.execPath} ${runCtoActorPath} ${flagsEcho}`);
+    // shellQuote wraps tokens that contain shell-special characters
+    // ($, backticks, backslashes, embedded quotes) so the printed
+    // command is paste-safe for arbitrary intent text.
+    const flagsEcho = ctoSpawnArgs.slice(1).map(shellQuote).join(' ');
+    console.log(`[intend] no --trigger; invoke manually:\n  ${shellQuote(process.execPath)} ${shellQuote(runCtoActorPath)} ${flagsEcho}`);
   }
 }
 

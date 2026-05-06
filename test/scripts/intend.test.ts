@@ -4,6 +4,7 @@ import {
   buildIntentAtom,
   computeExpiresAt,
   buildCtoSpawnArgs,
+  shellQuote,
 } from '../../scripts/lib/intend.mjs';
 
 describe('parseIntendArgs', () => {
@@ -49,6 +50,58 @@ describe('parseIntendArgs', () => {
     const r = parseIntendArgs(['--request', 'x', '--scope', 'tooling', '--blast-radius', 'tooling', '--sub-actors', 'code-author', '--dry-run']);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.args.dryRun).toBe(true);
+  });
+
+  it('accepts --invokers <path> for deployment-specific override', () => {
+    const r = parseIntendArgs([
+      '--request', 'x', '--scope', 'tooling', '--blast-radius', 'tooling',
+      '--sub-actors', 'code-author',
+      '--invokers', '/custom/registrar.mjs',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.invokersPath).toBe('/custom/registrar.mjs');
+  });
+
+  it('defaults invokersPath to null when --invokers omitted', () => {
+    const r = parseIntendArgs([
+      '--request', 'x', '--scope', 'tooling', '--blast-radius', 'tooling',
+      '--sub-actors', 'code-author',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.invokersPath).toBe(null);
+  });
+});
+
+describe('shellQuote', () => {
+  it('leaves shell-safe tokens unwrapped', () => {
+    expect(shellQuote('hello')).toBe('hello');
+    expect(shellQuote('intent-abc-123')).toBe('intent-abc-123');
+    expect(shellQuote('/abs/path/to/file.mjs')).toBe('/abs/path/to/file.mjs');
+  });
+
+  it('wraps tokens containing whitespace', () => {
+    expect(shellQuote('hello world')).toBe(`'hello world'`);
+  });
+
+  it('escapes embedded single quotes via close-reopen idiom', () => {
+    expect(shellQuote(`it's a quote`)).toBe(`'it'\\''s a quote'`);
+  });
+
+  it('quotes tokens with shell metacharacters', () => {
+    expect(shellQuote('echo $HOME')).toBe(`'echo $HOME'`);
+    expect(shellQuote('foo;bar')).toBe(`'foo;bar'`);
+    expect(shellQuote('back`tick`')).toBe(`'back\`tick\`'`);
+    expect(shellQuote('with"quote')).toBe(`'with"quote'`);
+    expect(shellQuote('back\\slash')).toBe(`'back\\slash'`);
+  });
+
+  it('returns empty quoted-string for empty input', () => {
+    expect(shellQuote('')).toBe(`''`);
+  });
+
+  it('rejects non-string input', () => {
+    // @ts-expect-error verifying runtime guard
+    expect(() => shellQuote(123)).toThrow(/string/);
   });
 });
 
