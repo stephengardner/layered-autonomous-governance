@@ -221,6 +221,16 @@ export function buildReleasePrDriverClaim(args: BuildReleasePrDriverClaimArgs): 
       `buildReleasePrDriverClaim: prior atom must be type 'pr-driver-claim'; got '${prior.type}'`,
     );
   }
+  // Symmetric with buildPrDriverClaim's claimed_at validation: a
+  // malformed released_at would otherwise be persisted into
+  // created_at / last_reinforced_at and propagate through the audit
+  // chain as a bad atom rather than a fail-fast at the builder.
+  const releasedAtMs = Date.parse(args.released_at);
+  if (!Number.isFinite(releasedAtMs)) {
+    throw new Error(
+      `buildReleasePrDriverClaim: released_at must be a valid ISO timestamp; got ${args.released_at}`,
+    );
+  }
   const meta = prior.metadata as Record<string, unknown>;
   const priorPr = meta['pr'] as Record<string, unknown> | undefined;
   if (priorPr === undefined) {

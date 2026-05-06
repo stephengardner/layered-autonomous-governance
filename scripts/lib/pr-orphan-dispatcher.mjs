@@ -92,9 +92,14 @@ export function createPrFixOrphanDispatcher(options = {}) {
       validateDispatchArgs(args);
       const { pr, orphan_atom_id, orphan_reason } = args;
       // run-pr-fix.mjs drives the PR through one fix-cycle. The
-      // orphan_reason + orphan_atom_id are forwarded as env vars so
-      // the dispatched sub-agent can reference them in its terminal
-      // report (the audit chain back to the orphan event).
+      // orphan_atom_id + orphan_reason are forwarded as env vars and
+      // run-pr-fix.mjs reads them at startup, threading them onto
+      // PrFixActor's `originContext` option. The first observation
+      // atom the actor writes chains via `provenance.derived_from`
+      // back to the orphan-detected atom and stores the reason on
+      // `metadata.extra.dispatch_origin`, so the audit trail reads
+      // end-to-end (orphan-detected -> pr-fix observation -> session
+      // -> fix-push) without a side-channel scan.
       await execa(
         'node',
         [

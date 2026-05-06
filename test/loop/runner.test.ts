@@ -1106,11 +1106,7 @@ describe('LoopRunner.tick pr-orphan reconcile integration', () => {
 
   it('enabled-but-source-absent silent-skips and warns ONCE across many ticks', async () => {
     const host = createMemoryHost();
-    const original = console.error;
-    const captured: string[] = [];
-    console.error = (...args: unknown[]) => {
-      captured.push(args.map((a) => String(a)).join(' '));
-    };
+    const cap = captureStderr();
     try {
       const runner = new LoopRunner(host, {
         principalId: principal,
@@ -1121,12 +1117,14 @@ describe('LoopRunner.tick pr-orphan reconcile integration', () => {
         const report = await runner.tick();
         expect(report.prOrphanReconcileReport).toBeNull();
       }
-      const gapWarnings = captured.filter(
-        (l) => l.includes('[pr-orphan-reconcile]') && l.includes('skipped this tick'),
-      );
+      const gapWarnings = cap.calls
+        .map((args) => args.map((a) => String(a)).join(' '))
+        .filter(
+          (l) => l.includes('[pr-orphan-reconcile]') && l.includes('skipped this tick'),
+        );
       expect(gapWarnings.length).toBe(1);
     } finally {
-      console.error = original;
+      cap.restore();
     }
   });
 

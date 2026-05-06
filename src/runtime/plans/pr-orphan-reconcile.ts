@@ -50,6 +50,7 @@ import { createHash } from 'node:crypto';
 import type { Host } from '../../interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../types.js';
 import { ConflictError } from '../../substrate/errors.js';
+import { readNumericCanonPolicy } from '../loop/canon-policy-cadence.js';
 import {
   findActiveDriverClaim,
   type ActiveDriverClaim,
@@ -218,28 +219,20 @@ export interface PrOrphanReconcileTickResult {
  * the value is malformed (non-numeric, non-finite, zero, negative).
  * Tainted or superseded canon atoms are ignored.
  *
- * Mirrors the read shape of `readPrObservationFreshnessMs` so the
- * pair of tunable dials uses one consistent atom-policy pattern.
+ * Supports the `'Infinity'` sentinel for deployments that want to
+ * disable orphan detection entirely (webhook-driven flows where the
+ * orphan tick should never fire). Callers that pass the result
+ * directly into the claimant-activity scanner MUST guard against the
+ * Infinity case; see `runPrOrphanReconcileTick` for the canonical
+ * clamp.
  */
 export async function readPrOrphanThresholdMs(host: Host): Promise<number> {
-  const PAGE_SIZE = 200;
-  let cursor: string | undefined;
-  do {
-    const page = await host.atoms.query({ type: ['directive'] }, PAGE_SIZE, cursor);
-    for (const atom of page.atoms) {
-      if (atom.taint !== 'clean') continue;
-      if (atom.superseded_by.length > 0) continue;
-      const meta = atom.metadata as Record<string, unknown>;
-      const policy = meta['policy'] as Record<string, unknown> | undefined;
-      if (!policy || policy['subject'] !== 'pr-orphan-reconcile-threshold-ms') continue;
-      const threshold = policy['threshold_ms'] ?? policy['value'];
-      if (threshold === 'Infinity') return Number.POSITIVE_INFINITY;
-      if (typeof threshold !== 'number' || !Number.isFinite(threshold) || threshold <= 0) continue;
-      return threshold;
-    }
-    cursor = page.nextCursor === null ? undefined : page.nextCursor;
-  } while (cursor !== undefined);
-  return DEFAULT_ORPHAN_THRESHOLD_MS;
+  return readNumericCanonPolicy(host, {
+    subject: 'pr-orphan-reconcile-threshold-ms',
+    fieldName: 'threshold_ms',
+    fallback: DEFAULT_ORPHAN_THRESHOLD_MS,
+    acceptInfinitySentinel: true,
+  });
 }
 
 /**
@@ -323,6 +316,31 @@ export async function runPrOrphanReconcileTick(
   const bump = (k: string): void => {
     skipped[k] = (skipped[k] ?? 0) + 1;
   };
+
+  // Sentinel: a deployment that disables orphan detection (webhook-
+  // driven, never-orphan) sets the canon threshold to 'Infinity'. The
+  // claimant scanner cannot accept Infinity as a lookback (the default
+  // `AtomStoreClaimantActivityScanner` builds `new Date(now_ms -
+  // lookback_ms).toISOString()` which throws on Infinity). Short-
+  // circuit here so the tick is a clean no-op rather than threading
+  // the guard through every comparison: every PR is recorded as
+  // 'orphan-detection-disabled' for operator visibility and the
+  // dispatcher is never called.
+  if (!Number.isFinite(thresholdMs)) {
+    for (const _pr of openPrs) {
+      scanned += 1;
+      bump('orphan-detection-disabled');
+    }
+    return {
+      scanned,
+      orphansDetected,
+      idempotentSkips,
+      dispatched,
+      failedDispatches,
+      rateLimited,
+      skipped,
+    };
+  }
 
   for (const pr of openPrs) {
     scanned += 1;
