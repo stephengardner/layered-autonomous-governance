@@ -81,7 +81,17 @@ export function hasAnyDeliberation(fields: DeliberationFields): boolean {
   );
 }
 
-function readPrinciples(raw: unknown): ReadonlyArray<string> {
+/*
+ * Shared narrowing for "list of unique non-empty strings". Both
+ * principle-id arrays and provenance.derived_from arrays use the
+ * exact same shape (filter non-strings, trim, dedup, preserve
+ * insertion order). Extracted here so the per-call wrapper stays a
+ * one-liner; per `dev-extract-at-n-equals-two`, two functions with
+ * character-for-character identical bodies is the bug, not a style
+ * preference. CR caught the duplication on PR #321; this consolidates
+ * the body before the third caller appears.
+ */
+function readDedupedTrimmedStringList(raw: unknown): ReadonlyArray<string> {
   if (!Array.isArray(raw)) return [];
   const seen = new Set<string>();
   const out: string[] = [];
@@ -93,6 +103,10 @@ function readPrinciples(raw: unknown): ReadonlyArray<string> {
     out.push(trimmed);
   }
   return out;
+}
+
+function readPrinciples(raw: unknown): ReadonlyArray<string> {
+  return readDedupedTrimmedStringList(raw);
 }
 
 function readAlternatives(raw: unknown): ReadonlyArray<DeliberationAlternative> {
@@ -131,15 +145,5 @@ function readWhatBreaks(meta: Readonly<Record<string, unknown>>): string | null 
 }
 
 function readDerivedFrom(raw: unknown): ReadonlyArray<string> {
-  if (!Array.isArray(raw)) return [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const v of raw) {
-    if (typeof v !== 'string') continue;
-    const trimmed = v.trim();
-    if (trimmed.length === 0 || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    out.push(trimmed);
-  }
-  return out;
+  return readDedupedTrimmedStringList(raw);
 }

@@ -57,13 +57,21 @@ async function fetchCanon(page: Page): Promise<ReadonlyArray<ListAtom>> {
  * Pick a plan that carries enough deliberation metadata to drive a
  * meaningful assertion. We need at least ONE of the deliberation
  * fields populated; tests skip cleanly if no fixture plan qualifies.
+ *
+ * Both spellings of `what_breaks_if_revisit` are accepted (the
+ * canonical name and the older `..._revisited`) so a plan carrying
+ * only the legacy spelling is not skipped unnecessarily -- the
+ * Deliberation component renders both. CR (PR #321) caught the
+ * single-spelling check.
  */
 function pickPlanWithDeliberation(plans: ReadonlyArray<ListAtom>): ListAtom | null {
   for (const p of plans) {
     const meta = (p.metadata ?? {}) as Record<string, unknown>;
     const principles = Array.isArray(meta['principles_applied']) ? meta['principles_applied'] : [];
     const alternatives = Array.isArray(meta['alternatives_rejected']) ? meta['alternatives_rejected'] : [];
-    const whatBreaks = typeof meta['what_breaks_if_revisit'] === 'string' && (meta['what_breaks_if_revisit'] as string).trim().length > 0;
+    const whatBreaks
+      = (typeof meta['what_breaks_if_revisit'] === 'string' && (meta['what_breaks_if_revisit'] as string).trim().length > 0)
+      || (typeof meta['what_breaks_if_revisited'] === 'string' && (meta['what_breaks_if_revisited'] as string).trim().length > 0);
     const derivedFrom = p.provenance?.derived_from ?? [];
     if (principles.length > 0 || alternatives.length > 0 || whatBreaks || derivedFrom.length > 0) {
       return p;

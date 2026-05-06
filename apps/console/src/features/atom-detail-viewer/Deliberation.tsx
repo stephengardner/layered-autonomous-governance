@@ -93,8 +93,14 @@ function SubSection({
 }
 
 function PrinciplesAppliedBlock({ principles }: { principles: ReadonlyArray<string> }) {
-  if (principles.length === 0) return null;
   /*
+   * useQuery is called UNCONDITIONALLY -- per React's Rules of Hooks,
+   * a hook must be called the same number of times on every render.
+   * The empty-principles short-circuit happens AFTER the hook so the
+   * hook count stays stable even if `principles` flips between empty
+   * and non-empty across renders. CR (2026-05-05, PR #321) caught the
+   * earlier hook-before-early-return shape.
+   *
    * One batched atoms.exists query at the outer block; the resolver
    * checks all N principle ids in a single in-memory Map lookup pass
    * server-side. Avoids N x useQuery (which would render N hover
@@ -105,17 +111,20 @@ function PrinciplesAppliedBlock({ principles }: { principles: ReadonlyArray<stri
    * different principle sets don't share a stale answer; sorted so
    * order-only differences hit the same cache.
    *
-   * `enabled` defaults to true so a card with principles fetches
-   * immediately on mount; CanonCard ALREADY renders the deliberation
-   * lazily because the canon-card details panel only mounts when the
-   * user expands the card.
+   * `enabled: sortedIds.length > 0` skips the network round trip in
+   * the empty case while still satisfying the rules-of-hooks contract
+   * (the hook is invoked, just gated). CanonCard ALREADY renders the
+   * deliberation lazily because the canon-card details panel only
+   * mounts when the user expands the card.
    */
   const sortedIds = [...principles].sort();
   const query = useQuery({
     queryKey: ['atoms.exists', sortedIds],
     queryFn: ({ signal }) => existsAtoms(sortedIds, signal),
     staleTime: 60_000,
+    enabled: sortedIds.length > 0,
   });
+  if (principles.length === 0) return null;
   const exists = new Map<string, boolean>(
     (query.data ?? []).map((entry) => [entry.id, entry.exists]),
   );
