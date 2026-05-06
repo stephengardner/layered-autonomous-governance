@@ -60,6 +60,7 @@ import { execa } from 'execa';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnNode } from '../lib/spawn-node.mjs';
 import {
   buildAuthedGitInvocation,
   isTransientPrCreationGatewayError,
@@ -324,9 +325,9 @@ export default async function register(host, registry) {
           // discoverable via the PR body's machine-parseable
           // provenance footer.
           const planIdLabel = truncatePlanIdLabel(capturedPlanId);
-          // Use process.execPath rather than bare `node` so the
-          // spawned child inherits the same node version as the
-          // dispatch invoker. On systems where `node` resolves to an
+          // Spawn through scripts/lib/spawn-node.mjs which pins the
+          // child to the current `process.execPath` rather than bare
+          // `node` from PATH. On systems where `node` resolves to an
           // older shim (e.g. an nvm-managed v12 fallback in PATH),
           // bare-`node` invocations fail to parse ES2020 features
           // like optional-chaining (`?.`) and nullish-coalescing
@@ -334,7 +335,7 @@ export default async function register(host, registry) {
           // catch-block then masks the failure as "labels could not
           // be applied" and the LAG-auditor gate stays unfired.
           // Surfaced by dogfeed-21 (2026-05-05) on PR #320.
-          await execa(process.execPath, [
+          await spawnNode([
             GH_AS_PATH, role,
             'api', `repos/${owner}/${repo}/issues/${capturedPrNumber}/labels`,
             '-X', 'POST',
@@ -357,10 +358,10 @@ export default async function register(host, registry) {
       // transitions the plan to 'succeeded' (merged) or
       // 'abandoned' (closed) the next time it fires.
       try {
-        // process.execPath rather than bare `node` so the spawned
+        // Spawn through scripts/lib/spawn-node.mjs so the spawned
         // child inherits the dispatch invoker's node version. See
         // the label-PR call above for the failure mode this avoids.
-        await execa(process.execPath, [
+        await spawnNode([
           PR_LANDING_PATH,
           '--pr', String(capturedPrNumber),
           '--owner', owner,
