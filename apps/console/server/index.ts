@@ -663,9 +663,11 @@ async function handleAtomsExists(ids: ReadonlyArray<string>): Promise<ReadonlyAr
    * atom that's actually on disk. `primeAtomIndex` is the function
    * that actually populates the map -- `readAllAtoms` reads from
    * disk into a one-shot array on the cold-start branch but does
-   * NOT mutate atomIndex, so calling it here would leave us still
-   * looking at an empty map. CR (cr-precheck v0.4.2 finding,
-   * 2026-05-05) caught this priming-vs-reading mismatch.
+   * NOT mutate atomIndex, so calling it here would leave us
+   * looking at an empty map. The two functions look interchangeable
+   * but only `primeAtomIndex` populates the cache; lock that choice
+   * in to prevent a silent false-negative for atoms that are on disk
+   * but absent from the cache.
    *
    * After the first call atomIndexPrimed=true and subsequent
    * batches are O(N) Map lookups.
@@ -2737,8 +2739,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
      * Silently dropping malformed entries would change response
      * cardinality (caller sees fewer entries than it sent), which
      * makes Map<id, exists> reconstruction fragile. Reject with 400
-     * instead so the bad caller fails loud. CR (cr-precheck v0.4.2
-     * finding, 2026-05-05) caught the original silent-filter shape.
+     * instead so the bad caller fails loud rather than receiving a
+     * differently-shaped response than it requested.
      *
      * Hard cap on input size protects the server from a malformed
      * caller asking for tens of thousands of ids at once. The cap

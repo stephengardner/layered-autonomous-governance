@@ -60,9 +60,9 @@ async function fetchCanon(page: Page): Promise<ReadonlyArray<ListAtom>> {
  *
  * Both spellings of `what_breaks_if_revisit` are accepted (the
  * canonical name and the older `..._revisited`) so a plan carrying
- * only the legacy spelling is not skipped unnecessarily -- the
- * Deliberation component renders both. CR (PR #321) caught the
- * single-spelling check.
+ * only the legacy spelling is not skipped unnecessarily; the
+ * Deliberation component renders both, and this picker matches that
+ * tolerance so a legacy plan still drives a populated assertion.
  */
 function pickPlanWithDeliberation(plans: ReadonlyArray<ListAtom>): ListAtom | null {
   for (const p of plans) {

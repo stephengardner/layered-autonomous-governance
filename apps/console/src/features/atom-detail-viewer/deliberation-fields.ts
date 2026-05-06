@@ -88,8 +88,7 @@ export function hasAnyDeliberation(fields: DeliberationFields): boolean {
  * insertion order). Extracted here so the per-call wrapper stays a
  * one-liner; per `dev-extract-at-n-equals-two`, two functions with
  * character-for-character identical bodies is the bug, not a style
- * preference. CR caught the duplication on PR #321; this consolidates
- * the body before the third caller appears.
+ * preference. Consolidates the body before the third caller appears.
  */
 function readDedupedTrimmedStringList(raw: unknown): ReadonlyArray<string> {
   if (!Array.isArray(raw)) return [];

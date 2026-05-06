@@ -98,8 +98,7 @@ function PrinciplesAppliedBlock({ principles }: { principles: ReadonlyArray<stri
    * a hook must be called the same number of times on every render.
    * The empty-principles short-circuit happens AFTER the hook so the
    * hook count stays stable even if `principles` flips between empty
-   * and non-empty across renders. CR (2026-05-05, PR #321) caught the
-   * earlier hook-before-early-return shape.
+   * and non-empty across renders.
    *
    * One batched atoms.exists query at the outer block; the resolver
    * checks all N principle ids in a single in-memory Map lookup pass
