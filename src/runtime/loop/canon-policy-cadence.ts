@@ -93,11 +93,11 @@ export async function readNumericCanonPolicy(
       const meta = atom.metadata as Record<string, unknown>;
       const policy = meta['policy'] as Record<string, unknown> | undefined;
       if (!policy || policy['subject'] !== options.subject) continue;
-      // Named field follows the convention of the sibling cadence
-      // policies (pol-actor-message-rate, pol-inbox-poll-cadence,
-      // pol-pr-observation-freshness-threshold-ms). Back-compat read on
-      // `value` keeps an older bootstrap shape readable while the
-      // named-field shape is canonical going forward.
+      // Named field shape is canonical going forward; `value` is the
+      // legacy back-compat alias for older bootstrap-written policies
+      // that have not been migrated. Reading both keeps the helper
+      // tolerant of either wire shape so a half-migrated atom store
+      // still resolves cleanly.
       const raw = policy[options.fieldName] ?? policy['value'];
       // Explicit disable sentinel for deployments that observe via a
       // webhook (or never want the tick to fire). JSON cannot encode

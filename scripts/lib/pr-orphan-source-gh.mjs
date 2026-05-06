@@ -151,7 +151,13 @@ export function createGhOpenPrSource(options) {
         if (cursor !== null) {
           args.push('-f', `cursor=${cursor}`);
         }
-        const result = await execa('node', args, {
+        // Spawn with `process.execPath` so the gh-as wrapper runs
+        // under the same Node version as the loop runner. Bare
+        // `node` would resolve via PATH and could land on a
+        // different install in deployments where the operator's
+        // loop runs under nvm + a shell whose PATH points at the
+        // system Node.
+        const result = await execa(process.execPath, args, {
           cwd: repoRoot,
           timeout: timeoutMs,
           reject: true,

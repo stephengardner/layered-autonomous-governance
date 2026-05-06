@@ -10,8 +10,8 @@
 // (configured in tsconfig).
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { execa } from 'execa';
 import { runLoopMain } from '../dist/cli/run-loop.js';
+import { resolveOwnerRepo } from '../scripts/lib/resolve-owner-repo.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REFRESHER_HELPER = resolve(HERE, '..', 'scripts', 'lib', 'pr-observation-refresher.mjs');
@@ -77,36 +77,6 @@ async function planProposalNotifierFactory() {
       `[plan-proposal-notify] WARN: could not load notifier helper at ${NOTIFIER_HELPER}: `
         + `${err instanceof Error ? err.message : String(err)}; notify pass will silent-skip.`,
     );
-    return null;
-  }
-}
-
-/**
- * Resolve the (owner, repo) from the GH_REPO env var or `gh repo
- * view`. Mirrors the resolveOwnerRepo pattern in
- * scripts/invokers/autonomous-dispatch.mjs so the orphan reconcile
- * pass and the dispatch invoker share one canonical resolution
- * shape.
- */
-async function resolveOwnerRepo() {
-  const slug = process.env.GH_REPO;
-  if (typeof slug === 'string' && slug.length > 0) {
-    const parts = slug.trim().split('/');
-    if (parts.length === 2 && parts[0] && parts[1]) {
-      return { owner: parts[0], repo: parts[1] };
-    }
-  }
-  // Fall through to `gh repo view`. Reject:false suppresses non-zero
-  // exits but execa still throws ENOENT when gh is missing; both
-  // produce a null return that turns the orphan pass into silent-
-  // skip per the LoopRunner contract.
-  try {
-    const result = await execa('gh', ['repo', 'view', '--json', 'owner,name'], { reject: false });
-    if (result.exitCode !== 0) return null;
-    const parsed = JSON.parse(result.stdout);
-    if (!parsed?.owner?.login || !parsed?.name) return null;
-    return { owner: parsed.owner.login, repo: parsed.name };
-  } catch {
     return null;
   }
 }

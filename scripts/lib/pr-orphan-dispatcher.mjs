@@ -100,13 +100,28 @@ export function createPrFixOrphanDispatcher(options = {}) {
       // `metadata.extra.dispatch_origin`, so the audit trail reads
       // end-to-end (orphan-detected -> pr-fix observation -> session
       // -> fix-push) without a side-channel scan.
+      // Spawn with `process.execPath` so the dispatched fix-cycle
+      // runs under the same Node version that the loop runner is
+      // using. A bare `node` would resolve via PATH and could land
+      // on a different (stale) install in deployments where the
+      // operator's loop runs under nvm + a worker shell whose PATH
+      // points at the system Node. Mirrors the pattern in
+      // `autonomous-dispatch.mjs`.
+      //
+      // `--live` is appended unconditionally so the dispatched
+      // pr-fix actually pushes the fix; without it the actor runs
+      // dry-run and the orphan PR sits in the same state on the
+      // next tick. Callers that want a synthetic dry-run pass
+      // `--no-live` in `extraArgs` (the later flag wins under
+      // run-pr-fix.mjs's argv parser).
       await execa(
-        'node',
+        process.execPath,
         [
           RUN_PR_FIX,
           '--pr', String(pr.number),
           '--owner', pr.owner,
           '--repo', pr.repo,
+          '--live',
           ...extraArgs,
         ],
         {
