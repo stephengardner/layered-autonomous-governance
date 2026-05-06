@@ -58,6 +58,10 @@ import {
   type PrincipalStatsResponse,
 } from './principal-stats';
 import {
+  classifyPrincipal,
+  type PrincipalCategory,
+} from './principal-classifier';
+import {
   computeHeartbeat as computeLiveOpsHeartbeat,
   listActiveSessions as listLiveOpsActiveSessions,
   listLiveDeliberations as listLiveOpsDeliberations,
@@ -105,6 +109,12 @@ import type {
   ResumeAuditSourceAtom,
   ResumeAuditSummary,
 } from './resume-audit-types';
+import {
+  buildAuditChain,
+  clampAuditChainDepth,
+  type AuditChainAtom,
+  type AuditChainResponse,
+} from './audit-chain';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -432,43 +442,120 @@ async function handlePrincipalsStats(): Promise<PrincipalStatsResponse> {
 }
 
 /*
- * Read the optional skill markdown for a principal. Skill docs live
- * at .claude/skills/<principal_id>/SKILL.md; not every principal has
- * one (e.g. apex-agent does not). Returns { content: null } when the
- * file is absent, distinct from a 500 on read error so the client can
- * cleanly fall through to "no soul content yet".
+ * Read the optional skill markdown for a principal AND classify the
+ * principal so the empty-state surface can render category-specific
+ * copy.
+ *
+ * Skill docs live at .claude/skills/<principal_id>/SKILL.md; not every
+ * principal has one. Three semantically different empty-state cases
+ * collapse to the same blank surface without classification:
+ *
+ *   - apex authority (apex-agent): role==='apex'. By design no
+ *     playbook. Authority root, not an executor.
+ *   - anchor authority (claude-agent): role==='agent' AND signs other
+ *     principals. Trust-relay layer; the children are the actors with
+ *     playbooks. By design no playbook of its own.
+ *   - leaf actor with skill debt (code-author, pr-fix-actor, ...): a
+ *     real authoring TODO; the empty surface here represents work
+ *     queued for an operator or future agent.
+ *
+ * Returning a single { content } shape would force the consumer to
+ * either render the same copy for all three cases (the bug the
+ * operator surfaced) or re-derive the classification on the client
+ * from data the client does not naturally have (the principal graph
+ * and the SKILL.md presence). The endpoint instead returns
+ * { category, content? } so the consumer narrows on the union literal
+ * and the substrate-pure decision tree (apps/console/server/
+ * principal-classifier.ts) is computed exactly once.
  *
  * Path-traversal defense: principal_id is constrained to the same
  * shape the principal-id slot uses elsewhere ([a-z0-9_-]+). A
  * non-conforming id yields a 400 (rather than a silent skip) so a
  * caller bug surfaces at the boundary rather than masking as
  * "no skill".
+ *
+ * Fail-closed posture: if the principal id resolves to a record that
+ * is not present in the principal store, we surface a 404 rather than
+ * defaulting to a generic "actor-skill-debt" empty state. A blank
+ * empty state for an unknown principal would mask the bug per the
+ * default-deny canon directives.
  */
 const PRINCIPAL_ID_RE = /^[a-z0-9_-]+$/;
 const SKILLS_DIR = resolve(REPO_ROOT, '.claude', 'skills');
 
+interface PrincipalSkillResponse {
+  readonly category: PrincipalCategory;
+  readonly content: string | null;
+}
+
 async function handlePrincipalSkill(params: {
   principal_id: string;
-}): Promise<{ content: string | null }> {
+}): Promise<PrincipalSkillResponse> {
   const id = String(params.principal_id ?? '').trim();
   if (!PRINCIPAL_ID_RE.test(id)) {
     throw new Error(`invalid principal_id: ${JSON.stringify(params.principal_id)}`);
   }
-  const path = join(SKILLS_DIR, id, 'SKILL.md');
-  try {
-    const content = await readFile(path, 'utf8');
-    return { content };
-  } catch (err) {
+
+  /*
+   * Resolve the principal record + the principal graph. The graph is
+   * needed so hasChildren is computed against the actual signed_by
+   * edges in the store, not against a guess from the id alone. Reading
+   * the full principal list once per skill request is acceptable: the
+   * console is a low-QPS surface, principal records are tiny, and the
+   * existing readAllPrincipals is the single canonical entry point per
+   * arch-atomstore-source-of-truth.
+   */
+  const principals = await readAllPrincipals();
+  const subject = principals.find((p) => p.id === id);
+  if (!subject) {
     /*
-     * ENOENT is the expected "no skill yet" case. Any other code is
-     * a real read error worth surfacing; rethrow so the route handler
-     * returns 500 with the message, rather than masking as null.
+     * principal-not-found is a hard 4xx because the id is well-formed
+     * (passed PRINCIPAL_ID_RE) yet does not resolve. A silent fallback
+     * to a generic empty state would hide the misroute; the consumer
+     * needs to see the real signal.
+     *
+     * Throw a coded Error so the route layer can branch on err.code
+     * instead of string-matching the message; mirrors the
+     * 'invalid-atom-id' pattern at /api/atoms.reinforce and
+     * /api/atoms.mark-stale. The message is just the id so the wire
+     * response is `{ code: 'principal-not-found', message: '<id>' }`
+     * without the redundant code prefix CR flagged on the prior
+     * version.
      */
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { content: null };
-    }
+    const err = new Error(id) as Error & { code: string };
+    err.code = 'principal-not-found';
     throw err;
   }
+
+  /*
+   * Load the SKILL.md content. ENOENT is "no skill yet"; any other
+   * read error is a real problem and rethrows so the route handler
+   * returns 500 rather than masking as a clean empty state.
+   */
+  let content: string | null = null;
+  try {
+    const raw = await readFile(join(SKILLS_DIR, id, 'SKILL.md'), 'utf8');
+    content = raw;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+
+  /*
+   * hasSkill mirrors the consumer's empty-vs-content decision: a
+   * whitespace-only file is treated as no-skill so a `touch SKILL.md`
+   * placeholder does not classify the principal as actor-with-skill.
+   * The classifier sees the same bit the renderer eventually sees.
+   */
+  const hasSkill = content !== null && content.trim().length > 0;
+  const hasChildren = principals.some((p) => p.signed_by === id);
+
+  const category = classifyPrincipal({
+    role: subject.role,
+    hasChildren,
+    hasSkill,
+  });
+
+  return { category, content };
 }
 
 /*
@@ -556,6 +643,42 @@ async function handleAtomGet(id: string): Promise<Atom | null> {
 }
 
 /*
+ * Batched existence check. Returns one boolean per requested id so the
+ * caller can render a "missing-atom" affordance without round-tripping
+ * a separate atoms.get per id.
+ *
+ * Why batched: a plan with N principles_applied would otherwise fire
+ * N parallel HTTP calls. The atomIndex Map is already in memory, so
+ * the server-side cost is O(N) Map lookups; the network cost goes from
+ * N requests to 1.
+ *
+ * Duplicates in the input array are preserved in the output so the
+ * caller can build a same-order Map<id, exists> without re-pairing.
+ * Empty input returns an empty array.
+ */
+async function handleAtomsExists(ids: ReadonlyArray<string>): Promise<ReadonlyArray<{ id: string; exists: boolean }>> {
+  /*
+   * Defensive priming: if the watcher is still cold, prime the
+   * atomIndex map once so we never report `exists: false` for an
+   * atom that's actually on disk. `primeAtomIndex` is the function
+   * that actually populates the map -- `readAllAtoms` reads from
+   * disk into a one-shot array on the cold-start branch but does
+   * NOT mutate atomIndex, so calling it here would leave us
+   * looking at an empty map. The two functions look interchangeable
+   * but only `primeAtomIndex` populates the cache; lock that choice
+   * in to prevent a silent false-negative for atoms that are on disk
+   * but absent from the cache.
+   *
+   * After the first call atomIndexPrimed=true and subsequent
+   * batches are O(N) Map lookups.
+   */
+  if (!atomIndexPrimed) {
+    await primeAtomIndex();
+  }
+  return ids.map((id) => ({ id, exists: atomIndex.has(`${id}.json`) }));
+}
+
+/*
  * Stage context handler: project the soul + upstream chain + canon-at-
  * runtime for a pipeline-stage atom. Returns the empty-shape response
  * (stage:null + empty arrays) when the atom is not a pipeline-stage
@@ -608,25 +731,53 @@ async function handleAtomReferences(id: string): Promise<Atom[]> {
 /*
  * Provenance walk: starting at `id`, follow derived_from pointers
  * transitively and return the chain of ancestor atoms. Depth-limited
- * (default 5) and cycle-safe via a visited set.
+ * (default 5) and cycle-safe.
+ *
+ * Delegates the actual BFS to buildAuditChain (the canonical
+ * provenance walker) so cycle handling, depth-bound semantics, and
+ * the readDerivedFrom guard are defined in exactly one place. The
+ * legacy /api/atoms.chain wire shape -- Atom[] of ancestors EXCLUDING
+ * the seed -- is preserved by dropping atoms[0] from the projection,
+ * keeping the 5+ existing consumers untouched.
+ *
+ * maxDepth normalization: legacy callers pass a number that may be
+ * fractional (rare client drift), <=0 (caller intent: skip the walk),
+ * or unbounded (Infinity). We floor + clamp before delegating so the
+ * pure helper sees a value in [1, MAX_AUDIT_CHAIN_DEPTH]; depth<=0
+ * short-circuits to [] rather than walking the seed at all (matches
+ * the SupersedesDiff caller's depth=0 expectation).
  */
 async function handleAtomChain(id: string, maxDepth: number): Promise<Atom[]> {
+  const floored = typeof maxDepth === 'number' && Number.isFinite(maxDepth)
+    ? Math.floor(maxDepth)
+    : 0;
+  if (floored <= 0) return [];
+  const clamped = clampAuditChainDepth(floored);
   const all = await readAllAtoms();
-  const byId = new Map(all.map((a) => [a.id, a]));
-  const visited = new Set<string>();
-  const chain: Atom[] = [];
-  const queue: Array<{ id: string; depth: number }> = [{ id, depth: 0 }];
-  while (queue.length > 0) {
-    const { id: cur, depth } = queue.shift()!;
-    if (visited.has(cur) || depth > maxDepth) continue;
-    visited.add(cur);
-    const atom = byId.get(cur);
-    if (!atom) continue;
-    if (cur !== id) chain.push(atom);
-    const derived = (atom.provenance as { derived_from?: string[] } | undefined)?.derived_from ?? [];
-    for (const next of derived) queue.push({ id: next, depth: depth + 1 });
-  }
-  return chain;
+  const result = buildAuditChain(id, all as ReadonlyArray<AuditChainAtom>, clamped);
+  if (!result) return [];
+  // atoms[0] is the seed; legacy contract returns ancestors only.
+  return result.atoms.slice(1) as Atom[];
+}
+
+/*
+ * Audit-chain projection: { atoms, edges } shape consumed by the
+ * operator-facing visualizer. Distinct from `handleAtomChain` (which
+ * emits Atom[] only) so the existing 5+ atoms.chain consumers do not
+ * have to migrate; the audit surface needs the edge list to render
+ * the graph and a higher default depth (10) to walk substrate-deep
+ * pipelines end-to-end.
+ *
+ * The pure transform lives in audit-chain.ts; this thin wrapper just
+ * pulls the in-memory atom list and clamps the depth before
+ * delegating. Returning null when the seed is unknown lets the route
+ * handler emit a targeted 404 rather than an empty 200.
+ */
+async function handleAtomAuditChain(id: string, maxDepth: number): Promise<AuditChainResponse | null> {
+  const all = await readAllAtoms();
+  // The substrate Atom is wider than AuditChainAtom; structural
+  // subtyping makes the cast safe (the helper only reads provenance).
+  return buildAuditChain(id, all as ReadonlyArray<AuditChainAtom>, maxDepth);
 }
 
 /*
@@ -2232,11 +2383,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const data = await handlePrincipalSkill({ principal_id: pid });
       sendOk(req, res, data);
     } catch (err) {
-      const msg = (err as Error).message;
-      if (msg.startsWith('invalid principal_id')) {
-        sendErr(req, res, 400, 'principal-skill-bad-request', msg);
+      const e = err as Error & { code?: string };
+      if (e.message.startsWith('invalid principal_id')) {
+        sendErr(req, res, 400, 'principal-skill-bad-request', e.message);
+      } else if (e.code === 'principal-not-found') {
+        /*
+         * 404 surfaces the misroute to the consumer rather than
+         * defaulting to a generic empty state, per the default-deny
+         * posture in the principal-classifier deliberation. The
+         * consumer renders an error block; it does NOT pretend the
+         * principal exists with no skill. Branching on err.code rather
+         * than message-prefix matches the existing pattern in
+         * /api/atoms.reinforce and /api/atoms.mark-stale and avoids
+         * the message-duplicates-code wire shape CR flagged.
+         */
+        sendErr(req, res, 404, 'principal-not-found', e.message);
       } else {
-        sendErr(req, res, 500, 'principal-skill-failed', msg);
+        sendErr(req, res, 500, 'principal-skill-failed', e.message);
       }
     }
     return;
@@ -2464,6 +2627,42 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  if (path === '/api/atoms.audit-chain' && req.method === 'POST') {
+    /*
+     * Audit-chain endpoint: { atoms, edges } projection consumed by
+     * the atom-detail viewer's audit-chain visualization. Walks
+     * provenance.derived_from upward from `atom_id`, depth-limited
+     * (default 10, max 25; clamped in the helper). Returns 404
+     * `atom-not-found` so the UI shows a targeted empty-state pill
+     * rather than a generic 5xx.
+     *
+     * The route accepts both `atom_id` (preferred, matches the
+     * existing atoms.stage-context shape) and `id` (alias for
+     * symmetry with atoms.get / atoms.references). The helper
+     * delegates to buildAuditChain.
+     */
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const idRaw = typeof body['atom_id'] === 'string'
+      ? (body['atom_id'] as string)
+      : typeof body['id'] === 'string' ? (body['id'] as string) : '';
+    if (!idRaw) {
+      sendErr(req, res, 400, 'missing-atom-id', 'atoms.audit-chain requires { atom_id: string }');
+      return;
+    }
+    const depth = clampAuditChainDepth(body['max_depth']);
+    try {
+      const data = await handleAtomAuditChain(idRaw, depth);
+      if (!data) {
+        sendErr(req, res, 404, 'atom-not-found', `no atom with id ${idRaw}`);
+        return;
+      }
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'atoms-audit-chain-failed', (err as Error).message);
+    }
+    return;
+  }
+
   if (path === '/api/atoms.cascade' && req.method === 'POST') {
     const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
     const id = typeof body['id'] === 'string' ? (body['id'] as string) : '';
@@ -2524,6 +2723,59 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'atoms-references-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/atoms.exists' && req.method === 'POST') {
+    /*
+     * Batched existence check: { ids: string[] } -> { id, exists }[].
+     * Used by the deliberation surface to apply a "missing-atom"
+     * affordance to principle citations whose target id does not
+     * resolve to any atom in the store. A plan citing N principles
+     * pays one round trip instead of N atoms.get calls.
+     *
+     * Validation contract: every input id must be a non-empty string.
+     * Silently dropping malformed entries would change response
+     * cardinality (caller sees fewer entries than it sent), which
+     * makes Map<id, exists> reconstruction fragile. Reject with 400
+     * instead so the bad caller fails loud rather than receiving a
+     * differently-shaped response than it requested.
+     *
+     * Hard cap on input size protects the server from a malformed
+     * caller asking for tens of thousands of ids at once. The cap
+     * matches the deliberation list cap (DELIBERATION_LIST_CAP=200)
+     * times a small per-plan ceiling -- a real plan never approaches
+     * 500 principles, so a request beyond that is malformed by
+     * definition.
+     */
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const raw = body['ids'];
+    if (!Array.isArray(raw)) {
+      sendErr(req, res, 400, 'missing-ids', 'atoms.exists requires { ids: string[] }');
+      return;
+    }
+    const MAX_IDS = 500;
+    if (raw.length > MAX_IDS) {
+      sendErr(req, res, 400, 'too-many-ids', `atoms.exists rejects more than ${MAX_IDS} ids per call`);
+      return;
+    }
+    if (!raw.every((v): v is string => typeof v === 'string' && v.length > 0)) {
+      sendErr(
+        req,
+        res,
+        400,
+        'invalid-ids',
+        'atoms.exists requires ids to be an array of non-empty strings',
+      );
+      return;
+    }
+    const ids = raw as ReadonlyArray<string>;
+    try {
+      const data = await handleAtomsExists(ids);
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'atoms-exists-failed', (err as Error).message);
     }
     return;
   }
