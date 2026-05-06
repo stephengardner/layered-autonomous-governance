@@ -30,8 +30,8 @@ LoopRunner.tick()
          ├── runPlanProposalNotifyTick(host, notifier, options)
          │       ├── query proposed plans
          │       ├── filter by principal allowlist
-         │       ├── filter by "no telegram-push-record exists yet"
-         │       ├── for each: notifier.notify({ plan }) + write telegram-push-record
+         │       ├── filter by "no plan-push-record exists yet"
+         │       ├── for each: notifier.notify({ plan }) + write plan-push-record
          │       └── return { scanned, notified, skipped: { reason: count } }
          │
          └── PlanProposalNotifier (pluggable seam, deployment-side adapter)
@@ -45,11 +45,11 @@ LoopRunner.tick()
 
 ### Why an atom record, not a metadata field, for idempotence
 
-A new `type: 'telegram-push-record'` atom with `provenance.derived_from: [planId]`, scope=`session`, layer=L0. Reasons:
+A new `type: 'plan-push-record'` atom with `provenance.derived_from: [planId]`, scope=`session`, layer=L0. Reasons:
 
 1. **Atom immutability.** Atoms are signed, append-only records (per `arch-atomstore-source-of-truth`). Mutating `plan.metadata.telegram_pushed_at` after the fact would compromise the audit chain -- re-reading the plan tells you what the planner wrote, not what a downstream tick decided.
 2. **Symmetry with reconcile.** `plan-merge-settled` (the reconcile pass marker) is a separate atom for the same reason.
-3. **Queryability.** Operator asks "when was plan X pushed?" → `host.atoms.query({ type: ['telegram-push-record'] })` answers it.
+3. **Queryability.** Operator asks "when was plan X pushed?" → `host.atoms.query({ type: ['plan-push-record'] })` answers it.
 4. **Decay-friendly.** A push-record half-life of 7 days means stale records age out without manual purge -- but during the lifetime of a `proposed` plan (reaper kills proposed plans at 72h by default), the record stays alive and idempotence holds.
 
 ### Allowlist as canon, not framework constant
@@ -101,7 +101,7 @@ export async function runPlanProposalNotifyTick(
 
 Skip reasons (histogram):
 - `not-in-allowlist` -- plan principal not in resolved allowlist
-- `already-pushed` -- telegram-push-record exists for this plan
+- `already-pushed` -- plan-push-record exists for this plan
 - `tainted` / `superseded` -- defensive guards
 - `notify-failed` -- adapter threw; counted, tick continues
 - `rate-limited` -- exceeded `maxNotifies`
@@ -198,14 +198,14 @@ Three consumers, one heading-detection implementation, three different truncatio
 
 ## Idempotence Atom Schema
 
-`type: 'telegram-push-record'`:
+`type: 'plan-push-record'`:
 
 ```typescript
 {
   schema_version: 1,
-  id: `telegram-push-${planId}-${nowIso}`,  // unique per plan; planId is enough for query
+  id: `plan-push-${planId}-${nowIso}`,  // unique per plan; planId is enough for query
   content: 'plan pushed to telegram',
-  type: 'telegram-push-record',
+  type: 'plan-push-record',
   layer: 'L0',
   provenance: {
     kind: 'agent-observed',
@@ -233,7 +233,7 @@ Wait -- that's overengineered for v1. The chat-id is in `.env`, never in tracked
 
 ## Half-life Registration
 
-`telegram-push-record` needs an entry in `DEFAULT_HALF_LIVES` to avoid the framework throwing on decay. Since the record is operational (not canonical fact), 7 days matches the existing `actor-message` / ephemeral floor. The reaper kills proposed plans at 72h by default; a 7-day half-life on the push-record handily outlasts the plan's proposed lifetime, so idempotence holds end-to-end.
+`plan-push-record` needs an entry in `DEFAULT_HALF_LIVES` to avoid the framework throwing on decay. Since the record is operational (not canonical fact), 7 days matches the existing `actor-message` / ephemeral floor. The reaper kills proposed plans at 72h by default; a 7-day half-life on the push-record handily outlasts the plan's proposed lifetime, so idempotence holds end-to-end.
 
 ## Test Plan
 
@@ -245,7 +245,7 @@ Wait -- that's overengineered for v1. The chat-id is in `.env`, never in tracked
 6. **Plan in non-proposed state** (e.g. `executing`) → skipped (filtered out by `plan_state=['proposed']` query filter).
 7. **Notifier throws** -- counted as `skipped['notify-failed']`, tick continues, push-record NOT written (so next tick retries -- this is the desired behavior since the push didn't actually land).
 8. **Allowlist read from canon policy atom** -- canon override `['cto-actor']` (cpo dropped) → cpo plan skipped, cto plan notified.
-9. **Best-effort: tick failure does NOT fail the loop** -- synthetic injected failure on `host.atoms.put` for telegram-push-record → error logged, tick report `planProposalNotifyReport === null`, other passes continue.
+9. **Best-effort: tick failure does NOT fail the loop** -- synthetic injected failure on `host.atoms.put` for plan-push-record → error logged, tick report `planProposalNotifyReport === null`, other passes continue.
 10. **Per-tick rate limit** -- N+1 plans, `maxNotifies=N` → first N notified, +1 counted as `rate-limited`.
 11. **Pure formatter unit tests** -- `scripts/lib/plan-summary.mjs` exports `formatPlanForTelegram(plan)` with title-from-first-heading + body-rest contract.
 

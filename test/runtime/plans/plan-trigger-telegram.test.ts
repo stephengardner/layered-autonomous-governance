@@ -3,7 +3,7 @@
  *
  * Pins:
  *   - allowlist enforcement (cto-actor / cpo-actor by default)
- *   - idempotence via telegram-push-record atoms
+ *   - idempotence via plan-push-record atoms
  *   - rate-limiting at maxNotifies
  *   - taint + supersede defensive guards
  *   - notify-failed counted, push-record NOT written
@@ -69,7 +69,7 @@ describe('runPlanProposalNotifyTick', () => {
     expect(calls[0]?.planId).toBe('p1');
     expect(calls[0]?.content).toContain('p1 title');
     // Idempotence record was written.
-    const records = await host.atoms.query({ type: ['telegram-push-record'] }, 50);
+    const records = await host.atoms.query({ type: ['plan-push-record'] }, 50);
     expect(records.atoms.length).toBe(1);
     const record = records.atoms[0]!;
     expect((record.metadata as Record<string, unknown>)['plan_id']).toBe('p1');
@@ -175,7 +175,7 @@ describe('runPlanProposalNotifyTick', () => {
     expect(result.notified).toBe(0);
     expect(result.skipped['notify-failed']).toBe(1);
     // No push-record was written -> next tick will retry.
-    const records = await host.atoms.query({ type: ['telegram-push-record'] }, 50);
+    const records = await host.atoms.query({ type: ['plan-push-record'] }, 50);
     expect(records.atoms.length).toBe(0);
   });
 
@@ -242,7 +242,7 @@ describe('runPlanProposalNotifyTick', () => {
     await runPlanProposalNotifyTick(host, notifier, tickPrincipal, {
       now: () => fixedNow,
     });
-    const records = await host.atoms.query({ type: ['telegram-push-record'] }, 50);
+    const records = await host.atoms.query({ type: ['plan-push-record'] }, 50);
     expect(records.atoms.length).toBe(1);
     expect(records.atoms[0]?.created_at).toBe(fixedNow);
     expect((records.atoms[0]?.metadata as Record<string, unknown>)['pushed_at']).toBe(fixedNow);

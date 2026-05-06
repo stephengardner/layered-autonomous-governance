@@ -20,13 +20,16 @@
  * picked up next tick. maxScan bounds total atoms inspected per
  * tick to keep the scan cost O(maxScan) regardless of store size.
  *
- * Idempotence design: a 'telegram-push-record' atom is written per
+ * Idempotence design: a 'plan-push-record' atom is written per
  * notified plan with provenance.derived_from: [planId]. The next
  * tick queries the existing records and short-circuits any plan
  * whose id already appears in the set. A failed notify (adapter
  * throw) deliberately does NOT write the record so the next tick
  * retries; the operator always eventually sees the plan when the
- * channel recovers.
+ * channel recovers. The atom type is transport-neutral; the
+ * channel name (telegram, slack, email, ...) lives in
+ * metadata.channel so a future deployment swapping notifiers does
+ * not need a substrate migration.
  *
  * Allowlist source: a directive policy atom carrying
  * metadata.policy.subject = 'telegram-plan-trigger-principals'.
@@ -135,7 +138,7 @@ export async function runPlanProposalNotifyTick(
     let cursor: string | undefined;
     do {
       const page = await host.atoms.query(
-        { type: ['telegram-push-record'] },
+        { type: ['plan-push-record'] },
         PAGE_SIZE,
         cursor,
       );
@@ -197,12 +200,12 @@ export async function runPlanProposalNotifyTick(
       // collide; only one "wins" per plan because the next tick
       // sees pushedPlanIds populated.
       const nowIso = nowFn();
-      const recordId = `telegram-push-${String(plan.id)}-${nowIso}` as AtomId;
+      const recordId = `plan-push-${String(plan.id)}-${nowIso}` as AtomId;
       const record: Atom = {
         schema_version: 1,
         id: recordId,
         content: `plan ${String(plan.id)} pushed via the plan-proposal notify pass`,
-        type: 'telegram-push-record',
+        type: 'plan-push-record',
         layer: 'L0',
         provenance: {
           kind: 'agent-observed',

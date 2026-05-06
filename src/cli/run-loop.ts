@@ -323,7 +323,7 @@ function printUsage(): void {
       '                                 policy subject; the framework default lives in',
       '                                 DEFAULT_PRINCIPAL_ALLOWLIST when no canon override',
       '                                 resolves) to the configured notifier exactly once',
-      '                                 per plan. Idempotence via telegram-push-record',
+      '                                 per plan. Idempotence via plan-push-record',
       '                                 atoms. Requires the bin entrypoint to inject a',
       '                                 notifier factory; without one the pass silent-skips.',
       '  --no-notify-proposed-plans     Disable the notify pass (e.g. for sandboxed',

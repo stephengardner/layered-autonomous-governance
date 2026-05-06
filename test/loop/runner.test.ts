@@ -1031,7 +1031,7 @@ describe('LoopRunner.tick plan-proposal notify integration', () => {
     expect(report.planProposalNotifyReport?.notified).toBe(0);
     expect(report.planProposalNotifyReport?.skipped['notify-failed']).toBe(1);
     // No push-record was written; next tick will retry.
-    const records = await host.atoms.query({ type: ['telegram-push-record'] }, 5);
+    const records = await host.atoms.query({ type: ['plan-push-record'] }, 5);
     expect(records.atoms.length).toBe(0);
   });
 

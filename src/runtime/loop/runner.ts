@@ -488,7 +488,7 @@ export class LoopRunner {
     // Default-disabled. When enabled, scans proposed plans whose
     // principal is in the canon-defined allowlist and calls the
     // PlanProposalNotifier seam exactly once per plan (idempotence
-    // via telegram-push-record atoms). Runs AFTER reconcile so a
+    // via plan-push-record atoms). Runs AFTER reconcile so a
     // plan that just transitioned proposed -> abandoned this tick
     // is not pushed. Silent-skip when the notifier seam is absent
     // (once-per-runner warning; subsequent ticks stay quiet).

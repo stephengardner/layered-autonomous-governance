@@ -4,7 +4,7 @@
 
 **Goal:** Auto-push every newly-proposed plan atom from cto-actor / cpo-actor (canon-tunable allowlist) to Telegram exactly once per plan, via a new LoopRunner tick that mirrors the PR #318 (approval-cycle) shape.
 
-**Architecture:** New tick function `runPlanProposalNotifyTick` in `src/runtime/plans/plan-trigger-telegram.ts` (mechanism only -- atom query, allowlist filter, idempotence-record check, delegate to a `PlanProposalNotifier` seam). LoopRunner gains `runPlanProposalNotifyPass` flag + `planProposalNotifier` seam. CLI gains `--notify-proposed-plans` (default ON). Bin entrypoint factory builds the Telegram-shaped adapter from `scripts/lib/telegram-plan-trigger.mjs`. Idempotence via `type: 'telegram-push-record'` atoms with `provenance.derived_from: [planId]` so re-tick of the same state is a no-op. Allowlist comes from canon policy atom `pol-telegram-plan-trigger-principals` with `['cto-actor', 'cpo-actor']` defaults.
+**Architecture:** New tick function `runPlanProposalNotifyTick` in `src/runtime/plans/plan-trigger-telegram.ts` (mechanism only -- atom query, allowlist filter, idempotence-record check, delegate to a `PlanProposalNotifier` seam). LoopRunner gains `runPlanProposalNotifyPass` flag + `planProposalNotifier` seam. CLI gains `--notify-proposed-plans` (default ON). Bin entrypoint factory builds the Telegram-shaped adapter from `scripts/lib/telegram-plan-trigger.mjs`. Idempotence via `type: 'plan-push-record'` atoms with `provenance.derived_from: [planId]` so re-tick of the same state is a no-op. Allowlist comes from canon policy atom `pol-telegram-plan-trigger-principals` with `['cto-actor', 'cpo-actor']` defaults.
 
 **Tech Stack:** TypeScript (framework src/), Node.js .mjs (deployment-side scripts), Vitest, fetch (Telegram bot API).
 
@@ -18,9 +18,9 @@
 |---|---|---|
 | `src/runtime/plans/plan-trigger-telegram.ts` | NEW | Pure tick function + types. Mechanism only. |
 | `src/runtime/loop/telegram-plan-trigger-allowlist.ts` | NEW | Canon reader for the principal allowlist. |
-| `src/runtime/loop/types.ts` | MODIFY | Add `runPlanProposalNotifyPass` + `planProposalNotifier` to LoopOptions; add `planProposalNotifyReport` to LoopTickReport; add `'telegram-push-record'` to DEFAULT_HALF_LIVES. |
+| `src/runtime/loop/types.ts` | MODIFY | Add `runPlanProposalNotifyPass` + `planProposalNotifier` to LoopOptions; add `planProposalNotifyReport` to LoopTickReport; add `'plan-push-record'` to DEFAULT_HALF_LIVES. |
 | `src/runtime/loop/runner.ts` | MODIFY | Wire the new pass; add silent-skip latch + `planProposalNotifyPass` private method. |
-| `src/types.ts` | MODIFY | Add `'telegram-push-record'` to `AtomType` union. |
+| `src/types.ts` | MODIFY | Add `'plan-push-record'` to `AtomType` union. |
 | `src/cli/run-loop.ts` | MODIFY | CLI flag plumbing + factory option. |
 | `bin/lag-run-loop.js` | MODIFY | Build the notifier factory; pass to runLoopMain. |
 | `scripts/lib/telegram-plan-trigger.mjs` | NEW | Deployment-side adapter; reads env, POSTs to Telegram. |
@@ -90,14 +90,14 @@ Expected: `.lag/apps/lag-ceo/`, `.lag/apps/lag-cto/`, `.lag/apps/lag-pr-landing/
 grep -n "type AtomType" src/types.ts
 ```
 
-Open the file. The `AtomType` union literal lists: `'directive' | 'decision' | ... | 'plan' | ... | 'pipeline-resume'`. Add `'telegram-push-record'` immediately after `'plan-merge-settled'` (alphabetical-ish grouping with other operational records).
+Open the file. The `AtomType` union literal lists: `'directive' | 'decision' | ... | 'plan' | ... | 'pipeline-resume'`. Add `'plan-push-record'` immediately after `'plan-merge-settled'` (alphabetical-ish grouping with other operational records).
 
 - [ ] **Step 1.2: Add half-life entry**
 
 `src/runtime/loop/types.ts`, inside `DEFAULT_HALF_LIVES`, add after `'plan-merge-settled'`:
 
 ```typescript
-  'telegram-push-record': 7 * 24 * 60 * 60 * 1000,  // ~1 week
+  'plan-push-record': 7 * 24 * 60 * 60 * 1000,  // ~1 week
 ```
 
 7 days outlasts the proposed-plan reaper window (default 72h) so idempotence holds for the plan's full proposed lifetime.
@@ -122,7 +122,7 @@ Expected: all 29 tests still pass (no behavior change yet -- only added a litera
 
 ```bash
 git add src/types.ts src/runtime/loop/types.ts
-node scripts/git-as.mjs lag-ceo git commit -m "feat(types): register telegram-push-record atom type + half-life"
+node scripts/git-as.mjs lag-ceo git commit -m "feat(types): register plan-push-record atom type + half-life"
 ```
 
 ---
@@ -513,7 +513,7 @@ describe('runPlanProposalNotifyTick', () => {
     expect(calls[0].planId).toBe('p1');
     expect(calls[0].title).toBe('p1 title');
     // Idempotence record was written.
-    const records = await host.atoms.query({ type: ['telegram-push-record'] }, 50);
+    const records = await host.atoms.query({ type: ['plan-push-record'] }, 50);
     expect(records.atoms.length).toBe(1);
     expect((records.atoms[0].metadata as Record<string, unknown>)['plan_id']).toBe('p1');
     expect(records.atoms[0].provenance.derived_from).toEqual(['p1']);
@@ -599,7 +599,7 @@ describe('runPlanProposalNotifyTick', () => {
     expect(result.notified).toBe(0);
     expect(result.skipped['notify-failed']).toBe(1);
     // No push-record was written -> next tick will retry.
-    const records = await host.atoms.query({ type: ['telegram-push-record'] }, 50);
+    const records = await host.atoms.query({ type: ['plan-push-record'] }, 50);
     expect(records.atoms.length).toBe(0);
   });
 
@@ -658,7 +658,7 @@ Create `src/runtime/plans/plan-trigger-telegram.ts`:
  * scripts/plan-discuss-telegram.mjs. This tick scans proposed plan
  * atoms whose principal is in the canon-defined allowlist, calls a
  * pluggable PlanProposalNotifier seam exactly once per plan, and
- * writes a telegram-push-record atom to make the push idempotent
+ * writes a plan-push-record atom to make the push idempotent
  * across re-ticks.
  *
  * Substrate purity: this module never imports a Telegram client,
@@ -671,7 +671,7 @@ Create `src/runtime/plans/plan-trigger-telegram.ts`:
  * picked up next tick. maxScan bounds total atoms inspected per
  * tick to keep the scan cost O(maxScan) regardless of store size.
  *
- * Idempotence design: a `telegram-push-record` atom is written per
+ * Idempotence design: a `plan-push-record` atom is written per
  * notified plan with `provenance.derived_from: [planId]`. The next
  * tick queries the existing records and short-circuits any plan that
  * already has one. A failed notify (adapter throw) deliberately does
@@ -698,7 +698,7 @@ import { formatPlanSummary } from '../../../scripts/lib/plan-summary.mjs';
  * Pluggable seam for the deployment-side adapter that actually sends
  * the Telegram message. Errors thrown by `notify` are caught by the
  * tick and counted as `skipped['notify-failed']`; the
- * telegram-push-record is NOT written for failed sends so a future
+ * plan-push-record is NOT written for failed sends so a future
  * tick will retry.
  */
 export interface PlanProposalNotifier {
@@ -769,7 +769,7 @@ export async function runPlanProposalNotifyTick(
   {
     let cursor: string | undefined;
     do {
-      const page = await host.atoms.query({ type: ['telegram-push-record'] }, PAGE_SIZE, cursor);
+      const page = await host.atoms.query({ type: ['plan-push-record'] }, PAGE_SIZE, cursor);
       for (const rec of page.atoms) {
         if (rec.taint !== 'clean') continue;
         if (rec.superseded_by.length > 0) continue;
@@ -826,12 +826,12 @@ export async function runPlanProposalNotifyTick(
       // this is the correct failure mode (better duplicate ping than
       // silent drop).
       const nowIso = String(nowFn());
-      const recordId = `telegram-push-${String(plan.id)}-${nowIso}` as AtomId;
+      const recordId = `plan-push-${String(plan.id)}-${nowIso}` as AtomId;
       const record: Atom = {
         schema_version: 1,
         id: recordId,
         content: `plan ${String(plan.id)} pushed to telegram`,
-        type: 'telegram-push-record',
+        type: 'plan-push-record',
         layer: 'L0',
         provenance: {
           kind: 'agent-observed',
@@ -928,7 +928,7 @@ Add to `LoopOptions` (after `prObservationRefresher`):
    * pass scans proposed plan atoms whose principal is in the canon-
    * defined allowlist (`pol-telegram-plan-trigger-principals`), calls
    * the notifier exactly once per plan, and writes a
-   * `telegram-push-record` atom to make the push idempotent across
+   * `plan-push-record` atom to make the push idempotent across
    * re-ticks.
    *
    * When the flag is true but `planProposalNotifier` is absent, the
@@ -948,7 +948,7 @@ Add to `LoopOptions` (after `prObservationRefresher`):
    */
   readonly planProposalNotifier?: PlanProposalNotifier;
   /**
-   * Principal id the notify tick attributes its `telegram-push-
+   * Principal id the notify tick attributes its `plan-push-
    * record` atoms to. Required when `runPlanProposalNotifyPass: true`
    * and a notifier is supplied; ignored otherwise. Defaults to
    * `principalId` (the loop's own principal) when omitted -- the
@@ -1111,7 +1111,7 @@ describe('LoopRunner.tick plan-proposal notify integration', () => {
     expect(report.planProposalNotifyReport?.notified).toBe(0);
     expect(report.planProposalNotifyReport?.skipped['notify-failed']).toBe(1);
     // Plan stays proposed; no push-record was written.
-    const records = await host.atoms.query({ type: ['telegram-push-record'] }, 5);
+    const records = await host.atoms.query({ type: ['plan-push-record'] }, 5);
     expect(records.atoms.length).toBe(0);
   });
 
@@ -1196,7 +1196,7 @@ let planProposalNotifyReport: LoopTickReport['planProposalNotifyReport'] = null;
     // Default-disabled. When enabled, scans proposed plans whose
     // principal is in the canon-defined allowlist and calls the
     // PlanProposalNotifier seam exactly once per plan (idempotence
-    // via telegram-push-record atoms). Runs AFTER reconcile so a
+    // via plan-push-record atoms). Runs AFTER reconcile so a
     // plan that just transitioned proposed -> abandoned this tick
     // is NOT pushed. Silent-skip when the notifier seam is absent
     // (once-per-runner warning), matching the refresher gap pattern.
@@ -2093,7 +2093,7 @@ This is the same shape as PR #318 (approval-cycle wiring): pluggable seam, defau
 ## What's new
 
 - **`runPlanProposalNotifyTick(host, notifier, principal, options)`** -- pure tick function in `src/runtime/plans/plan-trigger-telegram.ts`. Mechanism-only: scans proposed plans, filters by allowlist, checks idempotence, delegates to a `PlanProposalNotifier` seam.
-- **`telegram-push-record` atom type** -- written per successful notify with `provenance.derived_from: [planId]`. Re-tick of the same state is a no-op.
+- **`plan-push-record` atom type** -- written per successful notify with `provenance.derived_from: [planId]`. Re-tick of the same state is a no-op.
 - **`pol-telegram-plan-trigger-principals` canon policy** -- allowlist (canon-tunable; defaults to cto-actor + cpo-actor).
 - **`PlanProposalNotifier` seam + `LoopOptions.runPlanProposalNotifyPass`** -- same pattern as `PrObservationRefresher` from PR #318.
 - **`--notify-proposed-plans` CLI flag** -- default ON at the indie-floor; `--no-notify-proposed-plans` for sandboxed deployments.
