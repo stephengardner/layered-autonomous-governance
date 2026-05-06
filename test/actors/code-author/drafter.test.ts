@@ -887,8 +887,8 @@ describe('DRAFT_SYSTEM_PROMPT', () => {
     // Lock the prompt against silent regression of that directive.
     expect(DRAFT_SYSTEM_PROMPT).toMatch(/4a\./);
     expect(DRAFT_SYSTEM_PROMPT).toMatch(/`target_paths` is empty/);
-    expect(DRAFT_SYSTEM_PROMPT).toMatch(/Glob and\s*\n?\s*Grep/);
-    expect(DRAFT_SYSTEM_PROMPT).toMatch(/Do not\s*\n?\s*hallucinate a project name/);
+    expect(DRAFT_SYSTEM_PROMPT).toMatch(/Glob and\s+Grep/);
+    expect(DRAFT_SYSTEM_PROMPT).toMatch(/Do not hallucinate a project/);
   });
 });
 
