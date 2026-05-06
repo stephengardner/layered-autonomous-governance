@@ -11,6 +11,7 @@ import type { AtomFilter, AtomType, Time } from '../../types.js';
 import type { RenderOptions } from '../../canon-md/index.js';
 import type { PromotionThresholds } from '../../promotion/index.js';
 import type { PrObservationRefresher } from '../plans/pr-observation-refresh.js';
+import type { PlanProposalNotifier } from '../plans/plan-trigger-telegram.js';
 
 export interface HalfLifeConfig {
   /** Per-atom-type half-life in milliseconds. `directive` long, `ephemeral` short. */
@@ -244,6 +245,42 @@ export interface LoopOptions {
    * construction happens entirely outside framework code.
    */
   readonly prObservationRefresher?: PrObservationRefresher;
+  /**
+   * Run the plan-proposal notify pass on every tick. Default
+   * `false`. When the flag is true and `planProposalNotifier` is
+   * supplied, the pass scans proposed plan atoms whose principal
+   * is in the canon-defined allowlist (the
+   * `telegram-plan-trigger-principals` policy subject; default
+   * cto-actor + cpo-actor when no canon override is set), calls
+   * the notifier exactly once per plan, and writes a
+   * `telegram-push-record` atom to make the push idempotent
+   * across re-ticks.
+   *
+   * When the flag is true but `planProposalNotifier` is absent,
+   * the pass silent-skips and warns once per runner. This permits
+   * a deployment to opt into the flag from canon while wiring the
+   * notifier seam later (or a sandboxed deployment to disable
+   * outbound notifications entirely without removing the canon-
+   * side configuration).
+   */
+  readonly runPlanProposalNotifyPass?: boolean;
+  /**
+   * Pluggable adapter the notify tick calls when a proposed plan
+   * needs to be pushed to the operator. Optional; absent activates
+   * the silent-skip path. The framework consumes the adapter only
+   * through the `PlanProposalNotifier` interface; concrete
+   * construction happens entirely outside framework code.
+   */
+  readonly planProposalNotifier?: PlanProposalNotifier;
+  /**
+   * Principal id the notify tick attributes its
+   * `telegram-push-record` atoms to. Optional; defaults to the
+   * loop's `principalId` when omitted -- the record is operational
+   * data the loop is recording about its own action. Override when
+   * a deployment wants the audit chain to attribute the push to a
+   * dedicated push-bot identity.
+   */
+  readonly planProposalNotifyPrincipal?: string;
 }
 
 /**
@@ -338,6 +375,25 @@ export interface LoopTickReport {
     | {
         readonly scanned: number;
         readonly refreshed: number;
+        readonly skipped: Readonly<Record<string, number>>;
+      }
+    | null;
+  /**
+   * Per-tick plan-proposal notify summary. `null` when the pass is
+   * disabled OR when the pass is enabled but the notifier seam is
+   * absent (the silent-skip path; the operator sees the gap via
+   * the once-per-runner log line, not via this field). When the
+   * pass actually runs, populated with `scanned` (proposed plans
+   * inspected), `notified` (notifier.notify calls succeeded + record
+   * written), and `skipped` (a histogram of skip reasons including
+   * 'already-pushed', 'not-in-allowlist', 'notify-failed',
+   * 'rate-limited', 'tainted', 'superseded',
+   * 'record-write-failed').
+   */
+  readonly planProposalNotifyReport:
+    | {
+        readonly scanned: number;
+        readonly notified: number;
         readonly skipped: Readonly<Record<string, number>>;
       }
     | null;
