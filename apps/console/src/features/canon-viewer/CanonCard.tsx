@@ -12,11 +12,12 @@ import { TimeAgo } from '@/components/time-ago/TimeAgo';
 import { AttributionAuditDialog } from '@/components/attribution-audit/AttributionAuditDialog';
 import { InlineError } from '@/components/state-display/InlineError';
 import { subBlockState } from '@/components/state-display/subBlockState';
-import { asAlternative, listReferencers, listAtomChain, listAtomCascade, reinforceAtom, markAtomStale, type CanonAtom } from '@/services/canon.service';
+import { listReferencers, listAtomChain, listAtomCascade, reinforceAtom, markAtomStale, type CanonAtom } from '@/services/canon.service';
 import { toErrorMessage } from '@/services/errors';
 import { requireActorId } from '@/services/session.service';
 import { useCurrentActorId } from '@/hooks/useCurrentActorId';
 import { routeForAtomId, routeHref } from '@/state/router.store';
+import { Deliberation } from '@/features/atom-detail-viewer/Deliberation';
 import styles from './CanonCard.module.css';
 
 interface Props {
@@ -103,9 +104,6 @@ export function CanonCard({ atom }: Props) {
 }
 
 function DetailsPanel({ atom }: { atom: CanonAtom }) {
-  const alternatives = atom.metadata?.alternatives_rejected ?? [];
-  const whatBreaks = atom.metadata?.what_breaks_if_revisited;
-  const derivedFrom = atom.provenance?.derived_from ?? [];
   const sourcePlan = typeof atom.metadata?.source_plan === 'string' ? atom.metadata.source_plan : undefined;
 
   return (
@@ -129,37 +127,16 @@ function DetailsPanel({ atom }: { atom: CanonAtom }) {
         </dl>
       </Section>
 
-      {whatBreaks && (
-        <Section title="What breaks if revisited">
-          <p className={styles.sectionBody}>{whatBreaks}</p>
-        </Section>
-      )}
-
-      {alternatives.length > 0 && (
-        <Section title="Alternatives rejected">
-          <ul className={styles.list}>
-            {alternatives.map((raw, i) => {
-              const alt = asAlternative(raw);
-              return (
-                <li key={i} className={styles.listItem}>
-                  <strong className={styles.listItemTitle}>{alt.option}</strong>
-                  {alt.reason && <span className={styles.listItemReason}>{alt.reason}</span>}
-                </li>
-              );
-            })}
-          </ul>
-        </Section>
-      )}
-
-      {derivedFrom.length > 0 && (
-        <Section title="Derived from">
-          <ul className={styles.refList}>
-            {derivedFrom.map((ref) => (
-              <li key={ref}><AtomRef id={ref} /></li>
-            ))}
-          </ul>
-        </Section>
-      )}
+      {/*
+        Deliberation surface (principles_applied, alternatives_rejected,
+        what_breaks_if_revisit, derived_from). The shared component
+        renders nothing for atoms that carry none of these fields,
+        so legacy canon (older directives that pre-date the
+        deliberation contract) stays the same height as before.
+        CanonAtom is a sub-shape of AnyAtom, so the shared component
+        accepts it directly.
+      */}
+      <Deliberation atom={atom} />
 
       {(atom.supersedes?.length ?? 0) > 0 && (
         <Section title="Supersedes">
