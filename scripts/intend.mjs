@@ -71,9 +71,18 @@ async function main() {
       '--request', args.request,
       '--intent-id', atom.id,
     ], { stdio: 'inherit', reject: false });
-    const childCode = result.exitCode ?? 0;
-    if (childCode !== 0) {
-      console.error(`[intend] run-cto-actor exited with code ${childCode}; intent ${atom.id} was written but CTO did not complete cleanly.`);
+    // result.failed is the discriminator, NOT exitCode. In execa v9
+    // a signal-killed (SIGKILL/SIGTERM) child or a spawn-time error
+    // (e.g. ENOENT for a missing scripts/run-cto-actor.mjs) leaves
+    // exitCode === undefined; an `exitCode ?? 0` fallback would
+    // silently treat those failures as success and intend would
+    // exit clean while the intent atom sits orphaned without ever
+    // having engaged the CTO. Surface the signal too so a SIGKILL
+    // is distinguishable from a clean non-zero exit in operator
+    // logs.
+    if (result.failed) {
+      const childCode = result.exitCode ?? 1;
+      console.error(`[intend] run-cto-actor failed (code=${result.exitCode ?? 'signal'} signal=${result.signal ?? 'none'}); intent ${atom.id} was written but CTO did not complete cleanly.`);
       process.exit(childCode);
     }
   } else {

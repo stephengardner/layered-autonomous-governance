@@ -335,13 +335,18 @@ export default async function register(host, registry) {
           // catch-block then masks the failure as "labels could not
           // be applied" and the LAG-auditor gate stays unfired.
           // Surfaced by dogfeed-21 (2026-05-05) on PR #320.
+          // 30s ceiling: a stalled gh CLI or auth probe must not
+          // hold the dispatch tick open forever. The labels API is
+          // a single small POST; sub-second is normal, anything
+          // past 30s is a genuine wedge worth surfacing as a
+          // timeout error rather than an indefinite hang.
           await spawnNode([
             GH_AS_PATH, role,
             'api', `repos/${owner}/${repo}/issues/${capturedPrNumber}/labels`,
             '-X', 'POST',
             '-f', 'labels[]=autonomous-intent',
             '-f', `labels[]=${planIdLabel}`,
-          ], { stdio: 'inherit', cwd: repoDir });
+          ], { stdio: 'inherit', cwd: repoDir, timeout: 30_000 });
         } catch (err) {
           const cause = err instanceof Error ? err.message : String(err);
           console.error(`[autonomous-dispatch] WARNING: failed to label PR #${capturedPrNumber}: ${cause}. LAG-auditor gate will not fire until labels are added manually.`);
@@ -361,6 +366,11 @@ export default async function register(host, registry) {
         // Spawn through scripts/lib/spawn-node.mjs so the spawned
         // child inherits the dispatch invoker's node version. See
         // the label-PR call above for the failure mode this avoids.
+        // 90s ceiling matches the createPrLandingObserveRefresher
+        // default in scripts/lib/pr-observation-refresher.mjs --
+        // both call sites run the same run-pr-landing.mjs
+        // --observe-only --live pass and a stalled gh / network
+        // hiccup must not hold the dispatch tick open forever.
         await spawnNode([
           PR_LANDING_PATH,
           '--pr', String(capturedPrNumber),
@@ -369,7 +379,7 @@ export default async function register(host, registry) {
           '--observe-only',
           '--live',
           '--plan-id', capturedPlanId,
-        ], { stdio: 'inherit', cwd: repoDir });
+        ], { stdio: 'inherit', cwd: repoDir, timeout: 90_000 });
       } catch (err) {
         const cause = err instanceof Error ? err.message : String(err);
         console.error(`[autonomous-dispatch] WARNING: failed to observe PR #${capturedPrNumber} after dispatch: ${cause}. Plan ${capturedPlanId} will stay at plan_state='executing' until pr-landing is run manually.`);
