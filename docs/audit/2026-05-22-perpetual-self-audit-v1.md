@@ -119,8 +119,8 @@ PRs #439, #440, #441, and #443 cite `docs/audit/2026-05-22-perpetual-self-audit-
 
 ## References
 
-- V0 driver: `scripts/self-audit-tick.mjs`, `scripts/lib/self-audit-prompt.mjs` (shipped in PR #435, the audit driver itself)
-- V0 backlog ships: PRs #437, #439, #440, #441, #442, #443, #444
-- Adjacent V0-cluster ships: PRs #434, #436, #438
+- V0 driver itself (NOT an adjacent ship; this is the driver V0 is named for): PR #435 (`scripts/self-audit-tick.mjs` + `scripts/lib/self-audit-prompt.mjs`)
+- V0 backlog ships (the 6-PR queue the driver produced): PRs #437, #439, #440, #441, #442, #443, #444
+- Adjacent V0-cluster ships (same window, separate work): PRs #434 (sub-agent stall detector), #436 (sub-agent stall watcher consuming #434), and #438 (worktree-cleanup planner)
 - Prior audit (production-readiness): `docs/audits/2026-04-26-production-readiness-audit.md`
 - Canon: `CLAUDE.md` (and the runtime canon via `node scripts/apply-canon.mjs`)
