@@ -170,6 +170,10 @@ import {
   validatePipelineAbandonInput,
   type PipelineAbandonSourceAtom,
 } from './pipeline-abandon';
+import {
+  buildBotIdentityHealth,
+  type BotIdentityHealthResponse,
+} from './system-health';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -4009,6 +4013,37 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'control-status-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/system-health.bot-identities' && req.method === 'POST') {
+    /*
+     * Per-bot-identity health probe. For each provisioned role under
+     * `.lag/apps/<role>.json`, mints a one-shot installation token to
+     * verify the GitHub App credentials still authenticate. Read-only
+     * by contract: the token is consumed within the function scope
+     * and discarded; nothing is written back to disk.
+     *
+     * Closes the per-bot-identity visibility gap called out in
+     * docs/audit/2026-05-22-perpetual-self-audit-v0.md (finding P2).
+     * Today a bot token expiry surfaces only on the next gh-as push
+     * failure, which is silent until an operator pattern-matches the
+     * 401. The widget surfaces it on the Console dashboard at the
+     * cadence the page refreshes (30s).
+     *
+     * Auth shape mirrors the rest of the agent-facing endpoints: a
+     * `principal_id` field is accepted in the body for audit but no
+     * principal-specific routing is applied today; any
+     * console-allowlisted origin may read the surface because
+     * identity health is operator-readiness telemetry, not secret
+     * material (no tokens are returned to the client).
+     */
+    try {
+      const data: BotIdentityHealthResponse = await buildBotIdentityHealth(LAG_DIR);
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'system-health-failed', (err as Error).message);
     }
     return;
   }
