@@ -55,7 +55,11 @@ async function loadSuite(): Promise<{
     }
     throw err;
   }
-  const script = await import('../scripts/import-from-file.mjs');
+  // Import from the shebang-free lib module, not the CLI wrapper. The
+  // wrapper carries `#!/usr/bin/env node` which vitest's esbuild on
+  // Windows cannot strip when loaded via dynamic import from a .ts
+  // file (see PR #123 git-as precedent + PR #172 cr-precheck).
+  const script = await import('../scripts/lib/import-from-file.mjs');
   const adapter = await import('../src/atom-store.js');
   return { run: script.run, SqliteAtomStore: adapter.SqliteAtomStore };
 }
