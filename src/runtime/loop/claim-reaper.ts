@@ -843,14 +843,17 @@ async function escalateStalledClaim(
   // CAS-protected via runWithCas. A peer reaper that observed the
   // same cap-exceeded condition could also try to flip the claim to
   // 'abandoned'; the helper re-reads on ConflictError so the flip
-  // still lands (the post-state is identical between racers, so
-  // retry is safe). NotFoundError from the helper is impossible
-  // here because we re-read the atom at the top of the function;
-  // null return short-circuits the escalation.
+  // still lands when the source state is still 'stalled'. The
+  // closure is source-gated to 'stalled' so a retry cannot
+  // overwrite a peer's recovered transition (stalled -> executing)
+  // or a different terminal write (stalled -> abandoned via a
+  // racing escalateStalledClaim is identical-outcome and safe; we
+  // short-circuit on already-abandoned to suppress the duplicate
+  // metadata write).
   await runWithCas(host, atom.id, current => {
     const currentMeta = current.metadata.work_claim as WorkClaimMeta | undefined;
     if (currentMeta === undefined) return null;
-    if (currentMeta.claim_state === 'abandoned') return null;
+    if (currentMeta.claim_state !== 'stalled') return null;
     return {
       metadata: {
         work_claim: { ...currentMeta, claim_state: 'abandoned' },

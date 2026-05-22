@@ -455,6 +455,47 @@ describe('CAS races on runtime read-modify-write call sites', () => {
       expect(after?.revision).toBe(2);
     });
 
+    it('rejects NaN maxRetries with RangeError (terminates the loop guard)', async () => {
+      const host = createMemoryHost();
+      const plan = samplePlanAtom('plan-runwithcas-nan', '2026-01-01T00:00:00.000Z');
+      await host.atoms.put(plan);
+
+      // NaN passes through `?? DEFAULT_MAX_RETRIES` (defined value)
+      // but `retries >= NaN` is always false; without the validator
+      // this loops forever on ConflictError. The guard surfaces a
+      // RangeError at the call boundary so callers cannot accidentally
+      // disable the escape check.
+      await expect(
+        runWithCas(host, plan.id, () => ({ confidence: 0.5 }), {
+          maxRetries: Number.NaN,
+        }),
+      ).rejects.toBeInstanceOf(RangeError);
+    });
+
+    it('rejects negative maxRetries with RangeError', async () => {
+      const host = createMemoryHost();
+      const plan = samplePlanAtom('plan-runwithcas-neg', '2026-01-01T00:00:00.000Z');
+      await host.atoms.put(plan);
+
+      await expect(
+        runWithCas(host, plan.id, () => ({ confidence: 0.5 }), {
+          maxRetries: -1,
+        }),
+      ).rejects.toBeInstanceOf(RangeError);
+    });
+
+    it('rejects non-integer maxRetries with RangeError', async () => {
+      const host = createMemoryHost();
+      const plan = samplePlanAtom('plan-runwithcas-float', '2026-01-01T00:00:00.000Z');
+      await host.atoms.put(plan);
+
+      await expect(
+        runWithCas(host, plan.id, () => ({ confidence: 0.5 }), {
+          maxRetries: 1.5,
+        }),
+      ).rejects.toBeInstanceOf(RangeError);
+    });
+
     it('exceeds maxRetries: ConflictError surfaces to caller', async () => {
       const host = createMemoryHost();
       const plan = samplePlanAtom('plan-runwithcas-4', '2026-01-01T00:00:00.000Z', {

@@ -98,6 +98,17 @@ export async function runWithCas(
   opts?: RunWithCasOptions,
 ): Promise<RunWithCasResult | null> {
   const maxRetries = opts?.maxRetries ?? DEFAULT_MAX_RETRIES;
+  // Validate the retry budget at the boundary so a caller that
+  // passes NaN, a negative value, or a non-integer cannot disable
+  // the escape check and turn an in-process retry into an
+  // unbounded ConflictError spin. Relational comparisons against
+  // NaN are always false, so `retries >= NaN` would loop forever
+  // without this guard.
+  if (!Number.isInteger(maxRetries) || maxRetries < 0) {
+    throw new RangeError(
+      `runWithCas: maxRetries must be a non-negative integer (got ${String(maxRetries)})`,
+    );
+  }
   let retries = 0;
   while (true) {
     const atom = await host.atoms.get(atomId);

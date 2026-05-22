@@ -813,11 +813,22 @@ export async function runPipeline(
       // stamp; pinning to abandonAtom.created_at keeps the value
       // stable across all observers (CR PR #402 finding).
       // CAS via runWithCas: a peer pipeline tick that also observed
-      // the abandon atom could race this re-assert. The helper
-      // re-reads + returns null when the pipeline already moved to
-      // 'abandoned' so the duplicate write is suppressed cleanly.
+      // the abandon atom could race this re-assert. The closure is
+      // gated to non-terminal source states (pending/running/
+      // hil-paused) so a retry cannot replace a peer's terminal
+      // completed/failed/abandoned write with our abandoned stamp.
+      // A null result from runWithCas (atom already terminal) is
+      // treated as "peer beat us"; we still return kind='abandoned'
+      // because the abandon-atom itself is the load-bearing audit
+      // trail for the operator action that fired upstream.
       await runWithCas(host, pipelineId, current => {
-        if (current.pipeline_state === 'abandoned') return null;
+        if (
+          current.pipeline_state !== 'pending'
+          && current.pipeline_state !== 'running'
+          && current.pipeline_state !== 'hil-paused'
+        ) {
+          return null;
+        }
         return {
           pipeline_state: 'abandoned',
           metadata: {
@@ -1791,14 +1802,41 @@ export async function runPipeline(
     if (shouldPause) {
       // CAS via runWithCas: a peer pipeline tick could have moved
       // pipeline_state between the stage-output write and this HIL
-      // pause flip. runWithCas re-reads and short-circuits when the
-      // pipeline is already in a terminal state (the HIL pause is a
-      // forward transition; if a peer already advanced, the peer's
-      // state wins and the duplicate pause is suppressed).
-      await runWithCas(host, pipelineId, current => {
-        if (current.pipeline_state === 'hil-paused') return null;
+      // pause flip. The closure is gated to the running/pending
+      // source set so a retry cannot stamp 'hil-paused' over a
+      // peer's terminal completed/failed/abandoned outcome. A null
+      // result from runWithCas (atom already hil-paused or already
+      // terminal) skips the duplicate write; we still return
+      // kind='hil-paused' because the stage-output write that
+      // triggered this branch IS the audit row for the pause
+      // decision, and downstream callers want to observe the pause
+      // intent regardless of who wrote it first.
+      const pauseResult = await runWithCas(host, pipelineId, current => {
+        if (
+          current.pipeline_state !== 'pending'
+          && current.pipeline_state !== 'running'
+        ) {
+          return null;
+        }
         return { pipeline_state: 'hil-paused' };
       });
+      // When the closure returned null because the peer already
+      // wrote a terminal state (completed/failed/abandoned), the
+      // pipeline is not actually paused. Honor the peer's outcome
+      // by halting rather than emitting a misleading hil-paused
+      // event.
+      if (pauseResult === null) {
+        const peerState = await host.atoms.get(pipelineId);
+        const peerFinal = peerState?.pipeline_state;
+        if (
+          peerFinal !== undefined
+          && peerFinal !== 'hil-paused'
+          && peerFinal !== 'pending'
+          && peerFinal !== 'running'
+        ) {
+          return { kind: 'halted', pipelineId };
+        }
+      }
       // Carry the persisted stage-output atom id on the hil-pause
       // event so the operator's resume tooling can read the prior
       // output without re-walking the chain.
@@ -1881,13 +1919,28 @@ export async function runPipeline(
 
   // CAS via runWithCas: the terminal completed-transition runs
   // after the final stage; a peer that observed the same final
-  // stage could race this write. The helper re-reads + writes; the
-  // metadata patch is shallow-merged by the AtomStore so the peer's
-  // metadata is preserved.
-  await runWithCas(host, pipelineId, () => ({
-    pipeline_state: 'completed',
-    metadata: { completed_at: now(), total_cost_usd: totalCostUsd },
-  }));
+  // stage could race this write. The closure is gated to non-
+  // terminal source states so a retry cannot replace a peer's
+  // failed/abandoned outcome with completed. A null result from
+  // runWithCas means the peer wrote a different terminal state
+  // (failed or abandoned) in the racing window; we honor the
+  // peer's outcome by returning halted rather than misclassifying.
+  const completedResult = await runWithCas(host, pipelineId, current => {
+    if (
+      current.pipeline_state !== 'pending'
+      && current.pipeline_state !== 'running'
+      && current.pipeline_state !== 'hil-paused'
+    ) {
+      return null;
+    }
+    return {
+      pipeline_state: 'completed',
+      metadata: { completed_at: now(), total_cost_usd: totalCostUsd },
+    };
+  });
+  if (completedResult === null) {
+    return { kind: 'halted', pipelineId };
+  }
   return { kind: 'completed', pipelineId };
 }
 

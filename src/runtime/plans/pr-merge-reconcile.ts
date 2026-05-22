@@ -255,6 +255,12 @@ export async function runPlanStateReconcileTick(
 
       await runWithCas(host, planId, current => {
         if (current.plan_state === targetState) return null;
+        // Source-state gate: only mutate from a reconcilable
+        // (non-terminal) state. A peer reconciler that moved the
+        // plan to a different terminal state (e.g. abandoned via
+        // operator override) wins; we do not flip it.
+        if (current.plan_state === undefined) return null;
+        if (!RECONCILABLE_PLAN_STATES.has(current.plan_state)) return null;
         return {
           plan_state: targetState,
           metadata: {

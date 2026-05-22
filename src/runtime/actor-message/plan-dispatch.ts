@@ -244,22 +244,25 @@ export async function runDispatchTick(
       // CAS via runWithCas: the plan should still be in 'executing'
       // (we claimed it above) but a peer writer could have stamped
       // additional metadata between our claim and this terminal
-      // transition. runWithCas re-reads + retries once so the
-      // succeeded transition lands without clobbering the peer's
-      // metadata patch.
-      await runWithCas(host, plan.id, () => ({
-        plan_state: 'succeeded',
-        metadata: {
-          terminal_at: terminalAt,
-          terminal_kind: 'succeeded',
-          dispatch_result: {
-            kind: 'completed',
-            summary: result.summary,
-            produced_atom_ids: result.producedAtomIds,
-            at: terminalAt,
+      // transition. The closure is gated to plan_state='executing'
+      // so a retry cannot flip a peer's terminal succeeded/failed/
+      // abandoned outcome.
+      await runWithCas(host, plan.id, current => {
+        if (current.plan_state !== 'executing') return null;
+        return {
+          plan_state: 'succeeded',
+          metadata: {
+            terminal_at: terminalAt,
+            terminal_kind: 'succeeded',
+            dispatch_result: {
+              kind: 'completed',
+              summary: result.summary,
+              produced_atom_ids: result.producedAtomIds,
+              at: terminalAt,
+            },
           },
-        },
-      }));
+        };
+      });
       await emitDispatchAudit(plan, 'plan.dispatch-succeeded', terminalAt, {
         plan_id: String(plan.id),
         sub_actor_principal_id: envelope.sub_actor_principal_id,
@@ -274,17 +277,20 @@ export async function runDispatchTick(
       // and terminal_kind intentionally NOT stamped: the plan has not
       // reached terminal yet. dispatch_result records the in-flight
       // hand-off so an audit consumer sees the dispatch happened.
-      // CAS via runWithCas for the same metadata-merge race rationale
-      // as the completed branch.
-      await runWithCas(host, plan.id, () => ({
-        metadata: {
-          dispatch_result: {
-            kind: 'dispatched',
-            summary: result.summary,
-            at: terminalAt,
+      // CAS gated to executing so a peer terminal-write is not
+      // overwritten with a stale dispatched marker.
+      await runWithCas(host, plan.id, current => {
+        if (current.plan_state !== 'executing') return null;
+        return {
+          metadata: {
+            dispatch_result: {
+              kind: 'dispatched',
+              summary: result.summary,
+              at: terminalAt,
+            },
           },
-        },
-      }));
+        };
+      });
       await emitDispatchAudit(plan, 'plan.dispatch-in-flight', terminalAt, {
         plan_id: String(plan.id),
         sub_actor_principal_id: envelope.sub_actor_principal_id,
@@ -295,20 +301,24 @@ export async function runDispatchTick(
     } else {
       // error case
       const errorMessage = truncateErrorMessage(result.message);
-      // CAS via runWithCas; same rationale as the succeeded branch.
-      await runWithCas(host, plan.id, () => ({
-        plan_state: 'failed',
-        metadata: {
-          terminal_at: terminalAt,
-          terminal_kind: 'failed',
-          error_message: errorMessage,
-          dispatch_result: {
-            kind: 'error',
-            message: result.message,
-            at: terminalAt,
+      // CAS gated to plan_state='executing' so a peer's terminal
+      // outcome (succeeded/abandoned) is preserved.
+      await runWithCas(host, plan.id, current => {
+        if (current.plan_state !== 'executing') return null;
+        return {
+          plan_state: 'failed',
+          metadata: {
+            terminal_at: terminalAt,
+            terminal_kind: 'failed',
+            error_message: errorMessage,
+            dispatch_result: {
+              kind: 'error',
+              message: result.message,
+              at: terminalAt,
+            },
           },
-        },
-      }));
+        };
+      });
       await emitDispatchAudit(plan, 'plan.dispatch-failed', terminalAt, {
         plan_id: String(plan.id),
         sub_actor_principal_id: envelope.sub_actor_principal_id,
