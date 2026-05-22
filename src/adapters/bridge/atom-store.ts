@@ -54,6 +54,20 @@ export interface BootstrapResult {
 }
 
 export class BridgeAtomStore implements AtomStore {
+  // hasSubscribe is always false here because BridgeAtomStore does
+  // NOT implement subscribe() locally; advertising the backing's
+  // posture would let consumers call a missing method when backing
+  // declares true. hasStrictCrossProcessCas inherits from backing
+  // (defaulting to false when unset) because the CAS contract is a
+  // per-write semantic the bridge passes through unchanged on
+  // update() calls. If a future bridge variant adds subscribe() it
+  // can override this getter to surface backing.hasSubscribe.
+  get capabilities() {
+    return {
+      hasSubscribe: false,
+      hasStrictCrossProcessCas: this.backing.capabilities?.hasStrictCrossProcessCas ?? false,
+    } as const;
+  }
   private readonly prefix: string;
 
   constructor(

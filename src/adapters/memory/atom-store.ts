@@ -22,6 +22,12 @@ import { TrigramEmbedder } from '../_common/trigram-embedder.js';
  * given identical inputs. Used by conformance suite and simulation.
  */
 export class MemoryAtomStore implements AtomStore {
+  // In-memory backing store; CAS check runs synchronously against
+  // `this.atoms`, so two writers in the same process interleave
+  // safely, but two processes pointing at the same store (impossible
+  // here by definition) would not. Declared best-effort to match the
+  // contract documented on AtomStoreCapabilities.
+  readonly capabilities = { hasSubscribe: false, hasStrictCrossProcessCas: false } as const;
   private readonly atoms = new Map<AtomId, Atom>();
   private readonly embedder: Embedder;
 

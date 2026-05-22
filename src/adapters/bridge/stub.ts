@@ -70,6 +70,11 @@ const NI = (method: string): never => {
 // ---------------------------------------------------------------------------
 
 export class BridgeAtomStore implements AtomStore {
+  // Stub adapter: every operation throws "not implemented". The
+  // capability posture is therefore advisory until a real backing is
+  // wired in. Default false matches the canonical safer posture.
+  readonly capabilities = { hasSubscribe: false, hasStrictCrossProcessCas: false } as const;
+
   /**
    * chromadb col.add({ids:[atom.id], documents:[atom.content],
    * embeddings:[embed(atom.content)], metadatas:[flatten(atom)]}).

@@ -79,6 +79,12 @@ interface AtomRow {
 }
 
 export class SqliteAtomStore implements AtomStore {
+  // SQLite's atomic UPDATE ... WHERE revision = :expected provides
+  // strict cross-process CAS: two writers (any combination of
+  // processes / machines pointing at the same .db file) see one of
+  // their updates fail with ConflictError. Consumers can treat
+  // ConflictError as a definitive retry signal.
+  readonly capabilities = { hasSubscribe: false, hasStrictCrossProcessCas: true } as const;
   private readonly db: Database.Database;
   private readonly embedder: Embedder;
 

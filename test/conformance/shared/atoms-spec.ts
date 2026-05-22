@@ -310,5 +310,24 @@ export function runAtomsSpec(label: string, factory: TargetFactory): void {
       expect((await host.atoms.get('cas-batch-1' as AtomId))?.taint).toBe('clean');
       expect((await host.atoms.get('cas-batch-2' as AtomId))?.taint).toBe('clean');
     });
+
+    /**
+     * Capability-bit contract: every adapter MUST declare a posture
+     * for the cross-process CAS guarantee so consumers can pick a
+     * retry strategy without reading per-adapter source. The bit is
+     * surfaced via AtomStore.capabilities.hasStrictCrossProcessCas
+     * (optional in the type, but every shipped adapter MUST set it
+     * explicitly).
+     */
+    it('declares hasStrictCrossProcessCas in capabilities', () => {
+      // The capability getter must exist and the bit must be a
+      // concrete boolean (not undefined). Adapters that genuinely do
+      // not yet have CAS-shaped semantics declare `false`; new
+      // adapters with strict semantics declare `true`. Leaving the
+      // bit undefined is a conformance failure under this spec
+      // because it forces consumers to guess.
+      expect(host.atoms.capabilities).toBeDefined();
+      expect(typeof host.atoms.capabilities?.hasStrictCrossProcessCas).toBe('boolean');
+    });
   });
 }

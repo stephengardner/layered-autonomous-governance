@@ -124,6 +124,36 @@ export interface AtomStoreCapabilities {
    * backstop (NOTIFY can drop silently).
    */
   readonly hasSubscribe: boolean;
+  /**
+   * True when `update(id, { expectedRevision, ... })` provides STRICT
+   * cross-process compare-and-swap (CAS) semantics: a concurrent
+   * writer in another process (or another machine sharing the same
+   * backend) that mutates the same atom between the consumer's read
+   * and write WILL cause one of the two updates to fail with
+   * `ConflictError`. The atom's `revision` field is bumped atomically
+   * on every accepted write.
+   *
+   * False (or `undefined`) means the adapter offers BEST-EFFORT
+   * in-process CAS only: the revision check runs against in-memory
+   * state at update time, so two writers in the same process
+   * interleave correctly, but two processes pointing at the same
+   * storage may both observe the same revision and both succeed,
+   * losing one update.
+   *
+   * Consumers that read this bit:
+   * - Strict (`true`): treat `ConflictError` as a definitive retry
+   *   signal; safe to read-modify-write across replicas / LoopRunner
+   *   instances.
+   * - Best-effort (`false`/`undefined`): single-process flows still
+   *   benefit from CAS; multi-process deployments must either run on
+   *   a strict adapter (e.g. SQLite, future Postgres) or accept the
+   *   lost-update envelope. The runtime caller chooses the response
+   *   posture (warn-and-proceed vs escalate) based on this bit.
+   *
+   * Adding the bit at the interface level (not on each adapter)
+   * keeps the contract discoverable to every consumer in one place.
+   */
+  readonly hasStrictCrossProcessCas?: boolean;
 }
 
 /**
