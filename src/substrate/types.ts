@@ -384,6 +384,24 @@ export interface Atom {
    * top-level field, never via metadata.
    */
   readonly pipeline_state?: string;
+  /**
+   * Monotonic revision counter for compare-and-swap on update.
+   *
+   * Omitted means revision 0 (back-compat with atoms written before
+   * this field existed). Bumped by exactly 1 on every successful
+   * AtomStore.update regardless of which fields the patch touches.
+   * Callers that need read-modify-write atomicity pass the read-time
+   * revision back as AtomPatch.expectedRevision; the adapter throws
+   * ConflictError when the stored revision moved between read and
+   * write.
+   *
+   * Five runtime call sites today carry best-effort claim comments
+   * because they cannot prove the atom they read is the same one
+   * they update. Migrating them to expectedRevision closes that race
+   * substrate-side instead of relying on file-adapter call
+   * serialization.
+   */
+  readonly revision?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -525,6 +543,29 @@ export interface AtomPatch {
    * the labels. Mirrors the plan_state field shape.
    */
   readonly pipeline_state?: string;
+  /**
+   * Optional compare-and-swap guard. When set, the adapter checks
+   * the stored atom's revision against this value BEFORE applying
+   * the patch and throws ConflictError on mismatch. When unset, the
+   * update proceeds unconditionally (back-compat: existing callers
+   * see no behavior change).
+   *
+   * The pattern:
+   *
+   *   const atom = await host.atoms.get(id);
+   *   if (!atom) throw ...;
+   *   // ... compute mutation decision based on atom.* ...
+   *   await host.atoms.update(id, {
+   *     ...mutation,
+   *     expectedRevision: atom.revision ?? 0,
+   *   });
+   *
+   * The ?? 0 fallback handles atoms written before the revision
+   * field existed (they read as undefined; treated as revision 0).
+   * On the first update such an atom moves to revision 1 and CAS
+   * works normally from there.
+   */
+  readonly expectedRevision?: number;
 }
 
 export interface Target {
