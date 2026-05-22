@@ -144,6 +144,22 @@ export type {
   EscalationWriteOutcome,
 } from './operator-escalation.js';
 
+// Outdated-review-thread sweep: substrate-side enforcement of the
+// post-fix-push thread-resolution discipline. PR-authoring executors
+// (agentic, diff-based, pr-fix) call this from their post-PR or
+// post-fix-push paths so the unresolved-thread merge gate clears
+// automatically when the anchored line was changed by the fix-commit.
+export {
+  resolveOutdatedThreadsAfterPush,
+  classifyReviewThreads,
+  ResolveThreadsError,
+} from './resolve-outdated-threads-after-push.js';
+export type {
+  ResolveOutdatedThreadsInput,
+  ResolveOutdatedThreadsResult,
+  ReviewThread,
+} from './resolve-outdated-threads-after-push.js';
+
 export {
   RADIUS_RANK,
   RejectReason,

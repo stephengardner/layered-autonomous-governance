@@ -91,6 +91,7 @@ import type {
   CodeAuthorExecutor,
   CodeAuthorExecutorResult,
 } from './code-author-invoker.js';
+import { resolveOutdatedThreadsAfterPush } from './resolve-outdated-threads-after-push.js';
 
 export interface AgenticExecutorConfig {
   /**
@@ -268,6 +269,25 @@ export function buildAgenticCodeAuthorExecutor(
             touchedPaths: agentResult.artifacts?.touchedPaths ?? [],
             draft,
           });
+          // 7a. Post-PR-creation: sweep outdated review threads. A
+          // newly-opened PR has no review threads yet, so this is a
+          // no-op on the create path; the call is here so the
+          // substrate enforces the rule regardless of whether the
+          // caller wires a fix-push helper too. Per the canonical
+          // discipline, agents that push code-changing commits MUST
+          // resolve outdated CR threads so the unresolved-thread
+          // merge gate clears as soon as CI does. Failure of this
+          // sweep MUST NOT roll back the PR-creation result that
+          // just succeeded; the caller's catch swallows and logs.
+          await resolveOutdatedThreadsAfterPush({
+            host: config.host,
+            ghClient: config.ghClient,
+            principal: config.principal,
+            owner: config.owner,
+            repo: config.repo,
+            prNumber: pr.number,
+            ...(signal !== undefined ? { signal } : {}),
+          }).catch(() => undefined);
           return {
             kind: 'dispatched',
             prNumber: pr.number,
