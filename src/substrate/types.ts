@@ -564,6 +564,12 @@ export interface AtomPatch {
    * field existed (they read as undefined; treated as revision 0).
    * On the first update such an atom moves to revision 1 and CAS
    * works normally from there.
+   *
+   * NOT honored by batchUpdate(). A single expectedRevision value
+   * cannot meaningfully gate N writes (each matched atom has its
+   * own revision), so adapters reject the patch at the substrate
+   * boundary; CAS-bearing patches must route through update() one
+   * atom at a time.
    */
   readonly expectedRevision?: number;
 }

@@ -292,5 +292,18 @@ export function runAtomsSpec(label: string, factory: TargetFactory): void {
       });
       expect(updated.revision).toBe(1);
     });
+
+    it('batchUpdate rejects expectedRevision (CAS undefined over a batch)', async () => {
+      await host.atoms.put(sampleAtom({ id: 'cas-batch-1' as AtomId, principal_id: 'batch-target' as PrincipalId }));
+      await host.atoms.put(sampleAtom({ id: 'cas-batch-2' as AtomId, principal_id: 'batch-target' as PrincipalId }));
+      // A single expectedRevision value cannot gate N atoms each with
+      // their own revision; adapters reject at the substrate boundary.
+      await expect(
+        host.atoms.batchUpdate(
+          { principal_id: ['batch-target' as PrincipalId] },
+          { taint: 'tainted', expectedRevision: 0 },
+        ),
+      ).rejects.toThrow(/expectedRevision/);
+    });
   });
 }

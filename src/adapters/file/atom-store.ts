@@ -180,6 +180,12 @@ export class FileAtomStore implements AtomStore {
   }
 
   async batchUpdate(filter: AtomFilter, patch: AtomPatch): Promise<number> {
+    // CAS is undefined over a batch (see MemoryAtomStore.batchUpdate
+    // for the substrate rationale). Reject so callers route CAS
+    // patches through update() per atom.
+    if (patch.expectedRevision !== undefined) {
+      throw new Error('batchUpdate does not support expectedRevision; use update() per atom for CAS');
+    }
     const effective: AtomFilter = { ...filter, superseded: true };
     const all = await this.loadAll();
     const matching = all.filter(a => matches(a, effective));

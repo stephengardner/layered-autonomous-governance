@@ -154,6 +154,13 @@ export class MemoryAtomStore implements AtomStore {
   }
 
   async batchUpdate(filter: AtomFilter, patch: AtomPatch): Promise<number> {
+    // CAS is undefined over a batch: every matched atom has its own
+    // revision, so a single expectedRevision value cannot meaningfully
+    // gate N writes. Reject at the substrate boundary so callers route
+    // CAS-bearing patches through update() one at a time.
+    if (patch.expectedRevision !== undefined) {
+      throw new Error('batchUpdate does not support expectedRevision; use update() per atom for CAS');
+    }
     // Include superseded atoms in batch updates (taint cascade needs this).
     const effective: AtomFilter = { ...filter, superseded: true };
     const matching = Array.from(this.atoms.values()).filter(a => matches(a, effective));
