@@ -173,8 +173,8 @@ import {
 import {
   buildBotIdentityHealth,
   buildSystemHealth,
-  defaultLoadClaimReaperHeartbeatAtoms,
   type BotIdentityHealthResponse,
+  type ProbeAtom,
   type SystemHealthResponse,
 } from './system-health';
 
@@ -256,9 +256,32 @@ async function getCachedSystemHealth(): Promise<SystemHealthResponse> {
    */
   const value: Promise<SystemHealthResponse> = (async () => {
     const cadenceMs = await resolveClaimReaperCadenceMsFromCanon();
+    /*
+     * Source heartbeat atoms from the in-memory atom index. The
+     * Console maintains a fs-watcher-backed projection of
+     * .lag/atoms/ (the primed Map<filename, Atom>) so reads are
+     * O(1) and do not hit disk on the hot path. A per-request
+     * readdir+readFile sweep would scale linearly with atom-store
+     * size; at the 30k-atoms-per-hour org-ceiling cited in canon
+     * `dev-indie-floor-org-ceiling` that becomes disk-bound.
+     *
+     * The filesystem-backed loader `defaultLoadClaimReaperHeartbeatAtoms`
+     * stays in `system-health.ts` as the fallback seam used by
+     * deployments that compose buildSystemHealth without an in-memory
+     * index (e.g. a standalone probe runner). Here we override the
+     * default to read from `readAllAtoms()` instead.
+     */
+    const heartbeatAtoms: ProbeAtom[] = (await readAllAtoms())
+      .filter((a) => a.type === 'claim-reaper-sweep-completed')
+      .map((a) => ({
+        id: a.id,
+        type: a.type,
+        created_at: a.created_at,
+        metadata: a.metadata ?? null,
+      }));
     const result = await buildSystemHealth(LAG_DIR, ATOMS_DIR, {
       claimReaperOpts: {
-        loadAtoms: () => defaultLoadClaimReaperHeartbeatAtoms(ATOMS_DIR),
+        loadAtoms: async () => heartbeatAtoms,
         ...(cadenceMs !== undefined ? { cadenceMs } : {}),
       },
       ...(metricsPort !== undefined ? { tunnelOpts: { metricsPort } } : {}),
@@ -340,7 +363,12 @@ async function resolveClaimReaperCadenceMsFromCanon(): Promise<number | undefine
   if (bestAtom === null) return undefined;
   const policy = (bestAtom.metadata as Record<string, unknown>)['policy'] as Record<string, unknown>;
   const value = policy['value'];
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+  if (
+    typeof value !== 'number'
+    || !Number.isFinite(value)
+    || !Number.isInteger(value)
+    || value <= 0
+  ) {
     return undefined;
   }
   return value;
