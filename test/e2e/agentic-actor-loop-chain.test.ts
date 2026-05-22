@@ -203,6 +203,7 @@ describe('agentic-actor-loop end-to-end', () => {
       repo: 'r',
       baseRef: 'main',
       model: 'stub-model',
+      verifyCommitExists: async () => undefined,
     });
 
     const plan = mkPlan('plan-test', { target_paths: ['README.md'] });
@@ -276,6 +277,7 @@ describe('agentic-actor-loop end-to-end', () => {
       repo: 'r',
       baseRef: 'main',
       model: 'stub-model',
+      verifyCommitExists: async () => undefined,
     });
     const plan = mkPlan('plan-cost', { target_paths: ['README.md'] });
     await host.atoms.put(plan);
@@ -348,6 +350,7 @@ describe('agentic-actor-loop end-to-end', () => {
       repo: 'r',
       baseRef: 'main',
       model: 'stub-model',
+      verifyCommitExists: async () => undefined,
     });
     const plan = mkPlan('plan-real-shape', { target_paths: ['README.md'] });
     await host.atoms.put(plan);
@@ -418,6 +421,7 @@ describe('agentic-actor-loop end-to-end', () => {
       repo: 'r',
       baseRef: 'main',
       model: 'stub-model',
+      verifyCommitExists: async () => undefined,
     });
     const plan = mkPlan('plan-test-2');
     const result = await executor.execute({

@@ -28,6 +28,7 @@
  *   - agentic/aborted                   -> adapter returned 'aborted' without a failure
  *   - agentic/aborted/<kind>            -> adapter returned 'aborted' with a failure
  *   - agentic/no-artifacts              -> adapter returned 'completed' without commitSha + branchName
+ *   - agentic/sha-verification-failed   -> adapter-supplied commitSha did not exist in the workspace
  *   - agentic/pr-creation               -> GhClient PR-create threw
  *   - agentic/adapter-threw/<kind>      -> adapter threw rather than returning a structured result
  *
@@ -38,9 +39,14 @@
  * - The workspace inherits whatever credentials the WorkspaceProvider
  *   provisioned. Cred scope is the provider's responsibility.
  * - The `AgentLoopResult.artifacts.commitSha` is adapter-supplied; a
- *   misbehaving adapter could fabricate a SHA. This seam currently
- *   ships without a verification step; a future hardening pass
- *   enforces commit-existence verification before PR creation.
+ *   misbehaving adapter could fabricate a SHA. Before any PR-creation
+ *   call, the executor verifies the commit object exists in the
+ *   workspace via `git cat-file -e <sha>^{commit}` (peel forces the
+ *   resolved object to be a commit, not a blob/tree/tag); a miss maps
+ *   to `agentic/sha-verification-failed` and short-circuits before
+ *   GhClient touches the remote. The default verifier wraps
+ *   `child_process.execFile`; tests inject a fake via the optional
+ *   `verifyCommitExists` config seam.
  * - Workspace cleanup-on-error is non-negotiable: the try/finally in
  *   execute() ALWAYS calls release(), even if the adapter throws.
  *   Tests pin this; a leak here would burn disk + leave bot creds
@@ -50,6 +56,9 @@
  *   default tier/threshold. A malformed policy is a deployment error
  *   worth surfacing.
  */
+
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import type { Atom, AtomId, FailureKind, PrincipalId, ReplayTier } from '../../substrate/types.js';
 import type { Host } from '../../substrate/interface.js';
@@ -63,6 +72,8 @@ import type {
 import type { Workspace, WorkspaceProvider } from '../../substrate/workspace-provider.js';
 import type { BlobStore } from '../../substrate/blob-store.js';
 import type { Redactor } from '../../substrate/redactor.js';
+
+const execFileAsync = promisify(execFile);
 import { defaultBudgetCap, type BudgetCap } from '../../substrate/agent-budget.js';
 import { loadReplayTier } from '../../substrate/policy/replay-tier.js';
 import { loadBlobThreshold } from '../../substrate/policy/blob-threshold.js';
@@ -109,6 +120,18 @@ export interface AgenticExecutorConfig {
   readonly model: string;
   /** Draft PR by default; operator can flip per deployment. */
   readonly draft?: boolean;
+  /**
+   * Optional override for the commit-existence verifier. Defaults to
+   * `git cat-file -e <sha>^{commit}` via `child_process.execFile`
+   * (the `^{commit}` peel forces git to confirm the resolved object
+   * is a commit, not a blob/tree/tag). The default
+   * path always uses the default; this seam lets tests drive both the
+   * "fabricated SHA" and "real SHA" branches without spawning git.
+   * Implementations resolve on existence and reject on absence (or on
+   * any underlying git failure); the rejection reason flows into the
+   * returned executor error so the caller can route to escalation.
+   */
+  readonly verifyCommitExists?: (workspacePath: string, sha: string) => Promise<void>;
 }
 
 export function buildAgenticCodeAuthorExecutor(
@@ -187,7 +210,27 @@ export function buildAgenticCodeAuthorExecutor(
           };
         }
 
-        // 5. Read budget_consumed.usd off the session atom. The
+        // 5. Verify the adapter-supplied commitSha actually exists in
+        // the workspace before the PR-creation call touches the
+        // remote. A misbehaving (or compromised) adapter could
+        // fabricate a SHA; without this gate the GhClient call would
+        // open a PR pointing at a head ref that does not resolve to
+        // the claimed commit. Failures short-circuit BEFORE
+        // GhClient.createPr fires so no remote artifact is ever
+        // produced for an unverified commit.
+        const verify = config.verifyCommitExists ?? defaultVerifyCommitExists;
+        try {
+          await verify(workspace.path, commitSha);
+        } catch (err) {
+          return {
+            kind: 'error',
+            stage: 'agentic/sha-verification-failed',
+            reason: `adapter-supplied commitSha ${commitSha} not found in workspace: ${errorMessage(err)}`,
+            branchName,
+          };
+        }
+
+        // 6. Read budget_consumed.usd off the session atom. The
         // adapter writes the session atom (with the budget figure
         // it tracked) before run() returns; we read it back so the
         // dispatched result carries real cost numbers when the
@@ -199,7 +242,7 @@ export function buildAgenticCodeAuthorExecutor(
         // mask a successful execute result.
         const totalCostUsd = await readBudgetConsumedUsd(host, agentResult.sessionAtomId);
 
-        // 6. Create PR via existing GhClient.
+        // 7. Create PR via existing GhClient.
         try {
           const pr = await createPrViaGhClient({
             config,
@@ -239,7 +282,7 @@ export function buildAgenticCodeAuthorExecutor(
           };
         }
       } finally {
-        // 6. Always release the workspace, even on throw. Swallow any
+        // 8. Always release the workspace, even on throw. Swallow any
         // release error -- a release failure must not mask the
         // upstream success/error result.
         await config.workspaceProvider.release(workspace).catch(() => undefined);
@@ -480,6 +523,27 @@ async function readBudgetConsumedUsd(host: Host, sessionAtomId: AtomId): Promise
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Default commit-existence verifier. Runs `git -C <workspacePath>
+ * cat-file -e <sha>^{commit}`; the `^{commit}` peel forces git to
+ * resolve the sha specifically to a commit object (not a blob, tree,
+ * or tag) and exits non-zero (which `execFile` surfaces as a thrown
+ * promise) when the object is absent, malformed, or not a commit.
+ * Resolves on success; rejects with the underlying execFile error on
+ * failure so the executor surfaces the git stderr in the returned
+ * `agentic/sha-verification-failed` reason field.
+ *
+ * The check is strictly an existence query against the git object
+ * database: it does NOT enforce that the commit is at workspace
+ * HEAD. A reachable older commit on the same branch passes; a SHA
+ * the adapter invented does not. That posture aligns with the
+ * threat being defended: a misbehaving adapter fabricating a SHA
+ * the executor would otherwise propagate into a PR head ref.
+ */
+async function defaultVerifyCommitExists(workspacePath: string, sha: string): Promise<void> {
+  await execFileAsync('git', ['-C', workspacePath, 'cat-file', '-e', `${sha}^{commit}`]);
 }
 
 function extractStringArray(
