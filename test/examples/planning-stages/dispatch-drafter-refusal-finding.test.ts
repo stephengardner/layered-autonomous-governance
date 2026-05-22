@@ -173,6 +173,12 @@ describe('auditDispatch - drafter-refusal finding', () => {
     expect(finding.cited_atom_ids).toContain(OBSERVATION_ID);
     expect(finding.cited_atom_ids).toContain(PLAN_ID);
     expect(finding.cited_paths.length).toBe(0);
+    // Phase 2 PR4: the dispatch adapter directs the runner's
+    // cross-stage re-prompt machinery back to plan-stage so a drafter
+    // refusal triggers a re-plan rather than a halt (when the gate
+    // policy is seeded). Pin the field so future regressions surface
+    // here.
+    expect(finding.reprompt_target).toBe('plan-stage');
   });
 
   it('truncates the drafter notes to the first 1024 chars in the finding message', async () => {

@@ -265,6 +265,16 @@ function buildDrafterRefusalFinding(
     message,
     cited_atom_ids: [observation.id, planId] as ReadonlyArray<AtomId>,
     cited_paths: [],
+    // Direct the runner's cross-stage re-prompt machinery at the
+    // plan-stage. A drafter refusal means the plan's target_paths,
+    // delegation envelope, or guidance is the load-bearing fix surface:
+    // re-running dispatch with the same plan would observe the same
+    // refusal, but re-running plan-stage with the refusal notes in
+    // priorAuditFindings gives the plan-author a chance to repair.
+    // When the cross-stage policy gate is dormant the runner ignores
+    // this field and falls through to the existing intra-stage halt
+    // path (preserving pre-Phase-2 behavior).
+    reprompt_target: 'plan-stage',
   };
 }
 
