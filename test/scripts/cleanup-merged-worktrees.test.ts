@@ -100,6 +100,46 @@ describe('planWorktreeRemoval', () => {
     }
   });
 
+  it('keeps when commitsAhead is undefined (per CR PR #438 keep-wins gap fix)', () => {
+    // Without this guard, an undefined commitsAhead fell through to
+    // `remove` because the `typeof === 'number'` check returned
+    // false and there was no explicit catch. Now it triggers a
+    // keep with reason='commits-ahead-unknown', matching the same
+    // conservative posture as the merge-state-unknown branch above.
+    const result = planWorktreeRemoval({
+      ...BASE,
+      commitsAhead: undefined as never,
+    });
+    expect(result.kind).toBe('keep');
+    if (result.kind === 'keep') {
+      expect(result.reason).toBe('commits-ahead-unknown');
+    }
+  });
+
+  it('keeps when commitsAhead is null', () => {
+    const result = planWorktreeRemoval({
+      ...BASE,
+      commitsAhead: null as never,
+    });
+    expect(result.kind).toBe('keep');
+  });
+
+  it('keeps when commitsAhead is NaN', () => {
+    const result = planWorktreeRemoval({
+      ...BASE,
+      commitsAhead: Number.NaN,
+    });
+    expect(result.kind).toBe('keep');
+  });
+
+  it('keeps when commitsAhead is Infinity (non-finite)', () => {
+    const result = planWorktreeRemoval({
+      ...BASE,
+      commitsAhead: Number.POSITIVE_INFINITY,
+    });
+    expect(result.kind).toBe('keep');
+  });
+
   it('throws on missing worktreePath', () => {
     expect(() =>
       planWorktreeRemoval({

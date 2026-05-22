@@ -70,7 +70,17 @@ export function planWorktreeRemoval(input) {
   if (mergedToMain !== true) {
     return { kind: 'keep', worktreePath, reason: 'not-merged-to-main' };
   }
-  if (typeof commitsAhead === 'number' && commitsAhead > 0) {
+  // commitsAhead must be a finite number to evaluate. null /
+  // undefined / NaN / Infinity all mean the scanner could not
+  // measure ahead-count; per the keep-wins philosophy on rules 3-4,
+  // unmeasurable signals anchor a keep, not a remove. Per CR PR #438
+  // finding: without this guard a missing commitsAhead fell through
+  // to remove, exposing worktrees to deletion on partial scanner
+  // output.
+  if (typeof commitsAhead !== 'number' || !Number.isFinite(commitsAhead)) {
+    return { kind: 'keep', worktreePath, reason: 'commits-ahead-unknown' };
+  }
+  if (commitsAhead > 0) {
     return { kind: 'keep', worktreePath, reason: 'commits-ahead-of-main' };
   }
   return { kind: 'remove', worktreePath, reason: 'merged-clean-no-commits-ahead' };
