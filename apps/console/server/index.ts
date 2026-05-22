@@ -94,6 +94,11 @@ import type {
   PipelineSourceAtom,
 } from './pipelines-types';
 import { buildPipelineLifecycle } from './pipeline-lifecycle';
+import { listPipelineDeliberation } from './pipeline-deliberation';
+import type {
+  PipelineDeliberationResult,
+  PipelineDeliberationSourceAtom,
+} from './pipeline-deliberation-types';
 import { buildIntentOutcome, readPrObservationStalenessMs } from './intent-outcome';
 import type { IntentOutcome, IntentOutcomeSourceAtom } from './intent-outcome-types';
 import { buildPipelineErrorState } from './pipeline-error-state';
@@ -2386,6 +2391,41 @@ async function handlePipelineLifecycle(pipelineId: string): Promise<PipelineLife
 }
 
 /**
+ * /api/pipeline.deliberation handler. Projects the chain of
+ * `pipeline-cross-stage-reprompt` atoms for a given pipeline into a
+ * deliberation thread (FROM_STAGE to TO_STAGE handoffs with finding
+ * payload, attempt counter, and thread_parent pointer).
+ *
+ * Unlike `handlePipelineDetail`, this surface ALWAYS returns a
+ * populated envelope: an empty `entries` array means the substrate
+ * has not emitted any cross-stage walks for this pipeline (the atom
+ * is dormant unless `pol-cross-stage-reprompt-default` is seeded).
+ * The Console hides the surface cleanly when entries.length === 0 so
+ * there is no empty-state clutter on the detail view.
+ *
+ * Returns null only when the pipeline atom itself does not exist; the
+ * route layer then mirrors the 404 contract of /api/pipelines.detail.
+ * Re-uses the existing in-memory atom index (per canon
+ * `dec-console-in-memory-atom-index-projection`) by walking the same
+ * `readAllAtoms()` path.
+ */
+async function handlePipelineDeliberation(
+  pipelineId: string,
+): Promise<PipelineDeliberationResult | null> {
+  const all = await readAllAtoms();
+  // Same downcast pattern as the sibling projections; the deliberation
+  // helper consumes a narrow subset of the Atom envelope.
+  const sourceAtoms = all as unknown as ReadonlyArray<PipelineDeliberationSourceAtom>;
+  // 404 contract: a pipeline atom that does not exist returns null so
+  // the client renders the same empty state /api/pipelines.detail uses.
+  const pipelineExists = sourceAtoms.some(
+    (a) => a.type === 'pipeline' && a.id === pipelineId,
+  );
+  if (!pipelineExists) return null;
+  return listPipelineDeliberation(sourceAtoms, pipelineId, Date.now());
+}
+
+/**
  * /api/pipeline.intent-outcome handler. Synthesizes the pipeline +
  * post-dispatch chain into a single intent-outcome state-pill +
  * summary so the operator can read "did this intent ship?" at the
@@ -4073,6 +4113,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'pipeline-lifecycle-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/pipeline.deliberation' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const pipelineId = typeof body['pipeline_id'] === 'string' ? (body['pipeline_id'] as string) : '';
+    if (!pipelineId) {
+      sendErr(req, res, 400, 'missing-pipeline-id', 'pipeline.deliberation requires { pipeline_id: string }');
+      return;
+    }
+    try {
+      const data = await handlePipelineDeliberation(pipelineId);
+      if (data === null) {
+        sendErr(req, res, 404, 'pipeline-not-found', `no pipeline atom with id ${pipelineId}`);
+        return;
+      }
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'pipeline-deliberation-failed', (err as Error).message);
     }
     return;
   }

@@ -31,6 +31,9 @@ vi.mock('./pipeline-stage-event', () => ({
 vi.mock('./pipeline-audit-finding', () => ({
   PipelineAuditFindingRenderer: () => null as unknown as JSX.Element,
 }));
+vi.mock('./pipeline-cross-stage-reprompt', () => ({
+  PipelineCrossStageRepromptRenderer: () => null as unknown as JSX.Element,
+}));
 vi.mock('./brainstorm-output', () => ({
   BrainstormOutputRenderer: () => null as unknown as JSX.Element,
   SpecOutputRenderer: () => null as unknown as JSX.Element,
@@ -60,6 +63,7 @@ const { PlanRenderer } = await import('./plan');
 const { PipelineRenderer } = await import('./pipeline');
 const { PipelineStageEventRenderer } = await import('./pipeline-stage-event');
 const { PipelineAuditFindingRenderer } = await import('./pipeline-audit-finding');
+const { PipelineCrossStageRepromptRenderer } = await import('./pipeline-cross-stage-reprompt');
 const {
   BrainstormOutputRenderer,
   SpecOutputRenderer,
@@ -79,6 +83,7 @@ describe('pickRenderer', () => {
       ['pipeline', PipelineRenderer],
       ['pipeline-stage-event', PipelineStageEventRenderer],
       ['pipeline-audit-finding', PipelineAuditFindingRenderer],
+      ['pipeline-cross-stage-reprompt', PipelineCrossStageRepromptRenderer],
       ['pipeline-resume', PipelineStageEventRenderer],
       ['pipeline-failed', PipelineStageEventRenderer],
       ['brainstorm-output', BrainstormOutputRenderer],
@@ -162,6 +167,7 @@ describe('pickRenderer', () => {
       'pipeline',
       'pipeline-stage-event',
       'pipeline-audit-finding',
+      'pipeline-cross-stage-reprompt',
       'brainstorm-output',
       'spec-output',
       'review-report',

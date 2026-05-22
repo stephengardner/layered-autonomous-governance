@@ -18,6 +18,7 @@ import { PlanRenderer } from './plan';
 import { PipelineRenderer } from './pipeline';
 import { PipelineStageEventRenderer } from './pipeline-stage-event';
 import { PipelineAuditFindingRenderer } from './pipeline-audit-finding';
+import { PipelineCrossStageRepromptRenderer } from './pipeline-cross-stage-reprompt';
 import {
   BrainstormOutputRenderer,
   SpecOutputRenderer,
@@ -44,6 +45,7 @@ const TYPE_RENDERERS: Readonly<Record<string, AtomRenderer>> = Object.freeze({
   pipeline: PipelineRenderer,
   'pipeline-stage-event': PipelineStageEventRenderer,
   'pipeline-audit-finding': PipelineAuditFindingRenderer,
+  'pipeline-cross-stage-reprompt': PipelineCrossStageRepromptRenderer,
   'pipeline-resume': PipelineStageEventRenderer,
   'pipeline-failed': PipelineStageEventRenderer,
 

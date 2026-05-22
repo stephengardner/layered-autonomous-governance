@@ -33,6 +33,7 @@ import {
 import { formatDurationMs, formatRelative, formatUsd } from './PipelinesView';
 import { IntentOutcomeCard } from './IntentOutcomeCard';
 import { PipelineLifecycle } from './PipelineLifecycle';
+import { PipelineDeliberationThread } from './PipelineDeliberationThread';
 import { StageInputs } from './StageInputs';
 import { InlineStageOutput } from './InlineStageOutput';
 import { readStageExpanded, writeStageExpanded } from './stageExpansion';
@@ -380,6 +381,8 @@ function PipelineDetailBody({
           ))}
         </ol>
       </Section>
+
+      <PipelineDeliberationThread pipelineId={pipeline.id} />
 
       <PipelineLifecycle pipelineId={pipeline.id} />
 

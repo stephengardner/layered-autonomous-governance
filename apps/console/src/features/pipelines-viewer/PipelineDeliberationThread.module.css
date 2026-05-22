@@ -1,0 +1,348 @@
+/*
+ * Cross-stage deliberation thread.
+ *
+ * Surface design:
+ *   - Section card matching the sibling PipelineLifecycle.module.css
+ *     so the two surfaces feel like part of the same vertical stack.
+ *   - Each entry is a rail+body card with severity-tinted rail dot,
+ *     mirroring the StageCard pattern on the parent detail view so
+ *     the operator's eye recognises the visual rhythm.
+ *
+ * Mobile-first per canon dev-mobile-first-no-horizontal-scroll-on-mobile:
+ *   - Entry head wraps freely on narrow widths; no horizontal scroll
+ *     anywhere, even with long stage names and a deep attempt counter.
+ *   - Touch targets (AtomRef chips, severity pill) inherit the global
+ *     >=44px floor via the shared component primitives.
+ *
+ * App-grade polish per canon dev-web-app-grade-polish:
+ *   - prefers-reduced-motion honored at the component level via
+ *     framer-motion's useReducedMotion (no transition flash on mount).
+ *   - No layout shift: rail+body uses CSS grid with fixed rail width.
+ *   - Focus-visible inherited from shared primitives (AtomRef, ErrorState).
+ */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.sectionHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.sectionIcon {
+  display: inline-flex;
+  color: var(--text-tertiary);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.sectionCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--space-6);
+  height: var(--space-6);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+.intro {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-tertiary);
+  line-height: var(--line-height-normal);
+}
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.entry {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-4);
+  padding: var(--space-4) 0;
+}
+
+.entry[data-is-last="true"] {
+  padding-bottom: 0;
+}
+
+.rail {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: var(--space-7);
+}
+
+.railDot {
+  /*
+   * Touch-target floor (>=44px CSS pixels) enforced via the
+   * --size-touch-target-min token per the token-only CSS rule
+   * (no hardcoded px outside src/tokens/tokens.css). The base
+   * width/height still uses --space-7 for the typical rendered
+   * size; the min-* floors prevent the dot from shrinking below
+   * the canonical tap-target bound on mobile.
+   */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-7);
+  height: var(--space-7);
+  min-width: var(--size-touch-target-min);
+  min-height: var(--size-touch-target-min);
+  border-radius: var(--radius-pill);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.railDot[data-severity="critical"] {
+  color: var(--status-danger);
+  border-color: color-mix(in srgb, var(--status-danger) 50%, transparent);
+  background: color-mix(in srgb, var(--status-danger) 8%, var(--surface-raised));
+}
+
+.railDot[data-severity="major"] {
+  color: var(--status-warning);
+  border-color: color-mix(in srgb, var(--status-warning) 50%, transparent);
+  background: color-mix(in srgb, var(--status-warning) 8%, var(--surface-raised));
+}
+
+.railDot[data-severity="minor"] {
+  color: var(--status-info);
+  border-color: color-mix(in srgb, var(--status-info) 40%, transparent);
+  background: color-mix(in srgb, var(--status-info) 6%, var(--surface-raised));
+}
+
+.railLine {
+  flex: 1;
+  width: var(--stroke-hairline);
+  background: var(--border-subtle);
+  margin-top: var(--space-2);
+  min-height: var(--space-4);
+}
+
+.entryBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.entryHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.attemptPill {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.handoff {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-tertiary);
+}
+
+.stageChip {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-primary);
+  background: var(--surface-raised);
+  padding: var(--space-px) var(--space-2);
+  border-radius: var(--radius-xs);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+}
+
+.stageChip[data-role="from"] {
+  /*
+   * The "from" stage is the auditor that emitted the finding. Tinted
+   * subtly so the FROM->TO direction is obvious at a glance without
+   * relying on the arrow icon alone (an accessibility belt-and-braces
+   * for low-contrast settings).
+   */
+  border-color: color-mix(in srgb, var(--status-warning) 30%, transparent);
+}
+
+.stageChip[data-role="to"] {
+  border-color: color-mix(in srgb, var(--status-info) 30%, transparent);
+}
+
+.severityPill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+}
+
+.severityPill[data-variant="danger"] {
+  background: color-mix(in srgb, var(--status-danger) 15%, transparent);
+  color: var(--status-danger);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-danger) 35%, transparent);
+}
+
+.severityPill[data-variant="warning"] {
+  background: color-mix(in srgb, var(--status-warning) 15%, transparent);
+  color: var(--status-warning);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-warning) 35%, transparent);
+}
+
+.severityPill[data-variant="info"] {
+  background: color-mix(in srgb, var(--status-info) 15%, transparent);
+  color: var(--status-info);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-info) 35%, transparent);
+}
+
+.category {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  background: var(--surface-raised);
+  padding: var(--space-px) var(--space-2);
+  border-radius: var(--radius-xs);
+  word-break: break-all;
+}
+
+.timestamp {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+@media (max-width: 30rem) {
+  /* Push the timestamp to its own row on narrow widths so the head
+     does not overflow horizontally. */
+  .timestamp {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+}
+
+.message {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  line-height: var(--line-height-normal);
+  overflow-wrap: anywhere;
+}
+
+.metaRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.metaItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.metaLabel {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: var(--font-weight-medium);
+}
+
+.metaItem code {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  background: var(--surface-raised);
+  padding: var(--space-px) var(--space-2);
+  border-radius: var(--radius-xs);
+}
+
+.citationBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface-raised);
+  border-radius: var(--radius-sm);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+}
+
+.atomRefList {
+  display: flex;
+  flex-wrap: wrap;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  gap: var(--space-2);
+}
+
+.pathList {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  gap: var(--space-1);
+}
+
+.pathList li code {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  background: var(--surface-base);
+  padding: var(--space-px) var(--space-2);
+  border-radius: var(--radius-xs);
+  word-break: break-all;
+}
