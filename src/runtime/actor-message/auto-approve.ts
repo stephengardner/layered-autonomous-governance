@@ -22,6 +22,7 @@
  * the other policy reads in this module.
  */
 
+import { ConflictError } from '../../substrate/errors.js';
 import type { Host } from '../../interface.js';
 import type { Atom, Time } from '../../types.js';
 
@@ -124,20 +125,30 @@ export async function runAutoApprovePass(
     if (latest.taint !== 'clean') continue;
     if (latest.superseded_by.length > 0) continue;
 
-    await host.atoms.update(plan.id, {
-      plan_state: 'approved',
-      metadata: {
-        auto_approved: {
-          at: new Date(now()).toISOString() as Time,
-          // The matched policy atom id, not a hardcoded string. A
-          // deployment that supersedes pol-plan-auto-approve-low-
-          // stakes with a different id (pol-plan-auto-approve-v2,
-          // etc.) will have the ACTUAL governing atom's id stamped
-          // on each auto-approval - a real audit trail.
-          via: String(resolution.atomId),
+    // CAS guard: a peer auto-approve / consensus-vote / intent-
+    // approve tick could race this writer. The expectedRevision
+    // closes the window so the loser sees ConflictError and skips
+    // without overwriting the peer's plan_state transition.
+    try {
+      await host.atoms.update(plan.id, {
+        plan_state: 'approved',
+        metadata: {
+          auto_approved: {
+            at: new Date(now()).toISOString() as Time,
+            // The matched policy atom id, not a hardcoded string. A
+            // deployment that supersedes pol-plan-auto-approve-low-
+            // stakes with a different id (pol-plan-auto-approve-v2,
+            // etc.) will have the ACTUAL governing atom's id stamped
+            // on each auto-approval - a real audit trail.
+            via: String(resolution.atomId),
+          },
         },
-      },
-    });
+        expectedRevision: latest.revision ?? 0,
+      });
+    } catch (err) {
+      if (err instanceof ConflictError) continue;
+      throw err;
+    }
     approved += 1;
   }
 

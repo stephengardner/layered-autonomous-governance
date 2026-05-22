@@ -36,6 +36,7 @@ import { loadReplayTier } from '../../../substrate/policy/replay-tier.js';
 import { loadBlobThreshold } from '../../../substrate/policy/blob-threshold.js';
 import { sendOperatorEscalation } from '../../actor-message/index.js';
 import { resolveOutdatedThreadsAfterPush } from '../../actor-message/resolve-outdated-threads-after-push.js';
+import { runWithCas } from '../../util/cas-retry.js';
 import type { ActorReport } from '../types.js';
 import type {
   PrFixObservation,
@@ -366,17 +367,22 @@ export class PrFixActor implements Actor<
     // avoid clobbering sibling fields like dispatched_session_atom_id
     // (which apply() may have already patched on a prior iteration).
     try {
-      const existing = await ctx.host.atoms.get(obs.observationAtomId);
-      if (existing !== null) {
-        const prevPrFix = (existing.metadata as { pr_fix_observation?: PrFixObservationMeta }).pr_fix_observation;
-        if (prevPrFix !== undefined && prevPrFix.classification !== classification) {
-          await ctx.host.atoms.update(obs.observationAtomId, {
-            metadata: {
-              pr_fix_observation: { ...prevPrFix, classification },
-            },
-          });
-        }
-      }
+      // CAS via runWithCas: the observation atom can be touched by
+      // concurrent apply()/observe() paths that also stamp
+      // pr_fix_observation fields (dispatched_session_atom_id). The
+      // helper re-reads the latest atom so we merge classification
+      // onto the freshest pr_fix_observation snapshot without
+      // clobbering sibling fields.
+      await runWithCas(ctx.host, obs.observationAtomId, current => {
+        const prevPrFix = (current.metadata as { pr_fix_observation?: PrFixObservationMeta }).pr_fix_observation;
+        if (prevPrFix === undefined) return null;
+        if (prevPrFix.classification === classification) return null;
+        return {
+          metadata: {
+            pr_fix_observation: { ...prevPrFix, classification },
+          },
+        };
+      });
     } catch {
       // Patch failure is non-fatal: classify still returned the real
       // value, the loop progresses, and the next observe() writes a
@@ -737,20 +743,23 @@ export class PrFixActor implements Actor<
       // chain pointer is a forensic convenience, not a correctness
       // primitive (sessionAtomId is also returned in the Outcome).
       try {
-        const existing = await ctx.host.atoms.get(obs.observationAtomId);
-        if (existing !== null) {
-          const prevPrFix = (existing.metadata as { pr_fix_observation?: PrFixObservationMeta }).pr_fix_observation;
-          if (prevPrFix !== undefined) {
-            await ctx.host.atoms.update(obs.observationAtomId, {
-              metadata: {
-                pr_fix_observation: {
-                  ...prevPrFix,
-                  dispatched_session_atom_id: agentResult.sessionAtomId,
-                },
+        // CAS via runWithCas: same race shape as classify() above.
+        // The pr_fix_observation sub-object is concurrently merged
+        // from classify() (classification field) and here
+        // (dispatched_session_atom_id); the helper picks up the
+        // latest snapshot and preserves the sibling field.
+        await runWithCas(ctx.host, obs.observationAtomId, current => {
+          const prevPrFix = (current.metadata as { pr_fix_observation?: PrFixObservationMeta }).pr_fix_observation;
+          if (prevPrFix === undefined) return null;
+          return {
+            metadata: {
+              pr_fix_observation: {
+                ...prevPrFix,
+                dispatched_session_atom_id: agentResult.sessionAtomId,
               },
-            });
-          }
-        }
+            },
+          };
+        });
       } catch {
         // See classify() rationale: a transient store error here must
         // not mask the upstream fix-pushed outcome.

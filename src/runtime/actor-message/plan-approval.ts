@@ -30,6 +30,7 @@
  * without any change here.
  */
 
+import { ConflictError } from '../../substrate/errors.js';
 import type { Host } from '../../interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../types.js';
 
@@ -185,14 +186,24 @@ export async function runPlanApprovalTick(
       if (latest.taint !== 'clean') continue;
       if (latest.superseded_by.length > 0) continue;
 
-      await host.atoms.update(plan.id, {
-        plan_state: 'abandoned',
-        metadata: {
-          abandoned_reason: `hard-reject-by-${voteOutcome.rejector}`,
-          abandoned_at: nowIso,
-          abandoned_via: String(resolution.atomId),
-        },
-      });
+      // CAS guard: a peer rejection/approval cycle could write
+      // between the re-read and this update. The loser sees
+      // ConflictError and skips so we do not overwrite the peer's
+      // terminal transition.
+      try {
+        await host.atoms.update(plan.id, {
+          plan_state: 'abandoned',
+          metadata: {
+            abandoned_reason: `hard-reject-by-${voteOutcome.rejector}`,
+            abandoned_at: nowIso,
+            abandoned_via: String(resolution.atomId),
+          },
+          expectedRevision: latest.revision ?? 0,
+        });
+      } catch (err) {
+        if (err instanceof ConflictError) continue;
+        throw err;
+      }
       await host.auditor.log({
         kind: 'plan.abandoned-by-reject',
         principal_id: voteOutcome.rejector as PrincipalId,
@@ -216,16 +227,23 @@ export async function runPlanApprovalTick(
     if (latest.taint !== 'clean') continue;
     if (latest.superseded_by.length > 0) continue;
 
-    await host.atoms.update(plan.id, {
-      plan_state: 'approved',
-      metadata: {
-        multi_reviewer_approved: {
-          at: nowIso,
-          via: String(resolution.atomId),
-          voters: voteOutcome.voters,
+    // Same CAS pattern as the reject branch.
+    try {
+      await host.atoms.update(plan.id, {
+        plan_state: 'approved',
+        metadata: {
+          multi_reviewer_approved: {
+            at: nowIso,
+            via: String(resolution.atomId),
+            voters: voteOutcome.voters,
+          },
         },
-      },
-    });
+        expectedRevision: latest.revision ?? 0,
+      });
+    } catch (err) {
+      if (err instanceof ConflictError) continue;
+      throw err;
+    }
     await host.auditor.log({
       kind: 'plan.approved-by-consensus',
       principal_id: plan.principal_id,

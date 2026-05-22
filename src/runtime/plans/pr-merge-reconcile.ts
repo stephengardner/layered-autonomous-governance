@@ -44,6 +44,7 @@ import { createHash } from 'node:crypto';
 import type { Host } from '../../interface.js';
 import type { Atom, AtomId, PlanState, Time } from '../../types.js';
 import { ConflictError } from '../../substrate/errors.js';
+import { runWithCas } from '../util/cas-retry.js';
 
 /**
  * Terminal PR lifecycle states that trigger a Plan transition.
@@ -239,23 +240,41 @@ export async function runPlanStateReconcileTick(
       // so we can trust the marker to act as a cross-process
       // resumption point. A plan in 'executing' goes straight to the
       // terminal state.
+      //
+      // CAS via runWithCas: each hop re-reads + CAS-protects so a
+      // peer reconciler racing on the same plan-id surfaces with
+      // ConflictError on the loser and the helper re-evaluates the
+      // current plan_state (the helper's null return short-circuits
+      // when the peer already moved the plan to the target state).
       if (targetState === 'succeeded' && currentState === 'approved') {
-        await host.atoms.update(planId, { plan_state: 'executing' });
+        await runWithCas(host, planId, current => {
+          if (current.plan_state !== 'approved') return null;
+          return { plan_state: 'executing' };
+        });
       }
 
-      await host.atoms.update(planId, {
-        plan_state: targetState,
-        metadata: {
-          merged_pr: prInfo,
-          plan_state_reason: 'pr-merge-reconcile',
-          plan_state_changed_at: nowIso,
-          plan_merge_settled_id: String(markerId),
-          // Distinguish "this tick did the transition first" from
-          // "this tick recovered a stranded plan". Both are valid
-          // outcomes; the telemetry + audit help operators
-          // distinguish post-hoc.
-          plan_state_reconcile_mode: claimedByThisWorker ? 'first' : 'recovery',
-        },
+      await runWithCas(host, planId, current => {
+        if (current.plan_state === targetState) return null;
+        // Source-state gate: only mutate from a reconcilable
+        // (non-terminal) state. A peer reconciler that moved the
+        // plan to a different terminal state (e.g. abandoned via
+        // operator override) wins; we do not flip it.
+        if (current.plan_state === undefined) return null;
+        if (!RECONCILABLE_PLAN_STATES.has(current.plan_state)) return null;
+        return {
+          plan_state: targetState,
+          metadata: {
+            merged_pr: prInfo,
+            plan_state_reason: 'pr-merge-reconcile',
+            plan_state_changed_at: nowIso,
+            plan_merge_settled_id: String(markerId),
+            // Distinguish "this tick did the transition first" from
+            // "this tick recovered a stranded plan". Both are valid
+            // outcomes; the telemetry + audit help operators
+            // distinguish post-hoc.
+            plan_state_reconcile_mode: claimedByThisWorker ? 'first' : 'recovery',
+          },
+        };
       });
 
       await host.auditor.log({

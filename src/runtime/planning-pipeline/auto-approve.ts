@@ -47,6 +47,7 @@ import {
   type BlastRadius,
 } from '../actor-message/intent-approve.js';
 import { mkPipelineAuditFindingAtom } from './atom-shapes.js';
+import { ConflictError } from '../../substrate/errors.js';
 import type { Host } from '../../substrate/interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../substrate/types.js';
 
@@ -658,14 +659,16 @@ export async function runPipelinePlanAutoApproval(
 
     // Claim-before-mutate: re-read to prevent double-approve under
     // concurrent ticks (a peer single-pass intent tick could approve
-    // the same plan in the same moment). The interface lacks true
-    // compare-and-swap so the claim is best-effort; file/memory adapters
-    // serialize calls in practice. Mirrors intent-approve.ts. The
-    // superseded_by check is repeated here because a peer writer can
-    // revoke (supersede) the plan between candidate-collection and the
-    // claim read; without this guard, an approval could revive a
-    // revoked atom by stamping plan_state='approved' over the
-    // supersession.
+    // the same plan in the same moment). The expectedRevision CAS
+    // guard makes the claim strict on adapters that declare
+    // hasStrictCrossProcessCas=true (SQLite). On best-effort adapters
+    // (memory, file) the CAS is in-process only; multi-process
+    // deployments must run on a strict adapter to close the race.
+    // The superseded_by check is repeated here because a peer writer
+    // can revoke (supersede) the plan between candidate-collection
+    // and the claim read; without this guard, an approval could
+    // revive a revoked atom by stamping plan_state='approved' over
+    // the supersession.
     const latest = await host.atoms.get(plan.id);
     if (
       latest === null
@@ -678,14 +681,27 @@ export async function runPipelinePlanAutoApproval(
     }
 
     const nowIso = nowFn();
-    await host.atoms.update(plan.id, {
-      plan_state: 'approved',
-      metadata: {
-        approved_via: verdict.policyAtomId,
-        approved_at: nowIso,
-        approved_intent_id: String(verdict.intentId),
-      },
-    });
+    try {
+      await host.atoms.update(plan.id, {
+        plan_state: 'approved',
+        metadata: {
+          approved_via: verdict.policyAtomId,
+          approved_at: nowIso,
+          approved_intent_id: String(verdict.intentId),
+        },
+        expectedRevision: latest.revision ?? 0,
+      });
+    } catch (err) {
+      if (err instanceof ConflictError) {
+        // Peer tick approved or revoked the same plan between our
+        // re-read and the write. Treat as not-eligible (the peer's
+        // state-write is the audit trail); next sweep observes the
+        // peer's outcome and skips again.
+        notEligible++;
+        continue;
+      }
+      throw err;
+    }
     approved++;
     await host.auditor.log({
       kind: 'plan.approved-by-intent',

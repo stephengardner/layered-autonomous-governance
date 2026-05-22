@@ -46,6 +46,8 @@
  * payload as before.
  */
 
+import { ConflictError } from '../../substrate/errors.js';
+import { runWithCas } from '../util/cas-retry.js';
 import type { Host } from '../../interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../types.js';
 import type { ActorMessageV1 } from './types.js';
@@ -187,15 +189,25 @@ export async function runDispatchTick(
     // update so the transition is atomic from the AtomStore's
     // perspective: a peer reader observing plan_state='executing'
     // also sees executing_at + executing_invoker, never the
-    // intermediate "executing without provenance" state.
+    // intermediate "executing without provenance" state. CAS via
+    // expectedRevision closes the read-then-update race: a peer
+    // dispatch tick that observed the same approved plan races us,
+    // and the loser sees ConflictError and continues so we never
+    // double-dispatch the plan.
     const executingAt = new Date(now()).toISOString();
-    await host.atoms.update(plan.id, {
-      plan_state: 'executing',
-      metadata: {
-        executing_at: executingAt,
-        executing_invoker: envelope.sub_actor_principal_id,
-      },
-    });
+    try {
+      await host.atoms.update(plan.id, {
+        plan_state: 'executing',
+        metadata: {
+          executing_at: executingAt,
+          executing_invoker: envelope.sub_actor_principal_id,
+        },
+        expectedRevision: fresh.revision ?? 0,
+      });
+    } catch (err) {
+      if (err instanceof ConflictError) continue;
+      throw err;
+    }
     await emitDispatchAudit(plan, 'plan.dispatch-executing', executingAt, {
       plan_id: String(plan.id),
       sub_actor_principal_id: envelope.sub_actor_principal_id,
@@ -229,65 +241,99 @@ export async function runDispatchTick(
     // outcome without parsing dispatch_result.kind.
     const terminalAt = new Date(now()).toISOString();
     if (result.kind === 'completed') {
-      await host.atoms.update(plan.id, {
-        plan_state: 'succeeded',
-        metadata: {
-          terminal_at: terminalAt,
-          terminal_kind: 'succeeded',
-          dispatch_result: {
-            kind: 'completed',
-            summary: result.summary,
-            produced_atom_ids: result.producedAtomIds,
-            at: terminalAt,
+      // CAS via runWithCas: the plan should still be in 'executing'
+      // (we claimed it above) but a peer writer could have stamped
+      // additional metadata between our claim and this terminal
+      // transition. The closure is gated to plan_state='executing'
+      // so a retry cannot flip a peer's terminal succeeded/failed/
+      // abandoned outcome. The audit row + dispatched counter only
+      // fire when the CAS WON; a null result means a peer terminal-
+      // wrote first and our this-tick observation has no audit
+      // claim on the persisted outcome.
+      const casResult = await runWithCas(host, plan.id, current => {
+        if (current.plan_state !== 'executing') return null;
+        return {
+          plan_state: 'succeeded',
+          metadata: {
+            terminal_at: terminalAt,
+            terminal_kind: 'succeeded',
+            dispatch_result: {
+              kind: 'completed',
+              summary: result.summary,
+              produced_atom_ids: result.producedAtomIds,
+              at: terminalAt,
+            },
           },
-        },
+        };
       });
-      await emitDispatchAudit(plan, 'plan.dispatch-succeeded', terminalAt, {
-        plan_id: String(plan.id),
-        sub_actor_principal_id: envelope.sub_actor_principal_id,
-        correlation_id: envelope.correlation_id,
-        summary: result.summary,
-        produced_atom_ids: [...result.producedAtomIds],
-      });
-      dispatched += 1;
+      if (casResult !== null) {
+        await emitDispatchAudit(plan, 'plan.dispatch-succeeded', terminalAt, {
+          plan_id: String(plan.id),
+          sub_actor_principal_id: envelope.sub_actor_principal_id,
+          correlation_id: envelope.correlation_id,
+          summary: result.summary,
+          produced_atom_ids: [...result.producedAtomIds],
+        });
+        dispatched += 1;
+      }
     } else if (result.kind === 'dispatched') {
       // Plan stays in 'executing'; the terminal transition lands on a
       // future tick when the async sub-actor completes. terminal_at
       // and terminal_kind intentionally NOT stamped: the plan has not
       // reached terminal yet. dispatch_result records the in-flight
       // hand-off so an audit consumer sees the dispatch happened.
-      await host.atoms.update(plan.id, {
-        metadata: {
-          dispatch_result: {
-            kind: 'dispatched',
-            summary: result.summary,
-            at: terminalAt,
+      // CAS gated to executing so a peer terminal-write is not
+      // overwritten with a stale dispatched marker. Audit + counter
+      // only fire when CAS won.
+      const casResult = await runWithCas(host, plan.id, current => {
+        if (current.plan_state !== 'executing') return null;
+        return {
+          metadata: {
+            dispatch_result: {
+              kind: 'dispatched',
+              summary: result.summary,
+              at: terminalAt,
+            },
           },
-        },
+        };
       });
-      await emitDispatchAudit(plan, 'plan.dispatch-in-flight', terminalAt, {
-        plan_id: String(plan.id),
-        sub_actor_principal_id: envelope.sub_actor_principal_id,
-        correlation_id: envelope.correlation_id,
-        summary: result.summary,
-      });
-      dispatched += 1;
+      if (casResult !== null) {
+        await emitDispatchAudit(plan, 'plan.dispatch-in-flight', terminalAt, {
+          plan_id: String(plan.id),
+          sub_actor_principal_id: envelope.sub_actor_principal_id,
+          correlation_id: envelope.correlation_id,
+          summary: result.summary,
+        });
+        dispatched += 1;
+      }
     } else {
       // error case
       const errorMessage = truncateErrorMessage(result.message);
-      await host.atoms.update(plan.id, {
-        plan_state: 'failed',
-        metadata: {
-          terminal_at: terminalAt,
-          terminal_kind: 'failed',
-          error_message: errorMessage,
-          dispatch_result: {
-            kind: 'error',
-            message: result.message,
-            at: terminalAt,
+      // CAS gated to plan_state='executing' so a peer's terminal
+      // outcome (succeeded/abandoned) is preserved. Audit + counter
+      // + escalation-message only fire when CAS won.
+      const casResult = await runWithCas(host, plan.id, current => {
+        if (current.plan_state !== 'executing') return null;
+        return {
+          plan_state: 'failed',
+          metadata: {
+            terminal_at: terminalAt,
+            terminal_kind: 'failed',
+            error_message: errorMessage,
+            dispatch_result: {
+              kind: 'error',
+              message: result.message,
+              at: terminalAt,
+            },
           },
-        },
+        };
       });
+      if (casResult === null) {
+        // Peer terminal-wrote first; suppress the audit row,
+        // counter, and escalation message so this tick does not
+        // double-report an outcome the peer already persisted.
+        continue;
+      }
       await emitDispatchAudit(plan, 'plan.dispatch-failed', terminalAt, {
         plan_id: String(plan.id),
         sub_actor_principal_id: envelope.sub_actor_principal_id,

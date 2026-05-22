@@ -17,6 +17,7 @@
  * that lack a Notifier envelope.
  */
 
+import { ConflictError } from '../../errors.js';
 import type { Host } from '../../interface.js';
 import type {
   Atom,
@@ -208,7 +209,17 @@ export async function bindAnswer(
   };
 
   await host.atoms.put(answer);
-  await host.atoms.update(options.questionId, { question_state: 'answered' });
+  // CAS guard: the read at line 159 returned the question; pass its
+  // revision so a concurrent bindAnswer / expirePastDueQuestions on
+  // the same question id races deterministically (one writer wins
+  // the transition, the loser sees ConflictError and surfaces the
+  // race to the caller). The loser is expected to fail loud here:
+  // double-answering the same question is a logic bug rather than a
+  // recoverable race, so this site does not wrap retry-on-conflict.
+  await host.atoms.update(options.questionId, {
+    question_state: 'answered',
+    expectedRevision: question.revision ?? 0,
+  });
 
   await host.auditor.log({
     kind: 'question.answered',
@@ -258,7 +269,21 @@ export async function expirePastDueQuestions(
     if (!q.expires_at) continue;
     const deadlineMs = Date.parse(q.expires_at);
     if (Number.isFinite(deadlineMs) && deadlineMs <= nowMs) {
-      await host.atoms.update(q.id, { question_state: 'expired' });
+      // CAS guard: a concurrent bindAnswer or another expiry sweep
+      // could have transitioned this question between the query and
+      // the update. Pass the read-time revision so the racing writer
+      // surfaces with ConflictError, which we treat as "another path
+      // owned the transition" and skip the expire (already-non-pending
+      // means we lost the race cleanly; recount on the next sweep).
+      try {
+        await host.atoms.update(q.id, {
+          question_state: 'expired',
+          expectedRevision: q.revision ?? 0,
+        });
+      } catch (err) {
+        if (err instanceof ConflictError) continue;
+        throw err;
+      }
       await host.auditor.log({
         kind: 'question.expired',
         principal_id: principalId,

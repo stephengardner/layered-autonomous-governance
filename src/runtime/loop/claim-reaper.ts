@@ -79,6 +79,8 @@
  *   recovered claim on the "now > deadline" predicate.
  */
 
+import { ConflictError } from '../../substrate/errors.js';
+import { runWithCas } from '../util/cas-retry.js';
 import type { Host } from '../../substrate/interface.js';
 import type {
   AgentLoopAdapter,
@@ -345,11 +347,24 @@ export async function detectStalledClaims(host: Host): Promise<ReadonlyArray<Ato
       continue;
     }
     await writeStalledAtom(host, freshMeta, reason);
-    await host.atoms.update(atom.id, {
-      metadata: {
-        work_claim: { ...freshMeta, claim_state: 'stalled' },
-      },
-    });
+    // CAS guard: a peer reaper sweep observing the same predicate
+    // hit could also try to flip the claim to 'stalled'. The
+    // expectedRevision causes the loser to throw ConflictError; we
+    // catch it as "peer beat us" and skip the duplicate flip. The
+    // already-written claim-stalled atom is harmless (it has its own
+    // deterministic id keyed off (claim_id, sweep tick)); the
+    // duplicate would be reaped by the audit-log dedup pass.
+    try {
+      await host.atoms.update(atom.id, {
+        metadata: {
+          work_claim: { ...freshMeta, claim_state: 'stalled' },
+        },
+        expectedRevision: fresh.revision ?? 0,
+      });
+    } catch (err) {
+      if (err instanceof ConflictError) continue;
+      throw err;
+    }
     stalled.push(fresh);
   }
   return stalled;
@@ -585,9 +600,10 @@ export async function recoverStalledClaim(
 
   // -- Atomic recovery-step ------------------------------------------------
   // Re-read immediately before the put so a concurrent reaper does not
-  // produce two recovery-step transitions on the same claim. The memory
-  // adapter does not enforce optimistic version checks; this read-then-
-  // put pattern is the substrate's stand-in until the host gains one.
+  // produce two recovery-step transitions on the same claim. The CAS
+  // guard pins the read; a peer reaper that read the same revision
+  // races us and the loser sees ConflictError, which we treat as
+  // "another reaper claimed this stalled atom" and bail.
   const fresh = await host.atoms.get(atom.id);
   if (fresh === null) return 'skipped';
   const meta = fresh.metadata.work_claim as WorkClaimMeta | undefined;
@@ -612,21 +628,25 @@ export async function recoverStalledClaim(
       deadline_ts: newDeadline,
     },
   };
-  await host.atoms.update(atom.id, {
-    metadata: { work_claim: recovered },
-  });
+  try {
+    await host.atoms.update(atom.id, {
+      metadata: { work_claim: recovered },
+      expectedRevision: fresh.revision ?? 0,
+    });
+  } catch (err) {
+    if (err instanceof ConflictError) return 'skipped';
+    throw err;
+  }
 
-  // Compare-and-swap verification. The memory atom store does not
-  // enforce optimistic version checks; it merges metadata blindly. To
-  // simulate the spec's "if the put fails version check, skip" rule we
-  // re-read the atom and confirm OUR token is the one persisted. If a
-  // concurrent reaper also wrote a recovery-step in the same tick, the
-  // last writer's token wins and the earlier reaper sees its token
-  // overwritten -- it then knows it lost the race and bails out before
-  // dispatching the adapter (which would otherwise double-dispatch).
-  // The CAS check uses the rotated token because it is the only value
-  // guaranteed unique per reaper invocation; `recovery_attempts` could
-  // match by coincidence across reapers.
+  // Token-based recovery race backstop. The CAS guard above closes
+  // the race on strict adapters, but best-effort adapters (memory,
+  // file) only serialize same-process writes; a multi-process race
+  // could still have two reapers stamp their own token in
+  // succession. We re-read and confirm OUR token persists. If a
+  // peer overwrote us, bail before dispatching the adapter (which
+  // would double-dispatch). The check uses the rotated token because
+  // it is the only value guaranteed unique per reaper invocation;
+  // `recovery_attempts` could match by coincidence across reapers.
   const reread = await host.atoms.get(atom.id);
   const rereadMeta = reread === null
     ? null
@@ -674,19 +694,23 @@ export async function recoverStalledClaim(
   }
 
   // -- Session append -------------------------------------------------------
+  // CAS-protected via runWithCas because the session_atom_ids array
+  // is appended to by multiple paths (contract module's session
+  // tracking + this recovery dispatch); a lost update would drop the
+  // freshly-minted session id from the claim's audit trail. The
+  // helper re-reads + retries once if a peer write landed between
+  // our read and write.
   if (newSessionId !== null) {
-    const after = await host.atoms.get(atom.id);
-    if (after !== null) {
-      const afterMeta = after.metadata.work_claim as WorkClaimMeta | undefined;
-      if (afterMeta !== undefined) {
-        const sessionIds = [...afterMeta.session_atom_ids, newSessionId];
-        await host.atoms.update(atom.id, {
-          metadata: {
-            work_claim: { ...afterMeta, session_atom_ids: sessionIds },
-          },
-        });
-      }
-    }
+    await runWithCas(host, atom.id, current => {
+      const currentMeta = current.metadata.work_claim as WorkClaimMeta | undefined;
+      if (currentMeta === undefined) return null;
+      const sessionIds = [...currentMeta.session_atom_ids, newSessionId];
+      return {
+        metadata: {
+          work_claim: { ...currentMeta, session_atom_ids: sessionIds },
+        },
+      };
+    });
   }
 
   return 'recovered';
@@ -761,6 +785,33 @@ async function escalateStalledClaim(
   if (freshMeta.claim_state !== 'stalled') return 'skipped';
 
   const now = host.clock.now();
+
+  // CAS-protected abandon-flip FIRST: a peer reaper that observed
+  // the same cap-exceeded condition could also try to flip the
+  // claim to 'abandoned'; the closure is source-gated to 'stalled'
+  // so a retry cannot overwrite a peer's recovery transition
+  // (stalled -> executing). On null (peer beat us), we skip the
+  // escalation atom + notifier event so the audit stream does not
+  // double-report an escalation the peer's path already handled.
+  const casResult = await runWithCas(host, atom.id, current => {
+    const currentMeta = current.metadata.work_claim as WorkClaimMeta | undefined;
+    if (currentMeta === undefined) return null;
+    if (currentMeta.claim_state !== 'stalled') return null;
+    return {
+      metadata: {
+        work_claim: { ...currentMeta, claim_state: 'abandoned' },
+      },
+    };
+  });
+  if (casResult === null) {
+    // Peer reaper claimed the stalled -> abandoned (or stalled ->
+    // executing recovery) transition first. Suppress the
+    // escalation atom + notifier event so this tick does not
+    // emit a duplicate side-effect; the peer's path is
+    // responsible for its own audit trail.
+    return 'skipped';
+  }
+
   const escalation: ClaimEscalatedMeta = {
     claim_id: freshMeta.claim_id,
     failure_reasons: ['recovery-attempts-exceeded-cap'],
@@ -816,11 +867,6 @@ async function escalateStalledClaim(
   // response here; the escalation atom is already written.
   await host.notifier.telegraph(event, null, 'pending', 0);
 
-  await host.atoms.update(atom.id, {
-    metadata: {
-      work_claim: { ...freshMeta, claim_state: 'abandoned' },
-    },
-  });
   return 'escalated';
 }
 

@@ -55,6 +55,16 @@ export function canTransition(from: PlanState | undefined, to: PlanState): boole
  * patches the atom, and emits an audit event. Throws on invalid
  * transitions; callers that want a predicate check should use
  * `canTransition` first.
+ *
+ * Concurrency: this helper is the only sanctioned mutator for the
+ * `plan_state` field. The CAS guard threads the read-time revision
+ * into the patch so a concurrent transitionPlanState on the same
+ * plan id surfaces with ConflictError on the loser. Callers driving
+ * a tick-loop catch ConflictError, re-read, and re-evaluate (the
+ * read may now show the plan has already moved past `from`, in
+ * which case the caller's eligibility check skips the second
+ * write). Callers that treat any failure as fatal propagate the
+ * error.
  */
 export async function transitionPlanState(
   atomId: AtomId,
@@ -74,7 +84,10 @@ export async function transitionPlanState(
     throw new InvalidPlanTransitionError(atom.plan_state, newState, atomId);
   }
 
-  const updated = await host.atoms.update(atomId, { plan_state: newState });
+  const updated = await host.atoms.update(atomId, {
+    plan_state: newState,
+    expectedRevision: atom.revision ?? 0,
+  });
 
   await host.auditor.log({
     kind: 'plan.state_transition',

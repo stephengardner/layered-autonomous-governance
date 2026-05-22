@@ -36,6 +36,8 @@
  *   in dependsOn (forward-compat seam).
  */
 
+import { ConflictError } from '../../substrate/errors.js';
+import { runWithCas } from '../util/cas-retry.js';
 import type { Host } from '../../substrate/interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../substrate/types.js';
 import type {
@@ -810,12 +812,30 @@ export async function runPipeline(
       // ticks observing the same abandon atom would each rewrite the
       // stamp; pinning to abandonAtom.created_at keeps the value
       // stable across all observers (CR PR #402 finding).
-      await host.atoms.update(pipelineId, {
-        pipeline_state: 'abandoned',
-        metadata: {
-          abandoned_at: String(abandonAtom.created_at),
-          abandon_atom_id: String(abandonAtom.id),
-        },
+      // CAS via runWithCas: a peer pipeline tick that also observed
+      // the abandon atom could race this re-assert. The closure is
+      // gated to non-terminal source states (pending/running/
+      // hil-paused) so a retry cannot replace a peer's terminal
+      // completed/failed/abandoned write with our abandoned stamp.
+      // A null result from runWithCas (atom already terminal) is
+      // treated as "peer beat us"; we still return kind='abandoned'
+      // because the abandon-atom itself is the load-bearing audit
+      // trail for the operator action that fired upstream.
+      await runWithCas(host, pipelineId, current => {
+        if (
+          current.pipeline_state !== 'pending'
+          && current.pipeline_state !== 'running'
+          && current.pipeline_state !== 'hil-paused'
+        ) {
+          return null;
+        }
+        return {
+          pipeline_state: 'abandoned',
+          metadata: {
+            abandoned_at: String(abandonAtom.created_at),
+            abandon_atom_id: String(abandonAtom.id),
+          },
+        };
       });
       return { kind: 'abandoned', pipelineId, abandonAtomId: abandonAtom.id };
     }
@@ -891,10 +911,22 @@ export async function runPipeline(
     }
     crossStageWalkPending = false;
 
-    await host.atoms.update(pipelineId, {
-      pipeline_state: 'running',
-      metadata: { current_stage: stage.name, current_stage_index: i },
-    });
+    // CAS via expectedRevision: a peer pipeline tick that observed
+    // the same fresh state could race this stage-claim. The loser
+    // sees ConflictError and we halt rather than overwrite the
+    // peer's stage advance. The token-based re-read backstop below
+    // catches the best-effort-adapter case where CAS is in-process
+    // only.
+    try {
+      await host.atoms.update(pipelineId, {
+        pipeline_state: 'running',
+        metadata: { current_stage: stage.name, current_stage_index: i },
+        expectedRevision: fresh.revision ?? 0,
+      });
+    } catch (err) {
+      if (err instanceof ConflictError) return { kind: 'halted', pipelineId };
+      throw err;
+    }
     // Re-read after write to confirm we still hold the claim. If a
     // concurrent tick clobbered current_stage_index above our value
     // between our update and this read, halt rather than proceed.
@@ -1768,7 +1800,43 @@ export async function runPipeline(
       || (hil.pause_mode === 'on-critical-finding'
         && (hasCritical || auditorAbsent));
     if (shouldPause) {
-      await host.atoms.update(pipelineId, { pipeline_state: 'hil-paused' });
+      // CAS via runWithCas: a peer pipeline tick could have moved
+      // pipeline_state between the stage-output write and this HIL
+      // pause flip. The closure is gated to the running/pending
+      // source set so a retry cannot stamp 'hil-paused' over a
+      // peer's terminal completed/failed/abandoned outcome. A null
+      // result from runWithCas (atom already hil-paused or already
+      // terminal) skips the duplicate write; we still return
+      // kind='hil-paused' because the stage-output write that
+      // triggered this branch IS the audit row for the pause
+      // decision, and downstream callers want to observe the pause
+      // intent regardless of who wrote it first.
+      const pauseResult = await runWithCas(host, pipelineId, current => {
+        if (
+          current.pipeline_state !== 'pending'
+          && current.pipeline_state !== 'running'
+        ) {
+          return null;
+        }
+        return { pipeline_state: 'hil-paused' };
+      });
+      // When the closure returned null because the peer already
+      // wrote a terminal state (completed/failed/abandoned), the
+      // pipeline is not actually paused. Honor the peer's outcome
+      // by halting rather than emitting a misleading hil-paused
+      // event.
+      if (pauseResult === null) {
+        const peerState = await host.atoms.get(pipelineId);
+        const peerFinal = peerState?.pipeline_state;
+        if (
+          peerFinal !== undefined
+          && peerFinal !== 'hil-paused'
+          && peerFinal !== 'pending'
+          && peerFinal !== 'running'
+        ) {
+          return { kind: 'halted', pipelineId };
+        }
+      }
       // Carry the persisted stage-output atom id on the hil-pause
       // event so the operator's resume tooling can read the prior
       // output without re-walking the chain.
@@ -1849,10 +1917,30 @@ export async function runPipeline(
     }
   }
 
-  await host.atoms.update(pipelineId, {
-    pipeline_state: 'completed',
-    metadata: { completed_at: now(), total_cost_usd: totalCostUsd },
+  // CAS via runWithCas: the terminal completed-transition runs
+  // after the final stage; a peer that observed the same final
+  // stage could race this write. The closure is gated to non-
+  // terminal source states so a retry cannot replace a peer's
+  // failed/abandoned outcome with completed. A null result from
+  // runWithCas means the peer wrote a different terminal state
+  // (failed or abandoned) in the racing window; we honor the
+  // peer's outcome by returning halted rather than misclassifying.
+  const completedResult = await runWithCas(host, pipelineId, current => {
+    if (
+      current.pipeline_state !== 'pending'
+      && current.pipeline_state !== 'running'
+      && current.pipeline_state !== 'hil-paused'
+    ) {
+      return null;
+    }
+    return {
+      pipeline_state: 'completed',
+      metadata: { completed_at: now(), total_cost_usd: totalCostUsd },
+    };
   });
+  if (completedResult === null) {
+    return { kind: 'halted', pipelineId };
+  }
   return { kind: 'completed', pipelineId };
 }
 
@@ -2426,9 +2514,23 @@ async function failPipeline(
   // chain required). The metadata patch is shallow-merged by the
   // AtomStore implementations, preserving started_at, mode,
   // stage_policy_atom_id, and total_cost_usd from mkPipelineAtom.
-  await host.atoms.update(pipelineId, {
-    pipeline_state: 'failed',
-    metadata: { completed_at: terminalNow },
+  // CAS via runWithCas: a peer terminal-transition (completed or
+  // abandoned) could race this failed-write; the helper re-reads
+  // and writes the failed marker only when the pipeline has not
+  // already moved to a terminal state, so the FIRST terminal write
+  // wins.
+  await runWithCas(host, pipelineId, current => {
+    if (
+      current.pipeline_state === 'failed'
+      || current.pipeline_state === 'completed'
+      || current.pipeline_state === 'abandoned'
+    ) {
+      return null;
+    }
+    return {
+      pipeline_state: 'failed',
+      metadata: { completed_at: terminalNow },
+    };
   });
   return {
     kind: 'failed',

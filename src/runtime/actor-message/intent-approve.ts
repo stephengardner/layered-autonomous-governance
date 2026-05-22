@@ -24,6 +24,7 @@
  *   host.atoms.update to prevent double-approve under concurrent ticks.
  */
 
+import { ConflictError } from '../../substrate/errors.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../types.js';
 import type { Host } from '../../interface.js';
 
@@ -531,21 +532,30 @@ export async function runIntentAutoApprovePass(
     }
 
     // Claim-before-mutate: re-read to prevent double-approve under
-    // concurrent ticks. If the plan has moved, skip.
+    // concurrent ticks. If the plan has moved, skip. The CAS guard
+    // closes the read-modify-write window so the loser of a race
+    // surfaces with ConflictError; we treat that as "peer claimed
+    // it" and skip without overwriting the peer's plan_state.
     const latest = await host.atoms.get(plan.id);
     if (!latest) continue;
     if (latest.plan_state !== 'proposed') continue;
     if (latest.taint !== 'clean') continue;
 
     const nowIso = nowFn();
-    await host.atoms.update(plan.id as AtomId, {
-      plan_state: 'approved',
-      metadata: {
-        approved_via: String(approvePolicy.atomId ?? 'pol-plan-autonomous-intent-approve'),
-        approved_at: nowIso,
-        approved_intent_id: String(intent.id),
-      },
-    });
+    try {
+      await host.atoms.update(plan.id as AtomId, {
+        plan_state: 'approved',
+        metadata: {
+          approved_via: String(approvePolicy.atomId ?? 'pol-plan-autonomous-intent-approve'),
+          approved_at: nowIso,
+          approved_intent_id: String(intent.id),
+        },
+        expectedRevision: latest.revision ?? 0,
+      });
+    } catch (err) {
+      if (err instanceof ConflictError) continue;
+      throw err;
+    }
     await host.auditor.log({
       kind: 'plan.approved-by-intent',
       principal_id: intent.principal_id as PrincipalId,
