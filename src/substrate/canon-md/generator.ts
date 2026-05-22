@@ -91,6 +91,10 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   'claim-attestation-rejected',
   'claim-stalled',
   'claim-escalated',
+  // Reaper sweep heartbeat atoms (operational telemetry, L0, never
+  // L3 canon; the canon applier filters to L3 and these never render
+  // to a CLAUDE.md target).
+  'claim-reaper-sweep-completed',
 ];
 
 const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
@@ -169,6 +173,12 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   'claim-attestation-rejected': 'Claim Attestations Rejected',
   'claim-stalled': 'Claims Stalled',
   'claim-escalated': 'Claims Escalated',
+  // Reaper sweep heartbeat atoms are operational telemetry written by
+  // the claim-reaper orchestrator at every non-halted tick. L0; never
+  // reaches the rendered canon target since the applier filters to L3.
+  // Heading exists for deterministic ordering when a debug tool dumps
+  // non-L3 atoms.
+  'claim-reaper-sweep-completed': 'Claim Reaper Sweeps Completed',
 };
 
 export interface RenderOptions {

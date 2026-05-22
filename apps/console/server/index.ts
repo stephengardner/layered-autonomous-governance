@@ -172,7 +172,11 @@ import {
 } from './pipeline-abandon';
 import {
   buildBotIdentityHealth,
+  buildSystemHealth,
   type BotIdentityHealthResponse,
+  type BuildSystemHealthOpts,
+  type ProbeAtom,
+  type SystemHealthResponse,
 } from './system-health';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -193,6 +197,211 @@ const ATOMS_DIR = join(LAG_DIR, 'atoms');
 const PRINCIPALS_DIR = join(LAG_DIR, 'principals');
 
 const PORT = Number.parseInt(process.env.LAG_CONSOLE_BACKEND_PORT ?? '9081', 10);
+
+/*
+ * System Health aggregator cache. Hot path: an operator on the System
+ * Health page refreshes every 30s. Cold path: rapid manual refresh
+ * presses or multiple browser tabs. Both should hit cloudflared +
+ * statfs + GitHub at most once per 5 seconds. The 5s window is below
+ * the page's 30s refresh cadence so a real refresh never sees stale
+ * data; bursty operator clicks are absorbed.
+ *
+ * Cache invalidation is purely time-based; the underlying data
+ * (token expiry / tunnel hostname / free-space) changes on its own
+ * cadence and is not driven by user-visible events.
+ */
+const SYSTEM_HEALTH_CACHE_TTL_MS = 5_000;
+let systemHealthCacheEntry: {
+  readonly expiresAt: number;
+  readonly value: Promise<SystemHealthResponse>;
+} | null = null;
+
+async function getCachedSystemHealth(): Promise<SystemHealthResponse> {
+  const now = Date.now();
+  if (systemHealthCacheEntry !== null && systemHealthCacheEntry.expiresAt > now) {
+    return systemHealthCacheEntry.value;
+  }
+  /*
+   * Read the cloudflared metrics port from env. cloudflared default
+   * is localhost:20241 (the first in its 20241..20245 sequence) so a
+   * fresh install with no env var hits the right port; an operator
+   * running on a custom metrics port sets LAG_TUNNEL_METRICS_PORT.
+   */
+  const metricsPortRaw = process.env.LAG_TUNNEL_METRICS_PORT;
+  const metricsPort = metricsPortRaw && /^\d+$/.test(metricsPortRaw)
+    ? Number.parseInt(metricsPortRaw, 10)
+    : undefined;
+  /*
+   * Install the in-flight Promise into the cache BEFORE the first
+   * await. Concurrent callers in the 5s window after expiration must
+   * see the same Promise (so they share one round of cloudflared +
+   * statfs + GitHub work).
+   *
+   * TTL anchor: the cache entry's expiresAt is RE-ANCHORED to
+   * `Date.now() + TTL` from inside the async IIFE, AFTER
+   * buildSystemHealth resolves. This measures freshness-since-
+   * resolution, not freshness-since-cache-fill, so a slow probe
+   * (a 3-second GitHub round-trip) does not shrink the effective
+   * freshness window. An initial expiresAt is also set BEFORE the
+   * first await so a request that races in while the IIFE is
+   * pending still hits the in-flight Promise rather than triggering
+   * a duplicate fill.
+   *
+   * On rejection we evict so the next caller retries. A cached
+   * rejection would have served stale errors to every poll for the
+   * entire TTL window, amplifying transient outages into dashboard-
+   * visible blackouts.
+   *
+   * The canon-resolved reaper cadence lives inside the async IIFE
+   * so the canon read benefits from the same dedupe.
+   */
+  // Declared with definite-assignment assertion (`!`) because the
+  // IIFE body references `value` for the identity check on
+  // `systemHealthCacheEntry.value`; `const value = (async () => { ...
+  // value ... })();` raises TS2454 (use-before-assigned) and a plain
+  // `let value;` still raises the same diagnostic after the first
+  // `await` inside the IIFE. Every closure reference here runs after
+  // `value` has been synchronously assigned the IIFE Promise.
+  let value!: Promise<SystemHealthResponse>;
+  value = (async () => {
+    const cadenceMs = await resolveClaimReaperCadenceMsFromCanon();
+    /*
+     * Source heartbeat atoms from the in-memory atom index when it
+     * has primed successfully. The Console maintains a fs-watcher-
+     * backed projection of .lag/atoms/ so reads are O(1) and do not
+     * hit disk on the hot path. A per-request readdir+readFile
+     * sweep would scale linearly with atom-store size; at the
+     * 30k-atoms-per-hour org-ceiling cited in canon
+     * `dev-indie-floor-org-ceiling` that becomes disk-bound.
+     *
+     * BUT: when `atomIndexPrimed` is false (cold start in progress,
+     * OR priming failed because the atoms directory is unreadable),
+     * the Console's `readAllAtoms()` returns [] silently. Using
+     * that here would surface as "No reaper heartbeat observed"
+     * when the real failure is "atom store unreadable", pointing
+     * the operator at the wrong subsystem. Skip the loadAtoms
+     * override in that case so `buildSystemHealth` falls back to
+     * its own default (`defaultLoadClaimReaperHeartbeatAtoms`); that
+     * loader THROWS on readdir failure and the probe translates the
+     * throw into the correct "Atom load failed" detail.
+     */
+    /*
+     * Gate the indexed loader on BOTH `atomIndexPrimed` (priming
+     * finished) AND `atomIndexReadable` (priming actually succeeded).
+     * `atomIndexPrimed` flips true even when the initial readdir
+     * fails, so a check on it alone would install the empty in-
+     * memory map as the loader and the probe would regress to
+     * "No reaper heartbeat observed" instead of surfacing the real
+     * atom-store read failure. The readable flag distinguishes the
+     * healthy-and-empty case from the unreadable case.
+     */
+    const indexedLoader: (() => Promise<ReadonlyArray<ProbeAtom>>) | undefined =
+      atomIndexPrimed && atomIndexReadable
+        ? async () =>
+          (await readAllAtoms())
+            .filter((a) => a.type === 'claim-reaper-sweep-completed')
+            .map((a) => ({
+              id: a.id,
+              type: a.type,
+              created_at: a.created_at,
+              metadata: a.metadata ?? null,
+            }))
+        : undefined;
+    const claimReaperOpts: BuildSystemHealthOpts['claimReaperOpts'] = {
+      ...(cadenceMs !== undefined ? { cadenceMs } : {}),
+      ...(indexedLoader !== undefined ? { loadAtoms: indexedLoader } : {}),
+    };
+    const result = await buildSystemHealth(LAG_DIR, ATOMS_DIR, {
+      claimReaperOpts,
+      ...(metricsPort !== undefined ? { tunnelOpts: { metricsPort } } : {}),
+    });
+    /*
+     * Re-anchor the TTL at resolution time. Identity-check the
+     * cache slot so a later fill that replaced our entry while
+     * buildSystemHealth was in flight does not get overwritten by
+     * our slower resolution.
+     */
+    if (systemHealthCacheEntry !== null && systemHealthCacheEntry.value === value) {
+      systemHealthCacheEntry = {
+        expiresAt: Date.now() + SYSTEM_HEALTH_CACHE_TTL_MS,
+        value,
+      };
+    }
+    return result;
+  })();
+  // Pre-resolution cache fill so concurrent callers in the post-
+  // expiration window share the in-flight Promise. The IIFE above
+  // overwrites this with a resolution-time-anchored expiresAt once
+  // buildSystemHealth settles, so this initial expiresAt is a
+  // lower bound only.
+  systemHealthCacheEntry = {
+    expiresAt: Date.now() + SYSTEM_HEALTH_CACHE_TTL_MS,
+    value,
+  };
+  // On rejection, evict so the next caller does a fresh fill rather
+  // than re-throwing the cached error for 5s. The identity check
+  // guards against the rare race where a later cache fill replaced
+  // our entry before our promise rejected; we only clear OUR own
+  // entry.
+  void value.catch(() => {
+    if (systemHealthCacheEntry !== null && systemHealthCacheEntry.value === value) {
+      systemHealthCacheEntry = null;
+    }
+  });
+  return value;
+}
+
+/*
+ * Resolve the claim-reaper cadence (ms) from the in-memory atom
+ * index. Mirrors the substrate's `resolveReaperCadenceMs` reader at
+ * src/substrate/policy/claim-reaper-config.ts but reads from the
+ * Console's projection rather than calling through a Host bundle
+ * (the Console server intentionally has zero runtime dependency on
+ * the framework's compiled dist/).
+ *
+ * Resolution rules:
+ *   - Scan L3 atoms whose metadata.policy.kind === 'claim-reaper-
+ *     cadence-ms'; pick the most recently created clean unsuperseded
+ *     one (mirrors the substrate reader's tie-break).
+ *   - Validate metadata.policy.value is a finite positive number.
+ *   - Return undefined (NOT a default) when no clean policy atom is
+ *     present so the probe's own DEFAULT_CLAIM_REAPER_CADENCE_MS
+ *     kicks in. Returning a synthesized default here would mask the
+ *     missing-canon-policy signal the audit chain depends on.
+ */
+async function resolveClaimReaperCadenceMsFromCanon(): Promise<number | undefined> {
+  const atoms = await readAllAtoms();
+  let bestAtom: Atom | null = null;
+  let bestCreatedAt = '';
+  for (const a of atoms) {
+    if (a.layer !== 'L3') continue;
+    if (a.taint && a.taint !== 'clean') continue;
+    if (Array.isArray(a.superseded_by) && a.superseded_by.length > 0) continue;
+    const meta = a.metadata;
+    if (!meta || typeof meta !== 'object') continue;
+    const policy = (meta as Record<string, unknown>)['policy'];
+    if (!policy || typeof policy !== 'object') continue;
+    const kind = (policy as Record<string, unknown>)['kind'];
+    if (kind !== 'claim-reaper-cadence-ms') continue;
+    const createdAt = a.created_at ?? '';
+    if (createdAt > bestCreatedAt) {
+      bestCreatedAt = createdAt;
+      bestAtom = a;
+    }
+  }
+  if (bestAtom === null) return undefined;
+  const policy = (bestAtom.metadata as Record<string, unknown>)['policy'] as Record<string, unknown>;
+  const value = policy['value'];
+  if (
+    typeof value !== 'number'
+    || !Number.isFinite(value)
+    || !Number.isInteger(value)
+    || value <= 0
+  ) {
+    return undefined;
+  }
+  return value;
+}
 
 // ---------------------------------------------------------------------------
 // Atom types (re-declared here so server + frontend stay decoupled).
@@ -253,6 +462,21 @@ interface Principal {
 
 const atomIndex = new Map<string, Atom>();
 let atomIndexPrimed = false;
+/*
+ * Separate flag tracking whether `primeAtomIndex` successfully read
+ * the atoms directory. `atomIndexPrimed` flips to true even when the
+ * initial readdir() fails (so subsequent requests don't keep hitting
+ * the disk fallback in `readAllAtoms`); without a separate flag, a
+ * consumer checking only `atomIndexPrimed` cannot distinguish "index
+ * is healthy and ready to read" from "priming failed and the index
+ * is empty because we cannot reach the atoms directory."
+ *
+ * Used by `getCachedSystemHealth` to decide whether to install an
+ * in-memory loader (when readable) or let the probe fall through to
+ * its filesystem-backed default which surfaces the real ENOENT to
+ * the operator.
+ */
+let atomIndexReadable = false;
 
 async function refreshAtomInIndex(filename: string): Promise<void> {
   try {
@@ -271,13 +495,15 @@ async function primeAtomIndex(): Promise<void> {
   let entries: string[];
   try {
     entries = await readdir(ATOMS_DIR);
+    atomIndexReadable = true;
   } catch (err) {
     console.error(`[backend] could not read ${ATOMS_DIR}: ${(err as Error).message}`);
+    atomIndexReadable = false;
     atomIndexPrimed = true;
     return;
   }
   const files = entries.filter((n) => n.endsWith('.json'));
-  // Parallel reads — startup cost is bounded by disk, not sequential I/O.
+  // Parallel reads: startup cost is bounded by disk, not sequential I/O.
   await Promise.all(files.map((f) => refreshAtomInIndex(f)));
   atomIndexPrimed = true;
   console.log(`[backend] atom index primed with ${atomIndex.size} entries`);
@@ -4038,9 +4264,43 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
      * console-allowlisted origin may read the surface because
      * identity health is operator-readiness telemetry, not secret
      * material (no tokens are returned to the client).
+     *
+     * Back-compat: this endpoint pre-dates the aggregated
+     * /api/system-health.all surface and stays live so existing
+     * clients (and the System Health page's older builds) keep
+     * working. New consumers should use the aggregated endpoint.
      */
     try {
       const data: BotIdentityHealthResponse = await buildBotIdentityHealth(LAG_DIR);
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'system-health-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/system-health.all' && req.method === 'POST') {
+    /*
+     * Aggregated System Health surface: bot-identity rows plus the
+     * three substrate probes (claim-reaper cadence, tunnel
+     * reachability, atom-store free space). The frontend hits this
+     * endpoint instead of four separate ones so a single 30s refresh
+     * fetches the complete page state.
+     *
+     * Probes are independent and run concurrently inside
+     * `buildSystemHealth`; the aggregate latency is bounded by the
+     * slowest one (normally the GitHub token-mint round-trip).
+     *
+     * Cache: the System Health page polls at 30s; an aggressive
+     * refresh (operator clicking Refresh repeatedly) would hit
+     * cloudflared + statfs + GitHub on every press. The 5s in-memory
+     * cache below absorbs that without introducing a tunable knob;
+     * the staleness window is below the 30s page refresh so an
+     * operator's click cadence never sees stale state on a real
+     * refresh.
+     */
+    try {
+      const data = await getCachedSystemHealth();
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'system-health-failed', (err as Error).message);

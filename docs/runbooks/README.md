@@ -14,8 +14,10 @@ Per `docs/audit/2026-05-22-perpetual-self-audit-v0.md` finding P1: the substrate
 
 | Incident | Severity | Runbook |
 |---|---|---|
+| Atom store out of space (ENOSPC) | High | [atom-store-enospc.md](atom-store-enospc.md) |
 | Bot token expired mid-PR | High | [bot-token-expired.md](bot-token-expired.md) |
 | Claim-reaper not running | High | [reaper-not-running.md](reaper-not-running.md) |
+| Cloudflared tunnel disconnected | Medium | [tunnel-disconnected.md](tunnel-disconnected.md) |
 | CodeRabbit silent-skip | Medium | [cr-silent-skip.md](cr-silent-skip.md) |
 | Dispatch failed (drafter refusal, budget, worktree) | High | [dispatch-failed.md](dispatch-failed.md) |
 | Pipeline stage timeout | Medium | [pipeline-stage-timeout.md](pipeline-stage-timeout.md) |
@@ -24,7 +26,7 @@ Per `docs/audit/2026-05-22-perpetual-self-audit-v0.md` finding P1: the substrate
 
 ## Coverage gap
 
-The audit named 8-10 most-common 3am incidents. With this expansion the count is 7. The remaining 1-3 (atom-store ENOSPC, tunnel disconnected, PR-landing actor stuck) are queued for follow-up PRs.
+The audit named 8-10 most-common 3am incidents. With the atom-store ENOSPC + tunnel disconnected additions the count is 9. The remaining 1 (PR-landing actor stuck) is queued for a follow-up PR.
 
 ## Discipline
 

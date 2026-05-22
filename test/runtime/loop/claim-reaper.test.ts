@@ -966,4 +966,61 @@ describe('runClaimReaperTick', () => {
     expect(outcome).toBe('skipped');
     expect(adapter.calls.length).toBe(0);
   });
+
+  it('writes a claim-reaper-sweep-completed heartbeat atom when reaperPrincipal is supplied', async () => {
+    /*
+     * The orchestrator threads reaperPrincipal through from
+     * LoopOptions so the heartbeat audit chain is attributable to a
+     * real principal. Verify the heartbeat lands with the expected
+     * type + scope + principal_id when the option is set.
+     */
+    const host = createMemoryHost({ clockStart: NOW });
+    await seedAllPolicies(host);
+    await seedPrincipal(host, 'lag-loop');
+    const result = await runClaimReaperTick(host, {
+      stopSentinel: () => false,
+      reaperPrincipal: 'lag-loop' as PrincipalId,
+    });
+    expect(result.halted).toBeFalsy();
+    const heartbeats = (await host.atoms.query(
+      { type: ['claim-reaper-sweep-completed'] },
+      100,
+    )).atoms;
+    expect(heartbeats.length).toBe(1);
+    const hb = heartbeats[0]!;
+    expect(hb.principal_id).toBe('lag-loop');
+    expect(hb.scope).toBe('global');
+    expect(hb.layer).toBe('L0');
+    expect(hb.taint).toBe('clean');
+    const meta = hb.metadata.reaper_sweep as {
+      readonly detected: number;
+      readonly recovered: number;
+      readonly escalated: number;
+    };
+    expect(meta.detected).toBe(result.detected);
+    expect(meta.recovered).toBe(result.recovered);
+    expect(meta.escalated).toBe(result.escalated);
+  });
+
+  it('skips the heartbeat write when no reaperPrincipal is supplied', async () => {
+    /*
+     * Substrate never invents a principal id. When the caller omits
+     * reaperPrincipal (tests exercising orchestrator counts in
+     * isolation, or a deployment that has not provisioned the
+     * principal yet) the heartbeat write is skipped silently and the
+     * orchestrator still returns its counts.
+     */
+    const host = createMemoryHost({ clockStart: NOW });
+    await seedAllPolicies(host);
+    await seedPrincipal(host, 'code-author');
+    const result = await runClaimReaperTick(host, {
+      stopSentinel: () => false,
+    });
+    expect(result.halted).toBeFalsy();
+    const heartbeats = (await host.atoms.query(
+      { type: ['claim-reaper-sweep-completed'] },
+      100,
+    )).atoms;
+    expect(heartbeats.length).toBe(0);
+  });
 });

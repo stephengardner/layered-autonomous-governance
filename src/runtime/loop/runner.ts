@@ -114,6 +114,17 @@ export class LoopRunner {
   private readonly canonTargets: ReadonlyArray<ResolvedCanonTarget>;
   private readonly onTick: ((report: LoopTickReport) => void | Promise<void>) | null;
   private readonly reaperPrincipal: PrincipalId | null;
+  /*
+   * Heartbeat-attribution principal sourced from
+   * `LoopOptions.reaperPrincipal` independently of `runReaperPass`.
+   * The plan-reaper requires this field at construction (and uses
+   * `this.reaperPrincipal`, set only when `runReaperPass: true`);
+   * the claim-reaper heartbeat needs the same identity even when a
+   * deployment enables the claim-reaper pass standalone with the
+   * plan-reaper off. Capturing the raw value here decouples the two
+   * passes' attribution from each other.
+   */
+  private readonly heartbeatPrincipal: PrincipalId | null;
   /**
    * Constructor-validated env / CLI fallback for the reaper TTL pair.
    * The actual TTLs used per tick come from `resolveReaperTtls`, which
@@ -157,6 +168,15 @@ export class LoopRunner {
    * ticks do not re-hit the store.
    */
   private reaperPrincipalChecked: boolean = false;
+  /*
+   * Parallel guard for the heartbeat principal. Same shape and same
+   * semantics as `reaperPrincipalChecked`: the first claim-reaper
+   * pass that needs the heartbeat principal verifies it exists in
+   * the host's PrincipalStore, then caches the result so subsequent
+   * ticks do not re-hit the store. A miss does NOT flip the flag so
+   * a later (re-)provision is picked up on the next tick.
+   */
+  private heartbeatPrincipalChecked: boolean = false;
   /**
    * Refresher seam for the pr-observation refresh pass. `null` when
    * the pass is disabled OR when the caller did not wire a refresher
@@ -431,6 +451,19 @@ export class LoopRunner {
       this.pipelineReaperEnvTtls = DEFAULT_PIPELINE_REAPER_TTLS;
       this.pipelineReaperEnvOverride = false;
     }
+    /*
+     * Capture the heartbeat-attribution principal regardless of
+     * runReaperPass. The claim-reaper pass can be enabled standalone
+     * (canon policy `pol-loop-pass-claim-reaper-default`) and its
+     * heartbeat audit-attribution must work in that mode. Falls back
+     * to null when the option is empty / absent; the orchestrator
+     * skips the heartbeat write rather than fabricating a principal.
+     */
+    const heartbeatRp = options.reaperPrincipal;
+    this.heartbeatPrincipal =
+      typeof heartbeatRp === 'string' && heartbeatRp.trim().length > 0
+        ? (heartbeatRp as PrincipalId)
+        : null;
     const principal = this.options.principalId as PrincipalId;
     // `promotionThresholds` is passed through so callers can opt out of
     // the L3 requireValidation default (e.g. when a ValidatorRegistry
@@ -1519,7 +1552,44 @@ export class LoopRunner {
   private async claimReaperPass(): Promise<
     NonNullable<LoopTickReport['claimReaperReport']>
   > {
-    const result: RunClaimReaperTickResult = await runClaimReaperTick(this.host);
+    /*
+     * Source the heartbeat principal from the dedicated
+     * heartbeatPrincipal field captured at construction time. That
+     * field reads from `options.reaperPrincipal` independently of
+     * `runReaperPass`, so a deployment that enables the claim-reaper
+     * pass standalone (with the plan-reaper off) still gets the
+     * right heartbeat attribution. When the option is absent the
+     * orchestrator skips the heartbeat write rather than fabricating
+     * a principal.
+     *
+     * Validation: verify the principal exists in the host's
+     * PrincipalStore on the first pass that uses it. A misconfigured
+     * wiring fails loud (an error in the tick's errors[] array)
+     * rather than emitting audit rows attributed to a non-existent
+     * identity. Same shape as `reaperPass` above; we cache the check
+     * so subsequent ticks do not re-hit the store. A miss does NOT
+     * flip the checked flag so a later (re-)provision is picked up
+     * on the next tick.
+     */
+    let heartbeatPrincipal: PrincipalId | undefined;
+    if (this.heartbeatPrincipal !== null) {
+      if (!this.heartbeatPrincipalChecked) {
+        const found = await this.host.principals.get(this.heartbeatPrincipal);
+        if (found === null) {
+          throw new Error(
+            `LoopRunner: heartbeat reaperPrincipal '${String(this.heartbeatPrincipal)}' not found in host.principals`,
+          );
+        }
+        this.heartbeatPrincipalChecked = true;
+      }
+      heartbeatPrincipal = this.heartbeatPrincipal;
+    }
+    const result: RunClaimReaperTickResult = await runClaimReaperTick(
+      this.host,
+      heartbeatPrincipal !== undefined
+        ? { reaperPrincipal: heartbeatPrincipal }
+        : undefined,
+    );
     // Only surface `halted` when actually true so the JSON tick
     // report stays one-line cleaner on the common case (every
     // non-STOP tick).

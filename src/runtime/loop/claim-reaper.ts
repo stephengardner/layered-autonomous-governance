@@ -198,6 +198,17 @@ export interface RunClaimReaperTickOptions {
    * (post-increment) AND `session_atom_ids.length > 0`.
    */
   readonly resumeAdapter?: AgentLoopAdapter;
+  /**
+   * Principal id the reaper attributes the per-tick heartbeat atom
+   * to. Threaded from `LoopOptions.reaperPrincipal` by `LoopRunner`
+   * so the heartbeat audit chain is attributable to a real principal
+   * in the host's PrincipalStore. When omitted (today: tests that
+   * exercise the orchestrator directly), the heartbeat write is
+   * skipped so the substrate never invents an identity. The
+   * mechanism stays pluggable: the substrate accepts an id, never
+   * synthesizes one.
+   */
+  readonly reaperPrincipal?: PrincipalId;
 }
 
 export interface RunClaimReaperTickResult {
@@ -221,6 +232,15 @@ export interface RunClaimReaperTickResult {
  * - Phase B drains the stalled queue: cap-exceeded claims escalate +
  *   abandon; under-cap claims recover via the atomic recovery-step +
  *   dispatch.
+ * - Heartbeat: when neither phase threw, write one
+ *   `claim-reaper-sweep-completed` atom carrying the per-tick counts.
+ *   The atom is the substrate-visible signal that the reaper pass
+ *   actually ran. Operators (and any consumer querying the atom
+ *   store) pattern-match an aging heartbeat to "the reaper has
+ *   stopped" instead of reading tea leaves out of activity-feed
+ *   silence. Surfacing the absence in a dashboard or other operator-
+ *   readiness projection is a consumer concern; the substrate only
+ *   guarantees the atom is written.
  */
 export async function runClaimReaperTick(
   host: Host,
@@ -238,11 +258,102 @@ export async function runClaimReaperTick(
   }
   const detected = await detectStalledClaims(host);
   const drain = await drainStalledQueue(host, options);
+  // Best-effort heartbeat write. A failure here MUST NOT poison the
+  // tick: the reaper has already done its real work via Phase A and
+  // Phase B; the heartbeat is observability, not a load-bearing
+  // governance signal. Catch + log so a downstream atom-store
+  // outage does not surface as a reaper-tick exception that the
+  // LoopRunner counts toward its error budget.
+  //
+  // Skip the write when no reaperPrincipal was supplied. The
+  // substrate never invents a principal id; callers thread one in or
+  // get no heartbeat. Tests exercising the orchestrator directly
+  // typically skip the principal because they assert on the counts
+  // returned, not the heartbeat side-effect.
+  if (options?.reaperPrincipal !== undefined) {
+    try {
+      await writeReaperSweepCompletedAtom(host, options.reaperPrincipal, {
+        detected: detected.length,
+        recovered: drain.recovered,
+        escalated: drain.escalated,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[claim-reaper] heartbeat write failed: ${(err as Error).message}`,
+      );
+    }
+  }
   return {
     detected: detected.length,
     recovered: drain.recovered,
     escalated: drain.escalated,
   };
+}
+
+/**
+ * Write the `claim-reaper-sweep-completed` heartbeat atom. The id is
+ * keyed by a host-clock timestamp + short random suffix so concurrent
+ * reaper ticks (rare; the LoopRunner serializes them) produce
+ * distinct ids. The metadata block carries the per-tick counts so
+ * downstream consumers (operator-readiness projections, audit
+ * tooling) can read sweep activity without joining against
+ * `claim-stalled` / `claim-escalated` atoms.
+ *
+ * Layer is L0: the heartbeat is an observation, not canon.
+ * Provenance kind is `agent-inferred` so the audit chain shows the
+ * reaper itself as the source.
+ *
+ * Scope is 'global' because the heartbeat is a deployment-wide
+ * operational signal, not bound to a project; an org-ceiling
+ * deployment running multiple projects through one LoopRunner gets
+ * one heartbeat stream per tick, not one per project.
+ *
+ * `principalId` is supplied by the caller (typically
+ * `LoopOptions.reaperPrincipal`); the substrate never synthesizes
+ * a principal id.
+ */
+async function writeReaperSweepCompletedAtom(
+  host: Host,
+  principalId: PrincipalId,
+  counts: { readonly detected: number; readonly recovered: number; readonly escalated: number },
+): Promise<void> {
+  const now = host.clock.now();
+  const id = `claim-reaper-sweep-completed-${now.replace(/[^0-9]/g, '')}-${randomShortSuffix()}` as AtomId;
+  await host.atoms.put({
+    schema_version: 1,
+    id,
+    content: `reaper-sweep detected=${counts.detected} recovered=${counts.recovered} escalated=${counts.escalated}`,
+    type: 'claim-reaper-sweep-completed',
+    layer: 'L0',
+    provenance: {
+      kind: 'agent-inferred',
+      source: { agent_id: 'claim-reaper' },
+      derived_from: [],
+    },
+    confidence: 1,
+    created_at: now,
+    last_reinforced_at: now,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'global',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'verified',
+      last_validated_at: now,
+    },
+    principal_id: principalId,
+    taint: 'clean',
+    metadata: {
+      reaper_sweep: {
+        detected: counts.detected,
+        recovered: counts.recovered,
+        escalated: counts.escalated,
+      },
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
