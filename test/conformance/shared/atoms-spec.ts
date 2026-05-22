@@ -293,17 +293,22 @@ export function runAtomsSpec(label: string, factory: TargetFactory): void {
       expect(updated.revision).toBe(1);
     });
 
-    it('batchUpdate rejects expectedRevision (CAS undefined over a batch)', async () => {
-      await host.atoms.put(sampleAtom({ id: 'cas-batch-1' as AtomId, principal_id: 'batch-target' as PrincipalId }));
-      await host.atoms.put(sampleAtom({ id: 'cas-batch-2' as AtomId, principal_id: 'batch-target' as PrincipalId }));
+    it('batchUpdate rejects expectedRevision and leaves matched atoms unchanged', async () => {
+      await host.atoms.put(sampleAtom({ id: 'cas-batch-1' as AtomId, principal_id: 'batch-target' as PrincipalId, taint: 'clean' }));
+      await host.atoms.put(sampleAtom({ id: 'cas-batch-2' as AtomId, principal_id: 'batch-target' as PrincipalId, taint: 'clean' }));
       // A single expectedRevision value cannot gate N atoms each with
-      // their own revision; adapters reject at the substrate boundary.
+      // their own revision; adapters reject at the substrate boundary
+      // BEFORE any matched atom mutates. The post-assertions pin the
+      // "reject at the boundary" contract; a future adapter that
+      // partially applied the batch before throwing would fail these.
       await expect(
         host.atoms.batchUpdate(
           { principal_id: ['batch-target' as PrincipalId] },
           { taint: 'tainted', expectedRevision: 0 },
         ),
       ).rejects.toThrow(/expectedRevision/);
+      expect((await host.atoms.get('cas-batch-1' as AtomId))?.taint).toBe('clean');
+      expect((await host.atoms.get('cas-batch-2' as AtomId))?.taint).toBe('clean');
     });
   });
 }
