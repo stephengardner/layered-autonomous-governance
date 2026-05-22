@@ -61,9 +61,17 @@ describe('sub-agent-stall-watch.mjs exit-code contract', () => {
     // working-tree-edit-within-deadline (fresh, rule 2).
     const wt = join(tmpDir, 'fresh-wt');
     mkdirSync(wt, { recursive: true });
-    spawnSync('git', ['init', '--initial-branch=main'], { cwd: wt });
-    spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: wt });
-    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: wt });
+    // Assert each git bootstrap exits 0 so a setup-failure cannot
+    // pass the smoke test via the "no worktrees" path. Per CR finding:
+    // without these assertions a missing git binary or a permission
+    // error would silently fall through to scanAllWorktrees returning
+    // [] and exit 0 -- a false-positive smoke pass.
+    const init = spawnSync('git', ['init', '--initial-branch=main'], { cwd: wt });
+    expect(init.status).toBe(0);
+    const cfgEmail = spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: wt });
+    expect(cfgEmail.status).toBe(0);
+    const cfgName = spawnSync('git', ['config', 'user.name', 'Test'], { cwd: wt });
+    expect(cfgName.status).toBe(0);
     writeFileSync(join(wt, 'README.md'), 'recent work in progress');
 
     const scriptPath = join(

@@ -213,8 +213,15 @@ export function scanAllWorktrees(worktreesDir, opts = {}) {
     // stable output so the watcher's printed list and the JSON shape
     // are reproducible across machines and across runs on the same
     // machine after a rebuild.
+    //
+    // Codepoint comparison (< / >) instead of localeCompare() so the
+    // order does not depend on the host locale. localeCompare without
+    // an explicit locale delegates to the runtime's default (en-US,
+    // da-DK, etc.), which can flip the order of accented or non-ASCII
+    // worktree names across machines. Worktree names are ASCII-only
+    // in practice but the substrate must not assume it.
     entries = readdirSync(worktreesDir, { withFileTypes: true })
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   } catch {
     return [];
   }
