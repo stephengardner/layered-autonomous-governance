@@ -44,9 +44,11 @@
  *   workspace via `git cat-file -e <sha>^{commit}` (peel forces the
  *   resolved object to be a commit, not a blob/tree/tag); a miss maps
  *   to `agentic/sha-verification-failed` and short-circuits before
- *   GhClient touches the remote. The default verifier wraps
- *   `child_process.execFile`; tests inject a fake via the optional
- *   `verifyCommitExists` config seam.
+ *   GhClient touches the remote. Resolution order: the workspace
+ *   provider's `verifyCommitExists` seam (preferred, lets non-git
+ *   providers implement native semantics), then the optional
+ *   `verifyCommitExists` config override (used by tests), then the
+ *   embedded `child_process.execFile` git default.
  * - Workspace cleanup-on-error is non-negotiable: the try/finally in
  *   execute() ALWAYS calls release(), even if the adapter throws.
  *   Tests pin this; a leak here would burn disk + leave bot creds
@@ -121,7 +123,10 @@ export interface AgenticExecutorConfig {
   /** Draft PR by default; operator can flip per deployment. */
   readonly draft?: boolean;
   /**
-   * Optional override for the commit-existence verifier. Defaults to
+   * Optional override for the commit-existence verifier. Resolution
+   * order at runtime: the workspace provider's `verifyCommitExists`
+   * seam (preferred when the provider declares it), then this
+   * override (test-injection point), then the embedded git default
    * `git cat-file -e <sha>^{commit}` via `child_process.execFile`
    * (the `^{commit}` peel forces git to confirm the resolved object
    * is a commit, not a blob/tree/tag). The default
@@ -218,9 +223,19 @@ export function buildAgenticCodeAuthorExecutor(
         // the claimed commit. Failures short-circuit BEFORE
         // GhClient.createPr fires so no remote artifact is ever
         // produced for an unverified commit.
-        const verify = config.verifyCommitExists ?? defaultVerifyCommitExists;
+        // Prefer the provider-supplied seam (substrate-clean: non-git
+        // workspace providers implement the check in their native
+        // semantics), fall back to the test-injectable override, then
+        // to the embedded git default. Order is: provider > override >
+        // default; first match wins.
         try {
-          await verify(workspace.path, commitSha);
+          if (typeof config.workspaceProvider.verifyCommitExists === 'function') {
+            await config.workspaceProvider.verifyCommitExists(workspace, commitSha);
+          } else if (config.verifyCommitExists !== undefined) {
+            await config.verifyCommitExists(workspace.path, commitSha);
+          } else {
+            await defaultVerifyCommitExists(workspace.path, commitSha);
+          }
         } catch (err) {
           return {
             kind: 'error',

@@ -526,6 +526,86 @@ describe('AgenticCodeAuthorExecutor SHA verification', () => {
     // other failure mode.
     expect(released.count).toBe(1);
   });
+
+  it('prefers provider.verifyCommitExists over the config override', async () => {
+    // Substrate-purity check: when a provider declares the seam, the
+    // executor calls IT and NOT the test override. This is what lets
+    // non-git workspace providers implement the check natively.
+    const providerCalls: Array<{ wsId: string; sha: string }> = [];
+    const overrideCalls: Array<{ path: string; sha: string }> = [];
+    const provider: WorkspaceProvider = {
+      acquire: async () => ({ id: 'ws-pref', path: '/tmp/lag-pref', baseRef: 'main' }),
+      release: async () => undefined,
+      verifyCommitExists: async (workspace, sha) => {
+        providerCalls.push({ wsId: workspace.id, sha });
+      },
+    };
+    const adapter = stubAdapter({
+      kind: 'completed',
+      sessionAtomId: 's' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'verifiable-sha', branchName: 'agentic/pref' },
+    });
+    const verifyCommitExists = async (workspacePath: string, sha: string) => {
+      overrideCalls.push({ path: workspacePath, sha });
+      throw new Error('override should not be reached');
+    };
+    const ghStub = {
+      rest: async () => ({
+        number: 9,
+        html_url: 'https://example.test/pr/9',
+        url: 'https://example.test/api/pr/9',
+        node_id: 'PR_p',
+        state: 'open',
+      }),
+    } as unknown as GhClient;
+    const result = await run(buildExec({
+      agentLoop: adapter,
+      workspaceProvider: provider,
+      ghClient: ghStub,
+      verifyCommitExists,
+    }));
+    expect(result.kind).toBe('dispatched');
+    expect(providerCalls).toEqual([{ wsId: 'ws-pref', sha: 'verifiable-sha' }]);
+    expect(overrideCalls).toEqual([]);
+  });
+
+  it('falls back to the config override when provider does not declare the seam', async () => {
+    // Back-compat path: providers that have not yet implemented the
+    // seam continue to use the test-injectable override. This keeps
+    // existing adapters working without breaking changes.
+    const overrideCalls: Array<{ path: string; sha: string }> = [];
+    const provider: WorkspaceProvider = {
+      acquire: async () => ({ id: 'ws-fb', path: '/tmp/lag-fb', baseRef: 'main' }),
+      release: async () => undefined,
+    };
+    const adapter = stubAdapter({
+      kind: 'completed',
+      sessionAtomId: 's' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'fb-sha', branchName: 'agentic/fb' },
+    });
+    const verifyCommitExists = async (workspacePath: string, sha: string) => {
+      overrideCalls.push({ path: workspacePath, sha });
+    };
+    const ghStub = {
+      rest: async () => ({
+        number: 11,
+        html_url: 'https://example.test/pr/11',
+        url: 'https://example.test/api/pr/11',
+        node_id: 'PR_f',
+        state: 'open',
+      }),
+    } as unknown as GhClient;
+    const result = await run(buildExec({
+      agentLoop: adapter,
+      workspaceProvider: provider,
+      ghClient: ghStub,
+      verifyCommitExists,
+    }));
+    expect(result.kind).toBe('dispatched');
+    expect(overrideCalls).toEqual([{ path: '/tmp/lag-fb', sha: 'fb-sha' }]);
+  });
 });
 
 describe('AgenticCodeAuthorExecutor policy resolution', () => {
