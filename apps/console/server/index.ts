@@ -174,6 +174,7 @@ import {
   buildBotIdentityHealth,
   buildSystemHealth,
   type BotIdentityHealthResponse,
+  type BuildSystemHealthOpts,
   type ProbeAtom,
   type SystemHealthResponse,
 } from './system-health';
@@ -265,33 +266,43 @@ async function getCachedSystemHealth(): Promise<SystemHealthResponse> {
   value = (async () => {
     const cadenceMs = await resolveClaimReaperCadenceMsFromCanon();
     /*
-     * Source heartbeat atoms from the in-memory atom index. The
-     * Console maintains a fs-watcher-backed projection of
-     * .lag/atoms/ (the primed Map<filename, Atom>) so reads are
-     * O(1) and do not hit disk on the hot path. A per-request
-     * readdir+readFile sweep would scale linearly with atom-store
-     * size; at the 30k-atoms-per-hour org-ceiling cited in canon
+     * Source heartbeat atoms from the in-memory atom index when it
+     * has primed successfully. The Console maintains a fs-watcher-
+     * backed projection of .lag/atoms/ so reads are O(1) and do not
+     * hit disk on the hot path. A per-request readdir+readFile
+     * sweep would scale linearly with atom-store size; at the
+     * 30k-atoms-per-hour org-ceiling cited in canon
      * `dev-indie-floor-org-ceiling` that becomes disk-bound.
      *
-     * The filesystem-backed loader `defaultLoadClaimReaperHeartbeatAtoms`
-     * stays in `system-health.ts` as the fallback seam used by
-     * deployments that compose buildSystemHealth without an in-memory
-     * index (e.g. a standalone probe runner). Here we override the
-     * default to read from `readAllAtoms()` instead.
+     * BUT: when `atomIndexPrimed` is false (cold start in progress,
+     * OR priming failed because the atoms directory is unreadable),
+     * the Console's `readAllAtoms()` returns [] silently. Using
+     * that here would surface as "No reaper heartbeat observed"
+     * when the real failure is "atom store unreadable", pointing
+     * the operator at the wrong subsystem. Skip the loadAtoms
+     * override in that case so `buildSystemHealth` falls back to
+     * its own default (`defaultLoadClaimReaperHeartbeatAtoms`); that
+     * loader THROWS on readdir failure and the probe translates the
+     * throw into the correct "Atom load failed" detail.
      */
-    const heartbeatAtoms: ProbeAtom[] = (await readAllAtoms())
-      .filter((a) => a.type === 'claim-reaper-sweep-completed')
-      .map((a) => ({
-        id: a.id,
-        type: a.type,
-        created_at: a.created_at,
-        metadata: a.metadata ?? null,
-      }));
+    const indexedLoader: (() => Promise<ReadonlyArray<ProbeAtom>>) | undefined =
+      atomIndexPrimed
+        ? async () =>
+          (await readAllAtoms())
+            .filter((a) => a.type === 'claim-reaper-sweep-completed')
+            .map((a) => ({
+              id: a.id,
+              type: a.type,
+              created_at: a.created_at,
+              metadata: a.metadata ?? null,
+            }))
+        : undefined;
+    const claimReaperOpts: BuildSystemHealthOpts['claimReaperOpts'] = {
+      ...(cadenceMs !== undefined ? { cadenceMs } : {}),
+      ...(indexedLoader !== undefined ? { loadAtoms: indexedLoader } : {}),
+    };
     const result = await buildSystemHealth(LAG_DIR, ATOMS_DIR, {
-      claimReaperOpts: {
-        loadAtoms: async () => heartbeatAtoms,
-        ...(cadenceMs !== undefined ? { cadenceMs } : {}),
-      },
+      claimReaperOpts,
       ...(metricsPort !== undefined ? { tunnelOpts: { metricsPort } } : {}),
     });
     /*

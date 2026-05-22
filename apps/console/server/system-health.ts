@@ -886,15 +886,28 @@ export interface BuildSystemHealthOpts {
  *
  * Probe row order is stable so the UI renders the same sequence
  * regardless of Promise.all completion order.
+ *
+ * Default-loader wiring: when the caller does NOT supply
+ * `claimReaperOpts.loadAtoms`, we wire `defaultLoadClaimReaperHeartbeatAtoms(atomsDir)`
+ * as the fallback so a composer that does not have an in-memory
+ * atom index still observes on-disk heartbeats. The Console server
+ * overrides this with an atomIndex-backed loader; standalone
+ * composers (e.g. a future CLI probe runner) inherit the disk path
+ * without ceremony.
  */
 export async function buildSystemHealth(
   lagDir: string,
   atomsDir: string,
   opts: BuildSystemHealthOpts = {},
 ): Promise<SystemHealthResponse> {
+  const claimReaperOpts: ProbeClaimReaperOpts = {
+    ...opts.claimReaperOpts,
+    loadAtoms: opts.claimReaperOpts?.loadAtoms
+      ?? (() => defaultLoadClaimReaperHeartbeatAtoms(atomsDir)),
+  };
   const [identityResp, claimReaperRow, tunnelRow, atomStoreRow] = await Promise.all([
     buildBotIdentityHealth(lagDir, opts.identityOpts),
-    probeClaimReaperCadence(opts.claimReaperOpts),
+    probeClaimReaperCadence(claimReaperOpts),
     probeTunnelReachability(opts.tunnelOpts),
     probeAtomStoreFreeSpace(atomsDir, opts.atomStoreOpts),
   ]);

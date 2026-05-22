@@ -724,6 +724,47 @@ describe('buildSystemHealth', () => {
     expect(result.probes.every((p) => p.status === 'green')).toBe(true);
   });
 
+  it('wires defaultLoadClaimReaperHeartbeatAtoms when the caller omits loadAtoms', async () => {
+    /*
+     * Regression guard: probeClaimReaperCadence's own default
+     * loadAtoms is `async () => []`, which would render the probe
+     * useless for any composer that calls buildSystemHealth without
+     * supplying an explicit loader. buildSystemHealth must wire the
+     * disk-backed default so on-disk heartbeats are observed even
+     * without an in-memory index. We exercise that by passing no
+     * claimReaperOpts.loadAtoms and pointing atomsDir at a
+     * non-existent path: the disk loader throws on readdir(), the
+     * probe catches the throw, and the result is a red row whose
+     * detail carries the underlying ENOENT message -- proving the
+     * default loader ran (not the empty array).
+     */
+    const result = await buildSystemHealth('/fake/lag', '/this/path/does/not/exist', {
+      identityOpts: {
+        now: fixedNow,
+        fetch: stubFetchOk(),
+        loadRoleCredentials: async () => null,
+      },
+      claimReaperOpts: { now: fixedNow },
+      tunnelOpts: {
+        now: fixedNow,
+        fetch: (async () => new Response(
+          JSON.stringify({ hostname: 'h.trycloudflare.com' }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )) as typeof globalThis.fetch,
+      },
+      atomStoreOpts: {
+        now: fixedNow,
+        statfs: async () => ({ bsize: 1024, blocks: 1_000_000, bfree: 200_000, bavail: 200_000 }),
+      },
+    });
+    const reaper = result.probes.find((p) => p.id === 'claim-reaper-cadence')!;
+    expect(reaper.status).toBe('red');
+    // Confirm the detail surfaces the underlying load failure, not the
+    // generic "No heartbeat observed" message that the empty-array
+    // default would have produced.
+    expect(reaper.summary).toMatch(/Atom load failed/);
+  });
+
   it('does not let one failing probe poison the others', async () => {
     const result = await buildSystemHealth('/fake/lag', '/fake/atoms', {
       identityOpts: {
