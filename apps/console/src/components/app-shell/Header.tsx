@@ -89,6 +89,10 @@ const ROUTE_META: Record<Route, RouteMeta> = {
     title: 'File Intent',
     subtitle: 'Declare an operator-intent atom that drives the autonomous pipeline -- replaces the terminal-only intend.mjs flow',
   },
+  'system-health': {
+    title: 'System Health',
+    subtitle: 'Per-bot-identity credential health, refreshed every 30 seconds against the live GitHub installation-token endpoint',
+  },
 };
 
 /**

@@ -1,0 +1,322 @@
+/*
+ * System Health dashboard.
+ *
+ * Mobile-first: single-column rows below 48rem; a 3-column row at
+ * larger widths (role + status pill + age). No hardcoded sizes;
+ * everything routes through the token system per
+ * dev-web-no-hardcoded-values.
+ */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-7) var(--space-6) var(--space-8);
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  width: 100%;
+}
+
+@media (max-width: 48rem) {
+  .view {
+    gap: var(--space-5);
+    padding: var(--space-5) var(--space-4) var(--space-6);
+  }
+}
+
+.intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+@media (min-width: 60rem) {
+  .intro {
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+}
+
+.introText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.heroTitle {
+  font-family: var(--font-display);
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.heroSubtitle {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-tertiary);
+  max-width: 60ch;
+}
+
+@media (max-width: 48rem) {
+  .heroTitle {
+    font-size: var(--font-size-xl);
+  }
+  .heroSubtitle {
+    font-size: var(--font-size-xs);
+  }
+}
+
+/* Refresh group at the top right (mobile: below header). */
+
+.refreshGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.lastRefreshed {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.refreshButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  min-height: var(--size-touch-target-min);
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard),
+              border-color var(--duration-fast) var(--easing-standard);
+}
+
+.refreshButton:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.refreshButton:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.refreshButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.refreshLabel {
+  letter-spacing: 0.02em;
+}
+
+@keyframes refreshSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .refreshSpinning {
+    animation: refreshSpin var(--duration-slow, 0.64s) linear infinite;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Identity table: one row per bot identity.
+ *
+ * Single-column stacked layout below 48rem (role on top, status mid,
+ * age below). At 48rem and up the row laytout flips to grid with
+ * three columns. The grid sizes are explicit because the status pill
+ * needs a stable width regardless of the role-name length.
+ * ------------------------------------------------------------------------- */
+
+.tableWrap {
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.identityList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.identityRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border-bottom: var(--stroke-hairline) solid var(--border-subtle);
+}
+
+.identityRow:last-child {
+  border-bottom: none;
+}
+
+@media (min-width: 48rem) {
+  .identityRow {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-4);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+}
+
+.identityRoleCell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.identityRoleName {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+}
+
+.identityRoleSub {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.identityDetail {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 36ch;
+}
+
+.identityStatusCell {
+  display: inline-flex;
+  align-items: center;
+}
+
+.identityAgeCell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 47.99rem) {
+  .identityAgeCell {
+    align-items: flex-start;
+    flex-direction: row;
+    gap: var(--space-2);
+  }
+}
+
+.identityAgeLabel {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.identityAgeValue {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+}
+
+.identityAgeNone {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+/* ---------------------------------------------------------------------------
+ * Status pill: colored chip rendered next to each identity.
+ *
+ *   fresh           -> success (green)
+ *   stale           -> danger (red)
+ *   network-error   -> warning (amber)
+ *   not-provisioned -> neutral (no specific colour, hairline border)
+ *
+ * Per canon dev-web-no-hardcoded-values everything routes through
+ * --status-* tokens that the theme layer redefines.
+ * ------------------------------------------------------------------------- */
+
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.02em;
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+}
+
+.statusPill[data-status="fresh"] {
+  background: color-mix(in srgb, var(--status-success) 12%, transparent);
+  color: var(--status-success);
+  border-color: color-mix(in srgb, var(--status-success) 40%, transparent);
+}
+
+.statusPill[data-status="stale"] {
+  background: color-mix(in srgb, var(--status-danger) 12%, transparent);
+  color: var(--status-danger);
+  border-color: color-mix(in srgb, var(--status-danger) 40%, transparent);
+}
+
+.statusPill[data-status="network-error"] {
+  background: color-mix(in srgb, var(--status-warning) 12%, transparent);
+  color: var(--status-warning);
+  border-color: color-mix(in srgb, var(--status-warning) 40%, transparent);
+}
+
+.statusPill[data-status="not-provisioned"] {
+  color: var(--text-tertiary);
+  background: var(--surface-raised);
+  border-color: var(--border-subtle);
+}
+
+/* ---------------------------------------------------------------------------
+ * Empty state (fallback; today structurally unreachable).
+ * ------------------------------------------------------------------------- */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+.empty code {
+  font-family: var(--font-mono);
+  background: var(--surface-raised);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+}

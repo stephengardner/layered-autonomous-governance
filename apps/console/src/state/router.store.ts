@@ -28,7 +28,7 @@ import { useSyncExternalStore } from 'react';
  * routes by default, so `/canon/my-atom-id` resolves to the SPA bundle.
  */
 
-export type Route = 'dashboard' | 'control' | 'live-ops' | 'canon' | 'principals' | 'hierarchy' | 'activities' | 'plans' | 'graph' | 'timeline' | 'plan-lifecycle' | 'canon-suggestions' | 'actor-activity' | 'deliberation' | 'pipelines' | 'resume' | 'operator-actions' | 'atom' | 'file-intent';
+export type Route = 'dashboard' | 'control' | 'live-ops' | 'canon' | 'principals' | 'hierarchy' | 'activities' | 'plans' | 'graph' | 'timeline' | 'plan-lifecycle' | 'canon-suggestions' | 'actor-activity' | 'deliberation' | 'pipelines' | 'resume' | 'operator-actions' | 'atom' | 'file-intent' | 'system-health';
 
 /*
  * `dashboard` is the new home: landing on `/` resolves here so the
@@ -61,6 +61,7 @@ const VALID: ReadonlyArray<Route> = [
   'operator-actions',
   'atom',
   'file-intent',
+  'system-health',
 ];
 const NAV_EVENT = 'lag-console:navigate';
 
