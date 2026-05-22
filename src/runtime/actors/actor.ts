@@ -19,6 +19,7 @@
 
 import type { Host } from '../../interface.js';
 import type { Principal } from '../../types.js';
+import type { MediumTierKillSwitch } from '../../kill-switch/index.js';
 import type {
   ActorAdapters,
   ActorBudget,
@@ -55,6 +56,18 @@ export interface ActorContext<Adapters extends ActorAdapters = ActorAdapters> {
    * additive only, zero behavior change when ignored.
    */
   readonly abortSignal: AbortSignal;
+  /**
+   * Out-of-process kill-switch the actor can use to register child
+   * subprocesses it spawns. The soft `abortSignal` above is the
+   * in-process tier (cooperative AbortSignal subscribers); this is
+   * the medium tier that forcibly terminates registered PIDs when
+   * the runActor loop trips. Absent unless the caller passed
+   * `RunActorOptions.mediumTierKillSwitch`. Actors that spawn
+   * subprocesses arm them with `ctx.mediumTierKillSwitch?.arm(pid)`
+   * after spawn and `disarm(pid)` on clean exit; the runActor driver
+   * calls `tripAll()` automatically on a kill-switch halt.
+   */
+  readonly mediumTierKillSwitch?: MediumTierKillSwitch;
   /** Structured audit sink. Actors may also call this directly. */
   readonly audit: (event: Omit<ActorAuditEvent, 'at' | 'actor' | 'principal' | 'iteration'>) => Promise<void>;
 }

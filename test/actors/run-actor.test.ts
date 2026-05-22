@@ -610,4 +610,122 @@ describe('runActor', () => {
     expect(report.haltReason).toBe('error');
     expect(report.lastNote).toMatch(/reflect failed: reflect-kaboom/);
   });
+
+  it('exposes mediumTierKillSwitch on ActorContext when configured', async () => {
+    // Opt-in wiring: an actor that spawns subprocesses can arm them
+    // against the supervisor via ctx.mediumTierKillSwitch. Absent
+    // when the runActor caller does not pass the option (back-compat
+    // floor: existing actors keep running unchanged).
+    const host = createMemoryHost();
+    let seenSwitch: unknown = 'unset';
+    const armCalls: number[] = [];
+    const disarmCalls: number[] = [];
+    const tripCalls = { count: 0 };
+    const mediumTier = {
+      arm: async (pid: number) => {
+        armCalls.push(pid);
+      },
+      disarm: async (pid: number) => {
+        disarmCalls.push(pid);
+      },
+      tripAll: async () => {
+        tripCalls.count += 1;
+      },
+    };
+    const actor = new ScriptedActor({
+      observations: [1],
+      proposals: [{ tool: 'spawn-thing', payload: 'p' }],
+      applyImpl: async () => {
+        // Capture from the live ctx by reaching through actor.apply's
+        // wrapper. Simpler approach: hook via observe so the test sees
+        // it at the start of the iteration. Use a tiny side-channel.
+        return 'applied';
+      },
+      reflect: () => ({ done: true, progress: true }),
+    });
+    // Override observe just to capture ctx.mediumTierKillSwitch.
+    const capturingActor = new ScriptedActor({
+      observations: [1],
+      proposals: [{ tool: 'spawn-thing', payload: 'p' }],
+      reflect: () => ({ done: true, progress: true }),
+    });
+    const origObserve = capturingActor.observe.bind(capturingActor);
+    capturingActor.observe = async (ctx: ActorContext<StubAdapters>) => {
+      seenSwitch = (ctx as ActorContext<StubAdapters> & {
+        mediumTierKillSwitch?: unknown;
+      }).mediumTierKillSwitch;
+      return origObserve(ctx);
+    };
+    void actor; // unused; capturingActor is the test subject
+    await runActor(capturingActor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 2 },
+      origin: 'test',
+      mediumTierKillSwitch: mediumTier,
+    });
+    expect(seenSwitch).toBe(mediumTier);
+    // Without any arm/disarm calls from the actor, the supervisor's
+    // counters stay at zero.
+    expect(armCalls).toEqual([]);
+    expect(disarmCalls).toEqual([]);
+    expect(tripCalls.count).toBe(0);
+  });
+
+  it('tripAll() is invoked on kill-switch halt when mediumTierKillSwitch is configured', async () => {
+    // When the soft kill-switch fires, runActor calls tripAll() to
+    // forcibly terminate any subprocesses the actor armed. The
+    // out-of-process tier closes the gap the soft tier cannot close
+    // alone (a runaway subprocess that ignored AbortSignal).
+    const host = createMemoryHost();
+    const tripCalls = { count: 0 };
+    const mediumTier = {
+      arm: async () => undefined,
+      disarm: async () => undefined,
+      tripAll: async () => {
+        tripCalls.count += 1;
+      },
+    };
+    const actor = new ScriptedActor({ observations: [1, 2, 3] });
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 5 },
+      origin: 'test',
+      killSwitch: () => true,
+      mediumTierKillSwitch: mediumTier,
+    });
+    expect(report.haltReason).toBe('kill-switch');
+    expect(tripCalls.count).toBe(1);
+  });
+
+  it('tripAll() is NOT invoked on normal converged halt', async () => {
+    // Only kill-switch halts trip the supervisor. A clean converged
+    // halt would double-kill subprocesses that already exited.
+    const host = createMemoryHost();
+    const tripCalls = { count: 0 };
+    const mediumTier = {
+      arm: async () => undefined,
+      disarm: async () => undefined,
+      tripAll: async () => {
+        tripCalls.count += 1;
+      },
+    };
+    const actor = new ScriptedActor({
+      observations: [1],
+      reflect: () => ({ done: true, progress: true }),
+    });
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 5 },
+      origin: 'test',
+      mediumTierKillSwitch: mediumTier,
+    });
+    expect(report.haltReason).toBe('converged');
+    expect(tripCalls.count).toBe(0);
+  });
 });
