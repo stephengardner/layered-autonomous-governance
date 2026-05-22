@@ -66,41 +66,50 @@ export const SNAPSHOT_KEYS = Object.freeze([
  */
 export function scanWorktree(worktreePath, opts = {}) {
   const nowMs = opts.nowMs ?? Date.now();
+  // Per-call timeout for every git subprocess. A hung git invocation
+  // (network FS, antivirus scan, repo lock contention) would block
+  // the whole watcher tick without this cap. Default 5s is generous
+  // for local git on a normal repo, tight enough that a stuck call
+  // surfaces within the loop's next tick window. Tunable so test
+  // fixtures and slow filesystems can dial up.
+  const gitTimeoutMs = opts.gitTimeoutMs ?? 5_000;
+  const gitOpts = { encoding: 'utf8', timeout: gitTimeoutMs };
+
   if (!existsSync(join(worktreePath, '.git'))) {
     return null;
   }
 
   // git rev-parse the current branch; null on detached-HEAD or error.
-  const branchResult = spawnSync('git', ['-C', worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'], {
-    encoding: 'utf8',
-  });
+  const branchResult = spawnSync('git', ['-C', worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'], gitOpts);
   const branch =
     branchResult.status === 0
       ? branchResult.stdout.trim()
       : null;
-  if (branch === 'HEAD' || branch === null) {
-    // Detached HEAD or git error. We can still scan for fs activity
-    // but commits-ahead is meaningless without a branch. Return a
-    // snapshot with commitsAhead=0 + lastCommitAtMs=null so the
-    // classifier falls through to fs/dirty signals.
-  }
+  // A named branch is required to make sense of commits-ahead.
+  // Detached HEAD ('HEAD' literal) or git error means we cannot
+  // distinguish 'committed work past origin/main' from 'arbitrary
+  // checkout pointing at some random sha'. We still scan fs state
+  // so the classifier can use dirty + lastEditAtMs signals.
+  const canReadCommitFreshness = branch !== null && branch !== 'HEAD';
 
   // Commits ahead of origin/main. Robust to origin/main not existing
   // (fresh clone, custom remote name) by returning 0.
   let commitsAhead = 0;
   let lastCommitAtMs = null;
-  const aheadResult = spawnSync(
-    'git',
-    ['-C', worktreePath, 'rev-list', '--count', 'origin/main..HEAD'],
-    { encoding: 'utf8' },
-  );
-  if (aheadResult.status === 0) {
-    const parsed = Number.parseInt(aheadResult.stdout.trim(), 10);
-    if (Number.isFinite(parsed) && parsed >= 0) {
-      commitsAhead = parsed;
+  if (canReadCommitFreshness) {
+    const aheadResult = spawnSync(
+      'git',
+      ['-C', worktreePath, 'rev-list', '--count', 'origin/main..HEAD'],
+      gitOpts,
+    );
+    if (aheadResult.status === 0) {
+      const parsed = Number.parseInt(aheadResult.stdout.trim(), 10);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        commitsAhead = parsed;
+      }
     }
   }
-  if (commitsAhead > 0) {
+  if (canReadCommitFreshness && commitsAhead > 0) {
     // Last commit's author-date in unix seconds. %at is the author
     // timestamp; production wants this rather than commit-date so
     // rebases / cherry-picks do not artificially refresh the
@@ -108,7 +117,7 @@ export function scanWorktree(worktreePath, opts = {}) {
     const logResult = spawnSync(
       'git',
       ['-C', worktreePath, 'log', '-1', '--format=%at', 'HEAD'],
-      { encoding: 'utf8' },
+      gitOpts,
     );
     if (logResult.status === 0) {
       const secs = Number.parseInt(logResult.stdout.trim(), 10);
@@ -120,9 +129,7 @@ export function scanWorktree(worktreePath, opts = {}) {
 
   // Working-tree dirty flag. `git status --porcelain` is empty when
   // clean; any line means dirty.
-  const statusResult = spawnSync('git', ['-C', worktreePath, 'status', '--porcelain'], {
-    encoding: 'utf8',
-  });
+  const statusResult = spawnSync('git', ['-C', worktreePath, 'status', '--porcelain'], gitOpts);
   const workingTreeDirty = statusResult.status === 0 && statusResult.stdout.trim().length > 0;
 
   // Walk the worktree for the newest mtime, skipping IGNORED_DIRS.

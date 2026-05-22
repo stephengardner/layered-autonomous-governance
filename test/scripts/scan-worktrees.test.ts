@@ -97,7 +97,8 @@ describe('scanWorktree', () => {
     // Wait a beat so timestamps differ
     const trackedSnapshot = scanWorktree(tmpDir);
     expect(trackedSnapshot).not.toBeNull();
-    const trackedMtime = trackedSnapshot?.lastEditAtMs ?? 0;
+    if (trackedSnapshot === null) throw new Error('expected non-null snapshot after git-init');
+    const trackedMtime = trackedSnapshot.lastEditAtMs ?? 0;
 
     // Write a file inside node_modules (should be ignored)
     mkdirSync(join(tmpDir, 'node_modules', 'foo'), { recursive: true });
@@ -105,7 +106,7 @@ describe('scanWorktree', () => {
 
     const rescanned = scanWorktree(tmpDir);
     expect(rescanned).not.toBeNull();
-    if (rescanned === null) return;
+    if (rescanned === null) throw new Error('expected non-null snapshot after rescan');
     // The newer node_modules write must NOT have advanced lastEditAtMs.
     // Allow equality (same-second mtime resolution edge case).
     expect(rescanned.lastEditAtMs).toBeLessThanOrEqual(trackedMtime + 1000);
@@ -115,13 +116,16 @@ describe('scanWorktree', () => {
     makeGitRepo(tmpDir);
     writeFileSync(join(tmpDir, 'tracked.txt'), 'old');
     const trackedSnapshot = scanWorktree(tmpDir);
-    const trackedMtime = trackedSnapshot?.lastEditAtMs ?? 0;
+    expect(trackedSnapshot).not.toBeNull();
+    if (trackedSnapshot === null) throw new Error('expected non-null snapshot after git-init');
+    const trackedMtime = trackedSnapshot.lastEditAtMs ?? 0;
 
     mkdirSync(join(tmpDir, 'dist'), { recursive: true });
     writeFileSync(join(tmpDir, 'dist', 'bundle.js'), 'much later');
 
     const rescanned = scanWorktree(tmpDir);
-    if (rescanned === null) return;
+    expect(rescanned).not.toBeNull();
+    if (rescanned === null) throw new Error('expected non-null snapshot after rescan');
     expect(rescanned.lastEditAtMs).toBeLessThanOrEqual(trackedMtime + 1000);
   });
 
@@ -129,7 +133,8 @@ describe('scanWorktree', () => {
     makeGitRepo(tmpDir);
     writeFileSync(join(tmpDir, 'foo.txt'), 'hello');
     const result = scanWorktree(tmpDir);
-    if (result === null) return;
+    expect(result).not.toBeNull();
+    if (result === null) throw new Error('expected non-null snapshot after git-init');
     // No commit made + no origin/main reference means commitsAhead
     // stays 0 and lastCommitAtMs stays null.
     expect(result.commitsAhead).toBe(0);

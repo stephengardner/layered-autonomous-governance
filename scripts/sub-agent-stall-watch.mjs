@@ -55,9 +55,18 @@ for (let i = 0; i < args.length; i++) {
   } else if (a === '--root' && i + 1 < args.length) {
     root = args[++i];
   } else if (a === '--deadline-ms' && i + 1 < args.length) {
-    const n = Number.parseInt(args[++i], 10);
-    if (!Number.isFinite(n) || n <= 0) {
-      console.error(`sub-agent-stall-watch: --deadline-ms must be a positive integer; got '${args[i]}'`);
+    // Strict integer validation. parseInt accepts trailing garbage
+    // ('10ms' -> 10), masking operator typos. The exact-match regex
+    // is the safer parse for a CLI flag where the only correct shape
+    // is digits with an optional leading sign.
+    const raw = args[++i];
+    if (!/^[+-]?\d+$/.test(raw)) {
+      console.error(`sub-agent-stall-watch: --deadline-ms must be a strict integer; got '${raw}'`);
+      process.exit(1);
+    }
+    const n = Number(raw);
+    if (!Number.isSafeInteger(n) || n <= 0) {
+      console.error(`sub-agent-stall-watch: --deadline-ms must be a positive integer; got '${raw}'`);
       process.exit(1);
     }
     deadlineMs = n;
@@ -120,8 +129,20 @@ function formatTag(classification) {
       return '[SILENT]';
     case 'stalled':
       return '[STALLED]';
-    default:
-      return '[?]';
+    default: {
+      // Exhaustive enum check: if the classifier adds a 4th kind
+      // (e.g. 'crashed', 'paused') the watcher must fail loud rather
+      // than silently render '[?]' and exit 0 (which would let a new
+      // stall state slip past the !=='stalled' guard below). Throwing
+      // here surfaces the substrate drift at the first tick after the
+      // classifier change.
+      const exhaustive = classification;
+      throw new Error(
+        `sub-agent-stall-watch: unhandled classification kind '${exhaustive.kind}'; `
+        + 'classifier added a kind the watcher does not know how to render. '
+        + 'Update formatTag + the exit-code logic below.',
+      );
+    }
   }
 }
 
