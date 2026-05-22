@@ -27,6 +27,7 @@
 
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { checkPatHealth, renewalInstructionsFor } from './lib/token-health.mjs';
 
 if (!process.env.LAG_OPS_PAT) {
   try {
@@ -61,6 +62,26 @@ const token = process.env.LAG_OPS_PAT?.trim();
 if (!token) {
   console.error('cr-trigger: LAG_OPS_PAT not set. Add to .env at repo root or export in env.');
   process.exit(1);
+}
+
+// Token health preflight. Calls GET /user with the PAT; surfaces 401
+// with renewal steps before the downstream POST blows up with the
+// same status but no recovery guidance. Network errors are
+// non-fatal (the downstream POST will exercise the same code path),
+// keeping the script robust on transient network blips while still
+// catching the actual auth-failure case. The expiry-soon warning
+// goes to stderr so cron output remains parseable (stdout still
+// emits only the comment URL on success).
+const health = await checkPatHealth(token);
+if (health.kind === 'invalid') {
+  console.error(`cr-trigger: ${renewalInstructionsFor('LAG_OPS_PAT')}`);
+  if (health.detail) {
+    console.error(`cr-trigger: HTTP ${health.status} detail: ${health.detail}`);
+  }
+  process.exit(1);
+}
+if (health.kind === 'ok' && health.warning) {
+  console.error(`cr-trigger: WARNING: ${health.warning}`);
 }
 
 const url = `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`;
