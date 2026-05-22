@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import type { MediumTierKillSwitch } from '../../src/substrate/kill-switch/index.js';
+import type { MediumTierKillSwitch } from '../../../src/substrate/kill-switch/index.js';
 
-/**
+/*
  * Contract test runner. Any `MediumTierKillSwitch` impl can pass this
  * fixture in to verify it satisfies the interface contract.
  *
@@ -12,6 +12,11 @@ import type { MediumTierKillSwitch } from '../../src/substrate/kill-switch/index
  *   - `spawnGuinea()`: spawn a sacrificial long-lived child the test
  *     can arm + observe through `tripAll()`.
  *   - `cleanup()`: tear down any test resources after the test.
+ *
+ * This file lives under `examples/` so the example reference impl test
+ * can import it without crossing tsconfig project rootDir boundaries
+ * (TS6059). The contract runner uses vitest at runtime; it only
+ * provides the harness, never registers tests at module load.
  */
 export interface MediumTierKillSwitchFixture {
   readonly killSwitch: MediumTierKillSwitch;
@@ -57,7 +62,7 @@ export function runMediumTierKillSwitchContract(
         try {
           process.kill(pid, 'SIGKILL');
         } catch {
-          // Already exited - test still passes.
+          // Already exited; test still passes.
         }
         await done.catch(() => undefined);
       } finally {
@@ -109,14 +114,3 @@ export function runMediumTierKillSwitchContract(
     });
   });
 }
-
-/**
- * Smoke test: ensure the contract runner itself exposes the right
- * shape. A concrete adapter under examples/ imports + invokes
- * `runMediumTierKillSwitchContract` to validate its implementation.
- */
-describe('MediumTierKillSwitch interface', () => {
-  it('exports a contract-runner factory', () => {
-    expect(typeof runMediumTierKillSwitchContract).toBe('function');
-  });
-});

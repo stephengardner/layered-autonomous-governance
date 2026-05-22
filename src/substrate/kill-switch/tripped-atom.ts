@@ -27,7 +27,15 @@ export type KillSwitchTripPhase =
   | 'classify'
   | 'propose'
   | 'apply'
-  | 'between-iterations';
+  | 'between-iterations'
+  /*
+   * Detected at halt time when an in-phase abort or error short-
+   * circuited the loop into the halt path; the reconciliation step
+   * (in run-actor.ts after the main loop) re-checks the kill-switch
+   * state and labels the phase with this value so the audit row is
+   * not confused with a clean between-iterations detection.
+   */
+  | 'halt-reconciliation';
 
 export type KillSwitchTripTrigger =
   | 'stop-sentinel'

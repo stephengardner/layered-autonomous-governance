@@ -4,7 +4,7 @@ import { ProcessSupervisor } from './process-supervisor.js';
 import {
   runMediumTierKillSwitchContract,
   type MediumTierKillSwitchFixture,
-} from '../../../test/substrate/medium-tier-kill-switch-contract.test.js';
+} from './contract.js';
 
 /**
  * Spawn a long-lived guinea-pig child. Uses `node -e` with a
@@ -37,21 +37,23 @@ function spawnGuinea(): { pid: number; done: Promise<void> } {
  * absorbs that without making the test timing-fragile.
  */
 async function isAlive(pid: number): Promise<boolean> {
+  // Probe across a short retry window so a post-tripAll reap on
+  // Windows (where `taskkill /T /PID` returns before the OS scrubs
+  // the PID) has time to propagate. Any ESRCH (or EPERM, since the
+  // test never creates foreign-PID processes) is conclusive that
+  // the process is gone; return false on the first failed probe.
+  // If every probe in the window succeeds, treat the process as
+  // alive. The original short-circuit on `attempt === 0` defeated
+  // the retry intent and could let a reap-in-progress probe report
+  // "alive" before the OS finished.
   for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
       process.kill(pid, 0);
-      // Still alive on this probe; if we are in the middle of a
-      // post-tripAll reap, give the OS a beat to catch up before the
-      // caller asserts.
-      if (attempt === 0) return true;
-      await sleep(50);
     } catch (err) {
-      // ESRCH = process gone. Any other code = treat as gone too:
-      // EPERM on POSIX means foreign-process which the test never
-      // creates, so any error in this scope is conclusive.
       void err;
       return false;
     }
+    await sleep(50);
   }
   return true;
 }

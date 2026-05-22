@@ -7,8 +7,13 @@ deadline, escalation).
 ## Indie path
 
 ```ts
+// Snippet shown as a caller would write it from anywhere in the repo
+// against this example's published path. Adjust the import path to
+// match where you keep the example relative to your caller (e.g.
+// `../examples/kill-switches/process-supervisor` from `apps/`, or a
+// bare specifier if you publish the example as a package).
 import { spawn } from 'node:child_process';
-import { ProcessSupervisor } from './kill-switches/process-supervisor';
+import { ProcessSupervisor } from 'examples/kill-switches/process-supervisor';
 
 const killSwitch = new ProcessSupervisor();
 const child = spawn(bin, args);

@@ -372,6 +372,29 @@ export async function runActor<
   }
 
   const endedAt = options.host.clock.now();
+
+  // Reconcile kill-switch state before emitting halt side-effects.
+  // A killSwitchSignal abort fired during observe/classify/propose/
+  // apply/reflect surfaces as a thrown error in the phase catch,
+  // which sets haltReason='error'. Without this reconciliation a
+  // kill-triggered halt would skip the kill-switch audit observation
+  // and the medium-tier tripAll() below. Walking detectKillSwitchTrip
+  // once more here is cheap (it inspects the same options.killSwitchSignal
+  // / .lag/STOP sentinel the loop has been polling) and the override
+  // matches operator expectation that a kill trip always lands as a
+  // kill-switch halt regardless of which phase the abort intercepted.
+  if (haltReason !== 'kill-switch') {
+    const trippedAtExit = detectKillSwitchTrip(options);
+    if (trippedAtExit !== null) {
+      haltReason = 'kill-switch';
+      trippedTrigger = trippedAtExit;
+      // Phase is always reassigned here because the original
+      // 'between-iterations' default is misleading once we know the
+      // trip was caught at halt-reconciliation time.
+      trippedPhase = 'halt-reconciliation';
+    }
+  }
+
   await emitAudit(options, actor, {
     kind: 'halt',
     iteration,
