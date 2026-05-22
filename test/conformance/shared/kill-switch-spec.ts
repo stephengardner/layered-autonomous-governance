@@ -1,9 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import type { MediumTierKillSwitch } from '../../../src/substrate/kill-switch/index.js';
-
-/*
- * Contract test runner. Any `MediumTierKillSwitch` impl can pass this
- * fixture in to verify it satisfies the interface contract.
+/**
+ * MediumTierKillSwitch conformance spec.
+ *
+ * Any `MediumTierKillSwitch` impl can pass this fixture in to verify it
+ * satisfies the substrate contract. Mirrors the placement of every
+ * other adapter contract (`atoms-spec`, `auditor-spec`, `canon-spec`,
+ * etc.) so a BYO impl discovers the harness via the canonical
+ * `test/conformance/shared/` convention rather than reaching into the
+ * sibling reference example.
  *
  * The fixture exposes:
  *   - `killSwitch`: the impl under test.
@@ -12,12 +15,10 @@ import type { MediumTierKillSwitch } from '../../../src/substrate/kill-switch/in
  *   - `spawnGuinea()`: spawn a sacrificial long-lived child the test
  *     can arm + observe through `tripAll()`.
  *   - `cleanup()`: tear down any test resources after the test.
- *
- * This file lives under `examples/` so the example reference impl test
- * can import it without crossing tsconfig project rootDir boundaries
- * (TS6059). The contract runner uses vitest at runtime; it only
- * provides the harness, never registers tests at module load.
  */
+import { describe, it, expect } from 'vitest';
+import type { MediumTierKillSwitch } from '../../../src/substrate/kill-switch/index.js';
+
 export interface MediumTierKillSwitchFixture {
   readonly killSwitch: MediumTierKillSwitch;
   readonly isAlive: (pid: number) => Promise<boolean>;
