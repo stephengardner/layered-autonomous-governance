@@ -103,13 +103,21 @@
 }
 
 .railDot {
+  /*
+   * Touch-target floor (>=44px CSS pixels) enforced via the
+   * --size-touch-target-min token per the token-only CSS rule
+   * (no hardcoded px outside src/tokens/tokens.css). The base
+   * width/height still uses --space-7 for the typical rendered
+   * size; the min-* floors prevent the dot from shrinking below
+   * the canonical tap-target bound on mobile.
+   */
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: var(--space-7);
   height: var(--space-7);
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--size-touch-target-min);
+  min-height: var(--size-touch-target-min);
   border-radius: var(--radius-pill);
   background: var(--surface-raised);
   border: var(--stroke-hairline) solid var(--border-subtle);

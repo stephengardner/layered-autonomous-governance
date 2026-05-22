@@ -298,6 +298,19 @@ describe('listPipelineDeliberation', () => {
       expect(result.entries).toEqual([]);
     });
 
+    it('drops atoms whose from_stage equals to_stage (substrate invariant)', () => {
+      const atoms = [
+        reprompt({
+          id: 'self-target',
+          created_at: '2026-05-21T11:50:00.000Z',
+          from_stage: 'plan-stage',
+          to_stage: 'plan-stage',
+        }),
+      ];
+      const result = listPipelineDeliberation(atoms, PIPELINE_ID, NOW);
+      expect(result.entries).toEqual([]);
+    });
+
     it('drops atoms with severity outside the canonical bucket', () => {
       const atoms: PipelineDeliberationSourceAtom[] = [
         atom({

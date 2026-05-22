@@ -119,6 +119,11 @@ function entryFromAtom(
     || !correlationId
     || !fromStage
     || !toStage
+    // Substrate mint contract: fromStage !== toStage (self-target
+    // findings route through the intra-stage path, not the cross-stage
+    // path). A same-stage handoff here means a malformed atom landed
+    // on disk somehow; drop it rather than render a misleading row.
+    || fromStage === toStage
     || attempt === null
     || !verifiedOrigin
     || !findingObj
