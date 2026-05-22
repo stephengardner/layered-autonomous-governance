@@ -14,6 +14,22 @@ node examples/quickstart.mjs
 
 That script spins up a memory-backed Host, seeds three atoms from three principals, searches them, runs a promotion pass to elevate the consensus into the L2 curated layer, and prints the resulting state plus the audit log.
 
+## Drive a planning loop without the claude CLI (5-minute path)
+
+The substrate-deep planning pipeline normally spawns a `claude` CLI sub-agent per stage. To exercise the CTO planning loop without installing or authenticating the claude CLI, use the deterministic stub judgment:
+
+```bash
+node scripts/run-cto-actor.mjs --request "Add a hello-world endpoint" --stub
+```
+
+`--stub` swaps `HostLlmPlanningJudgment` for `stubJudgment`: same actor, same audit chain, same plan atom shape, but with a canned plan instead of a real LLM call. It is the zero-API-key way to:
+
+- Verify the CTO actor and Host wiring boot cleanly on your machine.
+- Watch the canon arbitration, principal authority, and `.lag/atoms/` write paths exercise end-to-end.
+- Decide whether to invest in claude-cli setup, or pick a different LLM adapter, before paying that setup cost.
+
+Once you want a real plan: install and authenticate the claude CLI (`npm install -g @anthropic-ai/claude-code`), drop `--stub`, and re-run. Same invocation, same output shape, real reasoning.
+
 ## Daemons and surfaces
 
 Three daemon modes plus a terminal session share the same `.lag/` substrate:
