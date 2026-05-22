@@ -117,6 +117,18 @@ PRs #439, #440, #441, and #443 cite `docs/audit/2026-05-22-perpetual-self-audit-
   - Apex-tunable trade-off dials (`dev-future-tunable-dials`) are forbidden as speculative dial infrastructure per canon; build them only at the second use case.
   - Metrics/observability beyond `metric()` primitive (no Prometheus, OTLP) is out of indie-floor scope and the canon directive `dev-simple-surface-deep-architecture` resists adding surface for monitoring most indie operators won't need.
 
+## Summary
+
+**Top 3 priorities (next driver-tick picks PR-1):**
+
+1. **PR-1 (L, governance + future-proofing)**: Thread `expectedRevision` CAS through ~14 production read-modify-write sites in `src/runtime/`. V0 shipped the primitive (PR #440); ZERO production callers consume it. Highest leverage by far because every other org-ceiling concurrency story rides on this.
+2. **PR-2 (S, governance + indie-floor)**: Close the adapter-supplied `commitSha` verification gap in `AgenticCodeAuthorExecutor`. JSDoc already admits "future hardening pass" but the seam ships open. Three audits in a row have flagged it.
+3. **PR-3 (M, governance + operator-readiness)**: Substrate-side enforcement of `dev-pr-fix-resolve-outdated-threads-after-fix-push`. Canon says "this should never happen again"; the script exists but no actor invokes it.
+
+**Estimated total scope:** 10 PRs = 4 S + 3 M + 3 L.
+
+**Next audit cadence trigger:** after PR-1 + PR-2 + PR-3 ship (the governance-enforcement leg). The medium-tier kill-switch (PR-9, L) is the natural V2 trigger because it unblocks 4 dormant canon directives and is too large for a single self-audit tick. The remaining 6 PRs (PR-4 through PR-8, PR-10) can land in any order; V1 backlog stays open as the queue until V2 reorders.
+
 ## References
 
 - V0 driver itself (NOT an adjacent ship; this is the driver V0 is named for): PR #435 (`scripts/self-audit-tick.mjs` + `scripts/lib/self-audit-prompt.mjs`)
