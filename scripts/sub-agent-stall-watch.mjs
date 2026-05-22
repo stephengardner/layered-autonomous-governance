@@ -118,7 +118,31 @@ if (json) {
   }
 }
 
-const anyStalled = results.some((r) => r.classification.kind === 'stalled');
+// Exit code derived via exhaustive enumeration so a new classifier
+// kind cannot silently fall into the "not stalled, exit 0" bucket.
+// In --json mode formatTag never runs, so the kind===stalled string
+// check is the ONLY remaining drift-detection layer for exit codes;
+// if the classifier adds a 4th kind, this helper throws at the
+// first tick after the change. Same discipline as formatTag above.
+function isStalledKind(kind) {
+  switch (kind) {
+    case 'fresh':
+    case 'silent-but-working':
+      return false;
+    case 'stalled':
+      return true;
+    default: {
+      const exhaustive = kind;
+      throw new Error(
+        `sub-agent-stall-watch: unhandled classification kind '${exhaustive}' in exit-code path; `
+        + 'classifier added a kind the watcher does not know whether to exit on. '
+        + 'Update isStalledKind + formatTag together.',
+      );
+    }
+  }
+}
+
+const anyStalled = results.some((r) => isStalledKind(r.classification.kind));
 process.exit(anyStalled ? 2 : 0);
 
 function formatTag(classification) {
