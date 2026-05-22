@@ -39,6 +39,14 @@ import {
 } from './util.js';
 
 export class FileAtomStore implements AtomStore {
+  // The file adapter's CAS check is best-effort in-process: it reads
+  // the on-disk atom into memory, compares revisions, and writes
+  // back. A second process pointing at the same .lag/atoms/ directory
+  // can interleave read + write between this adapter's two filesystem
+  // calls and lose an update. Operators who need strict cross-process
+  // semantics swap to the SQLite reference adapter (declares
+  // hasStrictCrossProcessCas=true).
+  readonly capabilities = { hasSubscribe: false, hasStrictCrossProcessCas: false } as const;
   private readonly atomsDir: string;
   private readonly embedder: Embedder;
 

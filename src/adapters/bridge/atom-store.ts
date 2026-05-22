@@ -54,6 +54,18 @@ export interface BootstrapResult {
 }
 
 export class BridgeAtomStore implements AtomStore {
+  // CAS posture inherits from the backing store: the bridge is a
+  // delegate that wraps another AtomStore (typically a memory or
+  // file adapter in tests). When the backing store declares a
+  // posture, surface it through; otherwise default to best-effort
+  // (the conservative posture). Consumers should not assume strict
+  // CAS through a bridge without checking.
+  get capabilities() {
+    return {
+      hasSubscribe: this.backing.capabilities?.hasSubscribe ?? false,
+      hasStrictCrossProcessCas: this.backing.capabilities?.hasStrictCrossProcessCas ?? false,
+    } as const;
+  }
   private readonly prefix: string;
 
   constructor(
