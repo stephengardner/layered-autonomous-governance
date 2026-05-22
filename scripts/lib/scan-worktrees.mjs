@@ -207,7 +207,14 @@ export function scanAllWorktrees(worktreesDir, opts = {}) {
   }
   let entries;
   try {
-    entries = readdirSync(worktreesDir, { withFileTypes: true });
+    // Sort by name for deterministic iteration order. readdirSync's
+    // raw order is filesystem-dependent (ext4 returns inode order,
+    // NTFS alphabetical, tmpfs hash order); sorting locks in a
+    // stable output so the watcher's printed list and the JSON shape
+    // are reproducible across machines and across runs on the same
+    // machine after a rebuild.
+    entries = readdirSync(worktreesDir, { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name));
   } catch {
     return [];
   }

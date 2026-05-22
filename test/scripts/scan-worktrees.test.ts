@@ -186,11 +186,19 @@ describe('scanAllWorktrees', () => {
 });
 
 describe('SNAPSHOT_KEYS', () => {
-  it('exposes the keys the classifier reads', () => {
+  it('exposes the keys the classifier reads as a frozen literal contract', () => {
     expect(Object.isFrozen(SNAPSHOT_KEYS)).toBe(true);
-    expect(SNAPSHOT_KEYS).toContain('commitsAhead');
-    expect(SNAPSHOT_KEYS).toContain('lastCommitAtMs');
-    expect(SNAPSHOT_KEYS).toContain('lastEditAtMs');
-    expect(SNAPSHOT_KEYS).toContain('workingTreeDirty');
+    // Exact literal equality so a missing key OR an extra key (e.g.
+    // someone adds a field to the scanner output without updating
+    // the contract test) fails loud. Per CR nit on PR #436: partial
+    // toContain checks let drift slip through.
+    expect(SNAPSHOT_KEYS).toEqual([
+      'path',
+      'branch',
+      'commitsAhead',
+      'lastCommitAtMs',
+      'lastEditAtMs',
+      'workingTreeDirty',
+    ]);
   });
 });

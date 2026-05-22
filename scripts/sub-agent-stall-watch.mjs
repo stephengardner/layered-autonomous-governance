@@ -113,7 +113,10 @@ if (json) {
       const tag = formatTag(r.classification);
       const branch = r.branch ?? '(detached)';
       const ageHint = formatAge(r.classification);
-      console.log(`${tag} ${branch} (commits=${r.commitsAhead} dirty=${r.workingTreeDirty}) ${ageHint}`);
+      // r.path included so duplicate branch names across worktrees
+      // (rare but possible: detached HEAD + same branch in two
+      // checkouts) remain disambiguated for the operator.
+      console.log(`${tag} ${r.path} ${branch} (commits=${r.commitsAhead} dirty=${r.workingTreeDirty}) ${ageHint}`);
     }
   }
 }
