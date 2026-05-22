@@ -72,9 +72,44 @@ atoms.close();
 - No GC. Atoms are immutable on `put()`; the substrate has no
   deletion verb.
 
+## Migrating from FileAtomStore
+
+A solo developer who started on the file adapter and now wants the
+strict CAS guarantee or the better scale of SQLite uses
+`scripts/import-from-file.mjs` to migrate without losing history. The
+tool reads every `*.json` atom from a source directory and bulk-inserts
+it into a SQLite `.db` file using the exact schema this adapter creates,
+preserving each atom's existing `revision` counter byte-for-byte.
+
+```bash
+# Worked example: solo dev on .lag/atoms/ moves to a local .db file.
+node examples/atom-stores/sqlite/scripts/import-from-file.mjs \
+  --source ./.lag/atoms \
+  --dest   ./.lag/atoms.db
+
+# Preview the migration without writing anything.
+node ... --source ./.lag/atoms --dest ./.lag/atoms.db --dry-run
+
+# Trust-but-check before deleting the source directory. Reads every
+# imported row back through SQLite and asserts JSON-deep-equal with
+# the source file; hard-exits 1 on the first mismatch.
+node ... --source ./.lag/atoms --dest ./.lag/atoms.db --verify
+
+# Tune transaction batch size when migrating very large stores.
+node ... --source ./.lag/atoms --dest ./.lag/atoms.db --batch-size 500
+```
+
+Re-running the tool against the same `--source` / `--dest` pair is
+idempotent: atoms whose id already exists in the destination are
+skipped (`INSERT OR IGNORE`), so an interrupted migration resumes
+cleanly. After `--verify` prints `OK: N/N atoms round-trip`, swapping
+your host construction from `createFileHost(rootDir)` to
+`new SqliteAtomStore({ dbPath })` is safe; the source directory can
+then be archived or deleted at the operator's discretion.
+
 ## Tests
 
-Two suites:
+Three suites:
 
 - `test/sqlite-adapter.test.ts` runs the shared `runAtomsSpec` so the
   adapter satisfies the same conformance contract as the memory + file
@@ -84,3 +119,7 @@ Two suites:
   `expectedRevision` produce exactly one winner and `N-1`
   `ConflictError` rejections, including across separate
   `SqliteAtomStore` instances sharing one `.db` file.
+- `test/import-from-file.test.ts` regression-tests the migration
+  tool: 100 atoms across every atom type round-trip through
+  `SqliteAtomStore.get()`, revision counters are preserved, `--verify`
+  detects a tampered destination, and re-runs are idempotent.
