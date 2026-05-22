@@ -360,6 +360,29 @@ export async function probeBotIdentity(
     };
   }
 
+  /*
+   * Validate the response body has the shape GitHub documents. A 201
+   * with an empty / non-string `token` field is a malformed-success
+   * response (e.g. an upstream proxy stripped the body, or a future
+   * API revision drops the field). Treating that as `fresh` would
+   * misclassify a broken auth pipeline as healthy. Surface it as
+   * `stale` so the operator notices the row and investigates.
+   */
+  const hasToken = typeof parsed.token === 'string' && parsed.token.length > 0;
+  if (!hasToken) {
+    return {
+      role,
+      login: creds.record.slug,
+      appId: creds.record.appId,
+      installationId,
+      expiresAt: null,
+      status: 'stale',
+      lastCheckedAt,
+      ageMs: null,
+      detail: 'missing token in GitHub token-mint response',
+    };
+  }
+
   const expiresAtRaw = typeof parsed.expires_at === 'string' ? parsed.expires_at : null;
   let expiresAtIso: string | null = null;
   let ageMs: number | null = null;

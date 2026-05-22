@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { generateKeyPairSync } from 'node:crypto';
 import {
   buildBotIdentityHealth,
   PROBED_ROLES,
@@ -32,28 +33,21 @@ const REFERENCE_NOW_MS = Date.parse('2026-05-22T12:00:00.000Z');
 const REFERENCE_EXPIRES_AT = '2026-05-22T13:00:00.000Z';
 
 /*
- * A minimal valid PEM. We do not need the signature to verify; the
- * test stubs fetch so the JWT is never sent to a server. The
- * createSign call needs a parseable PEM, hence the real shape (a
- * 1024-bit RSA test key inlined). Generated specifically for this
- * test file via `openssl genrsa 1024`; it is NOT used anywhere live.
+ * An ephemeral RSA key pair generated at test runtime. The createSign
+ * path inside probeBotIdentity needs a parseable PEM to mint a JWT;
+ * stubbed fetch then captures the request before it leaves the
+ * process, so the key never authenticates against a live endpoint.
+ *
+ * Generating at runtime (instead of inlining a literal) keeps the
+ * repo free of static private-key material that would trip secret
+ * scanners and weaken hygiene. 1024-bit is intentional: tests do not
+ * need real cryptographic strength and the smaller modulus halves
+ * the key-generation cost on cold-start.
  */
-const TEST_PEM = `-----BEGIN RSA PRIVATE KEY-----
-MIICXAIBAAKBgQDF6QnHs8gAuY6tFvWtnzlZpz4iZepQYJ7vQQrgr4o4yK/iN8nW
-JlxRRm1XU0aGn07qCD83hVRT4FB0nfHWLogIfFGzkXOzu4ZpUXAYi0KdoCdLpiH3
-zLi9HC8YQy9R+wRzZ7Sef2K0jBOR/Y5G7BMtt8MeULIqQHHWPg+u++j3wQIDAQAB
-AoGAJ5pq5HfYJ7C0EzfgWzVR8byaRtjUS75/3wKKkLcIxLEcAlfCKLgZVcVnf/QM
-NfKnsTbHNPNqJ70UCcsLeKwhmHHWXmctZBaqdLrnE6L7QwsT7VHGGcWixQXrr4uV
-mWGu0fwq19s4FhfsXxxgTBeQQzc83v8oTKwz3ekIp7Tsm6ECQQDojGqzbBSrEW7T
-qmYWzy/zZc4tnFB/JE99dT9LBJh3KCAk+/B6m69VWQ5+IGGNwJrqgYcwPLrCNVbi
-Z7TfYjFzAkEA2nXjqBjy9hVgcEpBy7VLDFRsM5pSn6ZTzPpD/iV1AlqotPpaHsZv
-ChsR3mhE0BTBKAFqkP6jcOAfX+ZWOj3uOwJAdwLnYJBbcUibvLBdoPaqcFfEEXas
-QqEnYjNZmHPN67ENG/aD7QqYSL8RGSGMD2cT2k0NwQKpYqsCAuLnYY1WSwJBAJWk
-xnzcUNwhB1ngevjxsCsmGTZdyGCFt6cyymF3yz8tH5/5wxs8Y5HMYBKkfPJWFCMs
-8AoZpFCXkBz1nh5pZ+kCQEXfWPMOnxIyEPNV4HCDuk1pSjxnq3Tlh9wWQiSdiQVR
-cIRrkpgM39kI4lyiwwLeCK3IK1OPg9XB9Bq8nfJTkPg=
------END RSA PRIVATE KEY-----
-`;
+const TEST_PEM = generateKeyPairSync('rsa', { modulusLength: 1024 })
+  .privateKey
+  .export({ type: 'pkcs1', format: 'pem' })
+  .toString();
 
 function fixedNow() {
   return REFERENCE_NOW_MS;
@@ -202,6 +196,26 @@ describe('probeBotIdentity', () => {
     });
     expect(result.status).toBe('network-error');
     expect(result.detail).toContain('timeout');
+  });
+
+  it('returns stale when response body parses but omits the token field', async () => {
+    /*
+     * Malformed-success guard: a 201 whose body lacks `token` (an
+     * upstream proxy stripped it, or a future API revision changed
+     * the shape) must not be treated as healthy auth. Surface as
+     * stale so the operator investigates rather than blindly trusts.
+     */
+    const fetchFn = (async () => new Response(
+      JSON.stringify({ expires_at: REFERENCE_EXPIRES_AT }),
+      { status: 201, headers: { 'content-type': 'application/json' } },
+    )) as typeof globalThis.fetch;
+    const result = await probeBotIdentity('/fake/lag', 'lag-ceo', {
+      now: fixedNow,
+      fetch: fetchFn,
+      loadRoleCredentials: async () => stubCredentials('lag-ceo'),
+    });
+    expect(result.status).toBe('stale');
+    expect(result.detail).toContain('missing token');
   });
 
   it('returns stale on unparseable response body (200 but JSON broken)', async () => {
