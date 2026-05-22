@@ -333,3 +333,74 @@ describe('GitWorktreeProvider release branch cleanup', () => {
     }
   });
 });
+
+describe('GitWorktreeProvider.verifyCommitExists', () => {
+  it('resolves on a real commit sha that exists in the workspace', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'lag-verify-real-'));
+    await execa('git', ['init', '-b', 'main'], { cwd: dir });
+    await execa('git', ['config', 'user.email', 't@e.com'], { cwd: dir });
+    await execa('git', ['config', 'user.name', 'Test'], { cwd: dir });
+    await execa('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    await writeFile(join(dir, 'a.md'), 'a\n');
+    await execa('git', ['add', '.'], { cwd: dir });
+    await execa('git', ['commit', '-m', 'initial'], { cwd: dir });
+    const headSha = (await execa('git', ['rev-parse', 'HEAD'], { cwd: dir })).stdout.trim();
+
+    const p = new GitWorktreeProvider({ repoDir: dir, copyCredsForRoles: [] });
+    let ws: Awaited<ReturnType<typeof p.acquire>> | undefined;
+    try {
+      ws = await p.acquire({ principal: 'p' as PrincipalId, baseRef: 'main', correlationId: 'verify-real' });
+      await expect(p.verifyCommitExists(ws, headSha)).resolves.toBeUndefined();
+    } finally {
+      if (ws !== undefined) await p.release(ws);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a fabricated sha that does not exist in git storage', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'lag-verify-fake-'));
+    await execa('git', ['init', '-b', 'main'], { cwd: dir });
+    await execa('git', ['config', 'user.email', 't@e.com'], { cwd: dir });
+    await execa('git', ['config', 'user.name', 'Test'], { cwd: dir });
+    await execa('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    await writeFile(join(dir, 'a.md'), 'a\n');
+    await execa('git', ['add', '.'], { cwd: dir });
+    await execa('git', ['commit', '-m', 'initial'], { cwd: dir });
+
+    const p = new GitWorktreeProvider({ repoDir: dir, copyCredsForRoles: [] });
+    let ws: Awaited<ReturnType<typeof p.acquire>> | undefined;
+    try {
+      ws = await p.acquire({ principal: 'p' as PrincipalId, baseRef: 'main', correlationId: 'verify-fake' });
+      await expect(p.verifyCommitExists(ws, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef')).rejects.toThrow(/not found in workspace/);
+    } finally {
+      if (ws !== undefined) await p.release(ws);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a blob sha (peel to ^{commit} enforces commit type, not arbitrary object)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'lag-verify-blob-'));
+    await execa('git', ['init', '-b', 'main'], { cwd: dir });
+    await execa('git', ['config', 'user.email', 't@e.com'], { cwd: dir });
+    await execa('git', ['config', 'user.name', 'Test'], { cwd: dir });
+    await execa('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    await writeFile(join(dir, 'a.md'), 'a\n');
+    await execa('git', ['add', '.'], { cwd: dir });
+    await execa('git', ['commit', '-m', 'initial'], { cwd: dir });
+    // The blob sha for the content of a.md exists in git storage but
+    // is not a commit. `cat-file -e <sha>` would pass; `cat-file -e
+    // <sha>^{commit}` rejects. That difference is exactly what the
+    // peel closes.
+    const blobSha = (await execa('git', ['hash-object', join(dir, 'a.md')], { cwd: dir })).stdout.trim();
+
+    const p = new GitWorktreeProvider({ repoDir: dir, copyCredsForRoles: [] });
+    let ws: Awaited<ReturnType<typeof p.acquire>> | undefined;
+    try {
+      ws = await p.acquire({ principal: 'p' as PrincipalId, baseRef: 'main', correlationId: 'verify-blob' });
+      await expect(p.verifyCommitExists(ws, blobSha)).rejects.toThrow(/not found in workspace/);
+    } finally {
+      if (ws !== undefined) await p.release(ws);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

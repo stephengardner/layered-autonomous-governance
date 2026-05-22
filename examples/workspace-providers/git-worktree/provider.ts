@@ -197,6 +197,24 @@ export class GitWorktreeProvider implements WorkspaceProvider {
     return { id, path, baseRef: input.baseRef };
   }
 
+  async verifyCommitExists(workspace: Workspace, commitSha: string): Promise<void> {
+    // `^{commit}` peels the object: git resolves the sha and then
+    // confirms the resolved object is a commit (not a blob/tree/tag).
+    // Plain `cat-file -e <sha>` accepts any object type; that gap is
+    // what this seam closes.
+    const r = await this.exec(
+      'git',
+      ['-C', workspace.path, 'cat-file', '-e', `${commitSha}^{commit}`],
+      { reject: false },
+    );
+    if (r.exitCode !== 0) {
+      const stderr = (r.stderr ?? '').trim();
+      throw new Error(
+        `GitWorktreeProvider: commit '${commitSha}' not found in workspace${stderr ? `: ${stderr}` : ''}`,
+      );
+    }
+  }
+
   async release(workspace: Workspace): Promise<void> {
     // Idempotent: if the worktree is already gone, swallow.
     const r = await this.exec('git', ['-C', this.opts.repoDir, 'worktree', 'remove', '--force', workspace.path], { reject: false });

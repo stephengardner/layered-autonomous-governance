@@ -39,6 +39,28 @@ import type { PrincipalId } from './types.js';
 export interface WorkspaceProvider {
   acquire(input: AcquireInput): Promise<Workspace>;
   release(workspace: Workspace): Promise<void>;
+  /**
+   * Optional commit-existence verification seam. Resolves when the
+   * given sha resolves to a commit object in the workspace's storage;
+   * rejects (with the underlying error) when the sha is absent,
+   * malformed, or not a commit (e.g. a tree, blob, or tag).
+   *
+   * Callers (e.g. the agentic code-author executor) use this to fence
+   * adapter-supplied commit SHAs before propagating them into
+   * downstream operations like PR head refs. Without this seam, a
+   * misbehaving agent-loop adapter could fabricate a SHA the executor
+   * would otherwise pass through to GitHub.
+   *
+   * Provider implementations decide HOW the check works:
+   * - git-worktree: `git -C <workspace.path> cat-file -e <sha>^{commit}`
+   * - sandboxed/IDE adapters: native semantics (whatever the provider
+   *   considers a "commit" in its world).
+   *
+   * Optional for back-compat: providers that have not yet implemented
+   * the seam leave it `undefined`; callers fall back to a substrate
+   * default (or refuse to verify and surface the gap).
+   */
+  verifyCommitExists?(workspace: Workspace, commitSha: string): Promise<void>;
 }
 
 export interface AcquireInput {
