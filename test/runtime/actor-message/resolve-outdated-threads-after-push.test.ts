@@ -241,6 +241,80 @@ describe('resolveOutdatedThreadsAfterPush', () => {
     });
     expect(errAtom).toBeDefined();
   });
+
+  it('rejects with ResolveThreadsError when reviewThreads payload is missing', async () => {
+    // A repo/PR lookup failure (deleted PR, wrong owner/repo, auth
+    // scope drop) returns the GraphQL envelope with `repository: null`.
+    // The helper must treat this as a hard error rather than silently
+    // returning resolved=0, because a `resolved=0` audit atom would
+    // misrepresent a query-shape failure as a successful no-op sweep.
+    const host = createMemoryHost();
+    const client = {
+      rest: async () => undefined,
+      raw: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      executor: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      graphql: async () => ({ repository: null }),
+    } as unknown as GhClient;
+    await expect(resolveOutdatedThreadsAfterPush({
+      host,
+      ghClient: client,
+      principal: 'lag-pr-landing' as PrincipalId,
+      ...PR,
+      now: () => '2026-05-22T10:00:00.000Z',
+      newSuffix: () => 'missing-payload',
+    })).rejects.toThrow(/reviewThreads query returned no payload/);
+  });
+
+  it('reports partial-progress resolved count on a mid-loop mutation failure', async () => {
+    // The first thread resolves successfully; the second throws. The
+    // error-path audit atom must record `resolved: 1` (not 0) so an
+    // incident reader sees the partial progress. Pre-fix the audit
+    // atom under-reported every partial sweep as resolved=0.
+    const host = createMemoryHost();
+    const client = {
+      rest: async () => undefined,
+      raw: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      executor: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      async graphql(query: string, variables: Record<string, unknown> = {}) {
+        if (query.includes('reviewThreads')) {
+          return {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    { id: 'gid-1', isResolved: false, isOutdated: true },
+                    { id: 'gid-2', isResolved: false, isOutdated: true },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          };
+        }
+        const id = String(variables['id']);
+        if (id === 'gid-2') throw new Error('graphql 503');
+        return {
+          resolveReviewThread: { thread: { id, isResolved: true } },
+        };
+      },
+    } as unknown as GhClient;
+    await expect(resolveOutdatedThreadsAfterPush({
+      host,
+      ghClient: client,
+      principal: 'lag-pr-landing' as PrincipalId,
+      ...PR,
+      now: () => '2026-05-22T10:00:00.000Z',
+      newSuffix: () => 'partial',
+    })).rejects.toBeInstanceOf(ResolveThreadsError);
+    const page = await host.atoms.query({ type: ['observation'] }, 10);
+    const errorAtom = page.atoms.find((a) => {
+      const op = (a.metadata as { operator_action?: Record<string, unknown> }).operator_action;
+      return op !== undefined && op['error'] !== undefined;
+    });
+    expect(errorAtom).toBeDefined();
+    const opAction = (errorAtom!.metadata as { operator_action: Record<string, unknown> }).operator_action;
+    expect(opAction['resolved']).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

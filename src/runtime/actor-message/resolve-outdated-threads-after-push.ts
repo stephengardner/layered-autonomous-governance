@@ -1,34 +1,20 @@
 /**
- * Substrate-side enforcement of the post-fix-push outdated-review-thread
- * resolution discipline.
+ * Substrate-side sweep of outdated review threads on a pull request.
  *
- * GitHub branch protection treats unresolved review threads as a hard
- * merge gate alongside reviewDecision and CI. When a fix-commit changes
- * the line a CR comment was anchored to, GitHub marks the thread
- * `isOutdated: true` but leaves it in the unresolved bucket until
- * someone calls `resolveReviewThread` on it. A merge-eligible PR
- * therefore stays BLOCKED purely on those stale outdated threads.
+ * Some review-host backends (GitHub among them) treat unresolved
+ * review threads as a hard merge gate alongside the review decision
+ * and CI status. When a follow-up commit changes the line a thread
+ * was anchored to, the backend marks the thread `isOutdated: true`
+ * but leaves it in the unresolved bucket until something calls
+ * `resolveReviewThread` on it. A PR that is otherwise merge-eligible
+ * stays blocked purely on those stale outdated threads.
  *
- * Two PRs in the last 90 days (PRs #229 and #234) stalled exactly that
- * way; the operator stated 'this should never happen again' afterward.
- * Until now the discipline lived as a per-flow rule for PR-authoring
- * agents (run `scripts/resolve-outdated-threads.mjs <pr>` after each
- * fix-push). This helper turns the per-flow rule into a substrate
- * mechanism: every PR-authoring executor that opens a PR or pushes a
- * fix-commit calls `resolveOutdatedThreadsAfterPush(...)` and the
- * outdated-thread sweep happens regardless of which actor flow drove
- * the push.
- *
- * Canonical implementation
- * ------------------------
- * The shell script at `scripts/resolve-outdated-threads.mjs` carries
- * the same GraphQL queries, the same classification, and the same
- * pagination guard; that script remains the operator-facing CLI for
- * one-off manual resolves. The substrate helper reproduces the
- * behavior in TS so the actor loop can call it without shelling out
- * to a child process. Both paths route through `GhClient` (App-bot
- * identity); thread resolution is a routine PR action, not a CR
- * trigger.
+ * This helper is the substrate primitive that PR-authoring executors
+ * call after opening a PR or pushing a fix-commit so the outdated-
+ * thread sweep happens regardless of which actor flow drove the
+ * push. It composes through the `GhClient` interface (no subprocess
+ * spawn) so the same primitive serves any backend the consumer wires
+ * through that seam.
  *
  * Failure posture
  * ---------------
@@ -36,9 +22,7 @@
  *   failure. A resolution glitch must NEVER fail the PR-create or
  *   fix-push flow that just succeeded.
  * - On any thrown error during the sweep, the helper rejects with a
- *   typed `ResolveThreadsError` carrying the underlying cause; the
- *   PR-creation result already landed and is the load-bearing
- *   artifact.
+ *   typed `ResolveThreadsError` carrying the underlying cause.
  * - The audit atom is best-effort: a put failure is swallowed and
  *   logged via the host's audit channel so a transient store error
  *   does not propagate up as a fatal resolve failure either.
@@ -48,9 +32,9 @@
  * Each invocation writes a single atom of type `observation` with
  * `metadata.operator_action.{kind: 'resolve-outdated-threads', ...}`.
  * The `observation` + `metadata.operator_action` shape mirrors the
- * existing `scripts/gh-as.mjs` audit-atom convention. Co-locating
- * with the existing operator_action pattern keeps the AtomType union
- * narrow until a second distinct producer justifies a dedicated type.
+ * existing audit-atom convention used elsewhere in the codebase;
+ * co-locating on that shape keeps the AtomType union narrow until a
+ * second distinct producer justifies a dedicated type.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -226,7 +210,17 @@ async function listAllReviewThreads(
     const opts = signal !== undefined ? { signal } : undefined;
     const data = await ghClient.graphql<ReviewThreadsResponse>(LIST_QUERY, vars, opts);
     const page = data.repository?.pullRequest?.reviewThreads;
-    if (!page) break;
+    // A missing reviewThreads payload usually means the repo or PR
+    // lookup failed (deleted PR, wrong owner/repo, auth scope drop).
+    // Treat it as a hard error rather than a silent no-op so the
+    // caller does not write a misleading `resolved=0` audit atom for
+    // what is actually a query-shape failure.
+    if (!page) {
+      throw new ResolveThreadsError(
+        `reviewThreads query returned no payload for ${owner}/${repo}#${prNumber}`,
+        null,
+      );
+    }
     for (const node of page.nodes) all.push(node);
     if (!page.pageInfo.hasNextPage) return all;
     const next = page.pageInfo.endCursor;
@@ -402,9 +396,15 @@ export async function resolveOutdatedThreadsAfterPush(
 
   const { resolveTargets, stillCurrent, alreadyResolved } = classifyReviewThreads(threads);
 
+  // Track threads we have already marked resolved this run. Carried
+  // into the error-path audit atom so a partial sweep records its
+  // partial progress rather than under-reporting resolved=0 when
+  // earlier threads in the loop already succeeded.
+  let resolvedCount = 0;
   for (const t of resolveTargets) {
     try {
       await resolveOneThread(input.ghClient, t.id, input.signal);
+      resolvedCount += 1;
     } catch (err) {
       const wrapped = err instanceof ResolveThreadsError
         ? err
@@ -424,7 +424,7 @@ export async function resolveOutdatedThreadsAfterPush(
           owner: input.owner,
           repo: input.repo,
           prNumber: input.prNumber,
-          resolved: 0,
+          resolved: resolvedCount,
           stillCurrent: stillCurrent.length,
           alreadyResolved: alreadyResolved.length,
           error: wrapped.message,
@@ -441,7 +441,7 @@ export async function resolveOutdatedThreadsAfterPush(
     owner: input.owner,
     repo: input.repo,
     prNumber: input.prNumber,
-    resolved: resolveTargets.length,
+    resolved: resolvedCount,
     stillCurrent: stillCurrent.length,
     alreadyResolved: alreadyResolved.length,
     error: null,
@@ -449,7 +449,7 @@ export async function resolveOutdatedThreadsAfterPush(
   const atomId = await writeAuditAtomBestEffort({ host: input.host, atom });
 
   return {
-    resolved: resolveTargets.length,
+    resolved: resolvedCount,
     stillCurrent: stillCurrent.length,
     alreadyResolved: alreadyResolved.length,
     atomId,
