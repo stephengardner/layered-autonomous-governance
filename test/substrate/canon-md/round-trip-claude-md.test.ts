@@ -133,14 +133,22 @@ describe('CanonMdManager round-trip: byte equality outside markers', () => {
     const fresh = replaceSection(fixture, 'fresh canon body');
     const afterAfter = outsideMarkers(fresh).after;
     // Markdown soft-break: a line ending with two trailing spaces.
+    // Pattern accepts both LF and CRLF because git autocrlf=true (the
+    // Windows CI default) checks out the fixture with CRLF endings.
+    // The byte-equality invariant under test is platform-agnostic;
+    // the line-ending family is whatever the checkout produced.
     expect(afterAfter).toContain('breaks softly.');
-    expect(afterAfter).toMatch(/  \nbreaks softly\./);
+    expect(afterAfter).toMatch(/ {2}\r?\nbreaks softly\./);
   });
 
   it('round-trip preserves the YAML-like metadata block verbatim', () => {
     const fresh = replaceSection(fixture, 'fresh canon body');
     const beforeAfter = outsideMarkers(fresh).before;
-    expect(beforeAfter).toContain('deployment:\n  tier: indie-floor\n  org_dial: default');
+    // Match either LF or CRLF for the line endings inside the YAML
+    // block; see the soft-break test for the rationale.
+    expect(beforeAfter).toMatch(
+      /deployment:\r?\n {2}tier: indie-floor\r?\n {2}org_dial: default/,
+    );
   });
 
   it('round-trip preserves the markdown table pipes', () => {
