@@ -14,7 +14,7 @@ V0 of the perpetual self-audit (the agent driver shipped by PR #435 with `script
 - PR #443: Console System Health page + bot-identity health endpoint
 - PR #444: regression bump on the System Health test RSA key
 
-Adjacent ships from the same self-audit-cluster window: PR #434 (sub-agent stall detector) and PR #438 (worktree-cleanup planner).
+Adjacent ships from the same self-audit-cluster window: PR #434 (sub-agent stall detector), PR #436 (sub-agent stall watcher consuming #434), and PR #438 (worktree-cleanup planner). PR #435 itself shipped the self-audit driver this V1 sits downstream of.
 
 V1 picks up where V0's backlog ended. Same 6 audit dimensions, same shape, but the gaps below only became visible after V0's hardening landed (because V0 reordered the constraint set) OR were missed because V0 prioritized differently. None of the entries below re-discover a V0 finding; each cites the artifact V0 produced and articulates the next-leverage move.
 
@@ -119,8 +119,8 @@ PRs #439, #440, #441, and #443 cite `docs/audit/2026-05-22-perpetual-self-audit-
 
 ## References
 
-- V0 driver: `scripts/self-audit-tick.mjs`, `scripts/lib/self-audit-prompt.mjs`
+- V0 driver: `scripts/self-audit-tick.mjs`, `scripts/lib/self-audit-prompt.mjs` (shipped in PR #435, the audit driver itself)
 - V0 backlog ships: PRs #437, #439, #440, #441, #442, #443, #444
-- Adjacent V0-cluster ships: PRs #434, #435, #436, #438
+- Adjacent V0-cluster ships: PRs #434, #436, #438
 - Prior audit (production-readiness): `docs/audits/2026-04-26-production-readiness-audit.md`
 - Canon: `CLAUDE.md` (and the runtime canon via `node scripts/apply-canon.mjs`)
