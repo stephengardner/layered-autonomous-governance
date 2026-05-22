@@ -112,6 +112,24 @@ export class FileAtomStore implements AtomStore {
     if (!existing) {
       throw new NotFoundError(`Atom ${String(id)} not found`);
     }
+    // Compare-and-swap guard on the stored revision. When patch.expectedRevision
+    // is omitted the update proceeds unconditionally so legacy callers keep
+    // working; when present, a mismatch means another writer raced this caller
+    // and the read-modify-write chain is no longer safe. ConflictError matches
+    // the put-collision shape so callers handle one error type for both
+    // write-time races. Note that this is a best-effort guard for the file
+    // adapter: the check runs in-process between get() and atomicWriteFile()
+    // and another writer can still squeeze in between them. A second process
+    // racing this one will observe the same expectedRevision and both can
+    // pass the check; the rename-based atomicWriteFile arbitrates which write
+    // lands last. Cross-process strict CAS would need a single-step
+    // create-or-update primitive (future SQLite adapter territory).
+    const existingRevision = existing.revision ?? 0;
+    if (patch.expectedRevision !== undefined && patch.expectedRevision !== existingRevision) {
+      throw new ConflictError(
+        `Atom ${String(id)} revision mismatch: expected ${patch.expectedRevision}, stored ${existingRevision}`,
+      );
+    }
     const nextSignals: AtomSignals = patch.signals
       ? mergeSignals(existing.signals, patch.signals)
       : existing.signals;
@@ -140,6 +158,7 @@ export class FileAtomStore implements AtomStore {
       metadata: patch.metadata
         ? Object.freeze({ ...existing.metadata, ...patch.metadata })
         : existing.metadata,
+      revision: existingRevision + 1,
       ...(patch.plan_state !== undefined
         ? { plan_state: patch.plan_state }
         : existing.plan_state !== undefined
@@ -161,6 +180,12 @@ export class FileAtomStore implements AtomStore {
   }
 
   async batchUpdate(filter: AtomFilter, patch: AtomPatch): Promise<number> {
+    // CAS is undefined over a batch (see MemoryAtomStore.batchUpdate
+    // for the substrate rationale). Reject so callers route CAS
+    // patches through update() per atom.
+    if (patch.expectedRevision !== undefined) {
+      throw new Error('batchUpdate does not support expectedRevision; use update() per atom for CAS');
+    }
     const effective: AtomFilter = { ...filter, superseded: true };
     const all = await this.loadAll();
     const matching = all.filter(a => matches(a, effective));

@@ -209,5 +209,106 @@ export function runAtomsSpec(label: string, factory: TargetFactory): void {
       expect(reread?.metadata['reaped_at']).toBe(reapedAt);
       expect(reread?.metadata['reaped_reason']).toBe(reapedReason);
     });
+
+    /*
+     * Revision + compare-and-swap contract. revision starts unset on a
+     * fresh put (treated as 0 for back-compat with atoms written before
+     * the field existed), increments by exactly 1 on every successful
+     * update, and a non-matching expectedRevision rejects with the same
+     * ConflictError shape that put-on-duplicate produces. Pinned at the
+     * conformance layer so any future adapter (file, bridge, future
+     * SQLite or remote) preserves the substrate guarantee.
+     */
+    it('revision is unset on a fresh put', async () => {
+      const atom = sampleAtom({ id: 'cas-fresh' as AtomId });
+      await host.atoms.put(atom);
+      const stored = await host.atoms.get(atom.id);
+      expect(stored?.revision).toBeUndefined();
+    });
+
+    it('revision becomes 1 after the first update', async () => {
+      const atom = sampleAtom({ id: 'cas-first' as AtomId });
+      await host.atoms.put(atom);
+      const updated = await host.atoms.update(atom.id, { confidence: 0.5 });
+      expect(updated.revision).toBe(1);
+    });
+
+    it('revision increments by 1 on each successful update', async () => {
+      const atom = sampleAtom({ id: 'cas-monotonic' as AtomId });
+      await host.atoms.put(atom);
+      const r1 = await host.atoms.update(atom.id, { confidence: 0.4 });
+      const r2 = await host.atoms.update(atom.id, { confidence: 0.5 });
+      const r3 = await host.atoms.update(atom.id, { confidence: 0.6 });
+      expect(r1.revision).toBe(1);
+      expect(r2.revision).toBe(2);
+      expect(r3.revision).toBe(3);
+    });
+
+    it('expectedRevision matching stored revision passes the CAS guard', async () => {
+      const atom = sampleAtom({ id: 'cas-match' as AtomId });
+      await host.atoms.put(atom);
+      const r1 = await host.atoms.update(atom.id, { confidence: 0.5 });
+      // r1.revision is 1; passing expectedRevision:1 must succeed.
+      const r2 = await host.atoms.update(atom.id, {
+        confidence: 0.7,
+        expectedRevision: r1.revision,
+      });
+      expect(r2.confidence).toBe(0.7);
+      expect(r2.revision).toBe(2);
+    });
+
+    it('expectedRevision mismatch rejects with ConflictError', async () => {
+      const atom = sampleAtom({ id: 'cas-mismatch' as AtomId });
+      await host.atoms.put(atom);
+      // Simulate a racing write: first caller bumps revision to 1.
+      await host.atoms.update(atom.id, { confidence: 0.5 });
+      // Second caller still has the pre-race read (revision 0) and
+      // submits a stale expectedRevision.
+      await expect(
+        host.atoms.update(atom.id, { confidence: 0.6, expectedRevision: 0 }),
+      ).rejects.toBeInstanceOf(ConflictError);
+    });
+
+    it('expectedRevision omitted skips the CAS check (back-compat)', async () => {
+      const atom = sampleAtom({ id: 'cas-backcompat' as AtomId });
+      await host.atoms.put(atom);
+      // Two updates back-to-back with no expectedRevision: both succeed.
+      // Legacy callers wrote before the CAS surface existed and must keep
+      // working until they migrate to expectedRevision.
+      const r1 = await host.atoms.update(atom.id, { confidence: 0.4 });
+      const r2 = await host.atoms.update(atom.id, { confidence: 0.5 });
+      expect(r1.revision).toBe(1);
+      expect(r2.revision).toBe(2);
+    });
+
+    it('expectedRevision=0 on a fresh atom (no prior update) passes', async () => {
+      const atom = sampleAtom({ id: 'cas-from-fresh' as AtomId });
+      await host.atoms.put(atom);
+      // A fresh atom has no revision field; the CAS guard treats this as
+      // revision 0 so the first CAS-aware update can pass expectedRevision:0.
+      const updated = await host.atoms.update(atom.id, {
+        confidence: 0.5,
+        expectedRevision: 0,
+      });
+      expect(updated.revision).toBe(1);
+    });
+
+    it('batchUpdate rejects expectedRevision and leaves matched atoms unchanged', async () => {
+      await host.atoms.put(sampleAtom({ id: 'cas-batch-1' as AtomId, principal_id: 'batch-target' as PrincipalId, taint: 'clean' }));
+      await host.atoms.put(sampleAtom({ id: 'cas-batch-2' as AtomId, principal_id: 'batch-target' as PrincipalId, taint: 'clean' }));
+      // A single expectedRevision value cannot gate N atoms each with
+      // their own revision; adapters reject at the substrate boundary
+      // BEFORE any matched atom mutates. The post-assertions pin the
+      // "reject at the boundary" contract; a future adapter that
+      // partially applied the batch before throwing would fail these.
+      await expect(
+        host.atoms.batchUpdate(
+          { principal_id: ['batch-target' as PrincipalId] },
+          { taint: 'tainted', expectedRevision: 0 },
+        ),
+      ).rejects.toThrow(/expectedRevision/);
+      expect((await host.atoms.get('cas-batch-1' as AtomId))?.taint).toBe('clean');
+      expect((await host.atoms.get('cas-batch-2' as AtomId))?.taint).toBe('clean');
+    });
   });
 }

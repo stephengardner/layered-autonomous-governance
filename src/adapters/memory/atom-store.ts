@@ -88,6 +88,22 @@ export class MemoryAtomStore implements AtomStore {
     if (!existing) {
       throw new NotFoundError(`Atom ${String(id)} not found`);
     }
+    // Compare-and-swap guard. When expectedRevision is omitted, the
+    // update proceeds unconditionally (back-compat). When present,
+    // the stored revision must match exactly; a mismatch means
+    // another writer raced this caller and the read-modify-write
+    // chain is no longer safe.
+    //
+    // existing.revision ?? 0: atoms written before the revision
+    // field existed are treated as revision 0 (matches the put-time
+    // default). ConflictError matches the put-collision shape so
+    // callers catch one error type for both write-time races.
+    const existingRevision = existing.revision ?? 0;
+    if (patch.expectedRevision !== undefined && patch.expectedRevision !== existingRevision) {
+      throw new ConflictError(
+        `Atom ${String(id)} revision mismatch: expected ${patch.expectedRevision}, stored ${existingRevision}`,
+      );
+    }
     const nextSignals: AtomSignals = patch.signals
       ? mergeSignals(existing.signals, patch.signals)
       : existing.signals;
@@ -116,6 +132,7 @@ export class MemoryAtomStore implements AtomStore {
       metadata: patch.metadata
         ? Object.freeze({ ...existing.metadata, ...patch.metadata })
         : existing.metadata,
+      revision: existingRevision + 1,
       ...(patch.plan_state !== undefined
         ? { plan_state: patch.plan_state }
         : existing.plan_state !== undefined
@@ -137,6 +154,13 @@ export class MemoryAtomStore implements AtomStore {
   }
 
   async batchUpdate(filter: AtomFilter, patch: AtomPatch): Promise<number> {
+    // CAS is undefined over a batch: every matched atom has its own
+    // revision, so a single expectedRevision value cannot meaningfully
+    // gate N writes. Reject at the substrate boundary so callers route
+    // CAS-bearing patches through update() one at a time.
+    if (patch.expectedRevision !== undefined) {
+      throw new Error('batchUpdate does not support expectedRevision; use update() per atom for CAS');
+    }
     // Include superseded atoms in batch updates (taint cascade needs this).
     const effective: AtomFilter = { ...filter, superseded: true };
     const matching = Array.from(this.atoms.values()).filter(a => matches(a, effective));
