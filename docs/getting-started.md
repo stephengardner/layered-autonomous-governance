@@ -22,7 +22,7 @@ The substrate-deep planning pipeline normally spawns a `claude` CLI sub-agent pe
 node scripts/run-cto-actor.mjs --request "Add a hello-world endpoint" --stub
 ```
 
-`--stub` swaps `HostLlmPlanningJudgment` for `stubJudgment`: same actor, same audit chain, same plan atom shape, but with a canned plan instead of an real LLM call. It is the zero-API-key way to:
+`--stub` swaps `HostLlmPlanningJudgment` for `stubJudgment`: same actor, same audit chain, same plan atom shape, but with a canned plan instead of a real LLM call. It is the zero-API-key way to:
 
 - Verify the CTO actor and Host wiring boot cleanly on your machine.
 - Watch the canon arbitration, principal authority, and `.lag/atoms/` write paths exercise end-to-end.
