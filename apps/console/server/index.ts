@@ -234,37 +234,63 @@ async function getCachedSystemHealth(): Promise<SystemHealthResponse> {
    * Install the in-flight Promise into the cache BEFORE the first
    * await. Concurrent callers in the 5s window after expiration must
    * see the same Promise (so they share one round of cloudflared +
-   * statfs + GitHub work). The cache slot is overwritten with the
-   * resolved value's expiresAt anchored to completion time, so the
-   * TTL window measures freshness-since-resolution, not freshness-
-   * since-cache-fill.
+   * statfs + GitHub work).
    *
-   * On rejection we clear the entry so the next caller retries. A
-   * cached rejection would have served stale errors to every poll
-   * for the entire TTL window, amplifying transient outages into
-   * dashboard-visible blackouts.
+   * TTL anchor: the cache entry's expiresAt is RE-ANCHORED to
+   * `Date.now() + TTL` from inside the async IIFE, AFTER
+   * buildSystemHealth resolves. This measures freshness-since-
+   * resolution, not freshness-since-cache-fill, so a slow probe
+   * (a 3-second GitHub round-trip) does not shrink the effective
+   * freshness window. An initial expiresAt is also set BEFORE the
+   * first await so a request that races in while the IIFE is
+   * pending still hits the in-flight Promise rather than triggering
+   * a duplicate fill.
+   *
+   * On rejection we evict so the next caller retries. A cached
+   * rejection would have served stale errors to every poll for the
+   * entire TTL window, amplifying transient outages into dashboard-
+   * visible blackouts.
    *
    * The canon-resolved reaper cadence lives inside the async IIFE
    * so the canon read benefits from the same dedupe.
    */
   const value: Promise<SystemHealthResponse> = (async () => {
     const cadenceMs = await resolveClaimReaperCadenceMsFromCanon();
-    return buildSystemHealth(LAG_DIR, ATOMS_DIR, {
+    const result = await buildSystemHealth(LAG_DIR, ATOMS_DIR, {
       claimReaperOpts: {
         loadAtoms: () => defaultLoadClaimReaperHeartbeatAtoms(ATOMS_DIR),
         ...(cadenceMs !== undefined ? { cadenceMs } : {}),
       },
       ...(metricsPort !== undefined ? { tunnelOpts: { metricsPort } } : {}),
     });
+    /*
+     * Re-anchor the TTL at resolution time. Identity-check the
+     * cache slot so a later fill that replaced our entry while
+     * buildSystemHealth was in flight does not get overwritten by
+     * our slower resolution.
+     */
+    if (systemHealthCacheEntry !== null && systemHealthCacheEntry.value === value) {
+      systemHealthCacheEntry = {
+        expiresAt: Date.now() + SYSTEM_HEALTH_CACHE_TTL_MS,
+        value,
+      };
+    }
+    return result;
   })();
+  // Pre-resolution cache fill so concurrent callers in the post-
+  // expiration window share the in-flight Promise. The IIFE above
+  // overwrites this with a resolution-time-anchored expiresAt once
+  // buildSystemHealth settles, so this initial expiresAt is a
+  // lower bound only.
   systemHealthCacheEntry = {
     expiresAt: Date.now() + SYSTEM_HEALTH_CACHE_TTL_MS,
     value,
   };
   // On rejection, evict so the next caller does a fresh fill rather
-  // than re-throwing the cached error for 5s. The `if` guards against
-  // the rare race where a later cache fill replaced our entry before
-  // our promise rejected; we only clear OUR own entry.
+  // than re-throwing the cached error for 5s. The identity check
+  // guards against the rare race where a later cache fill replaced
+  // our entry before our promise rejected; we only clear OUR own
+  // entry.
   void value.catch(() => {
     if (systemHealthCacheEntry !== null && systemHealthCacheEntry.value === value) {
       systemHealthCacheEntry = null;

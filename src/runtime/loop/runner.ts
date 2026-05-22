@@ -114,6 +114,17 @@ export class LoopRunner {
   private readonly canonTargets: ReadonlyArray<ResolvedCanonTarget>;
   private readonly onTick: ((report: LoopTickReport) => void | Promise<void>) | null;
   private readonly reaperPrincipal: PrincipalId | null;
+  /*
+   * Heartbeat-attribution principal sourced from
+   * `LoopOptions.reaperPrincipal` independently of `runReaperPass`.
+   * The plan-reaper requires this field at construction (and uses
+   * `this.reaperPrincipal`, set only when `runReaperPass: true`);
+   * the claim-reaper heartbeat needs the same identity even when a
+   * deployment enables the claim-reaper pass standalone with the
+   * plan-reaper off. Capturing the raw value here decouples the two
+   * passes' attribution from each other.
+   */
+  private readonly heartbeatPrincipal: PrincipalId | null;
   /**
    * Constructor-validated env / CLI fallback for the reaper TTL pair.
    * The actual TTLs used per tick come from `resolveReaperTtls`, which
@@ -431,6 +442,19 @@ export class LoopRunner {
       this.pipelineReaperEnvTtls = DEFAULT_PIPELINE_REAPER_TTLS;
       this.pipelineReaperEnvOverride = false;
     }
+    /*
+     * Capture the heartbeat-attribution principal regardless of
+     * runReaperPass. The claim-reaper pass can be enabled standalone
+     * (canon policy `pol-loop-pass-claim-reaper-default`) and its
+     * heartbeat audit-attribution must work in that mode. Falls back
+     * to null when the option is empty / absent; the orchestrator
+     * skips the heartbeat write rather than fabricating a principal.
+     */
+    const heartbeatRp = options.reaperPrincipal;
+    this.heartbeatPrincipal =
+      typeof heartbeatRp === 'string' && heartbeatRp.trim().length > 0
+        ? (heartbeatRp as PrincipalId)
+        : null;
     const principal = this.options.principalId as PrincipalId;
     // `promotionThresholds` is passed through so callers can opt out of
     // the L3 requireValidation default (e.g. when a ValidatorRegistry
@@ -1520,16 +1544,19 @@ export class LoopRunner {
     NonNullable<LoopTickReport['claimReaperReport']>
   > {
     /*
-     * Thread the LoopRunner's reaperPrincipal through to the
-     * orchestrator so the per-tick heartbeat atom carries the right
-     * audit attribution. When reaperPrincipal is null (no principal
-     * configured for the claim-reaper pass), the orchestrator skips
-     * the heartbeat write rather than fabricating a principal id.
+     * Source the heartbeat principal from the dedicated
+     * heartbeatPrincipal field captured at construction time. That
+     * field reads from `options.reaperPrincipal` independently of
+     * `runReaperPass`, so a deployment that enables the claim-reaper
+     * pass standalone (with the plan-reaper off) still gets the
+     * right heartbeat attribution. When the option is absent the
+     * orchestrator skips the heartbeat write rather than fabricating
+     * a principal.
      */
     const result: RunClaimReaperTickResult = await runClaimReaperTick(
       this.host,
-      this.reaperPrincipal !== null
-        ? { reaperPrincipal: this.reaperPrincipal }
+      this.heartbeatPrincipal !== null
+        ? { reaperPrincipal: this.heartbeatPrincipal }
         : undefined,
     );
     // Only surface `halted` when actually true so the JSON tick
