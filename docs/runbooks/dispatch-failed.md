@@ -42,4 +42,4 @@ The recovery branches on the failure reason atom.
 - Code: `src/runtime/actor-message/plan-dispatch.ts`, `examples/planning-stages/dispatch/index.ts`, `src/runtime/planning-pipeline/auditor-feedback-reprompt.ts`
 - Canon: `dev-code-author-llm-spend-cap-per-pr`, `dev-citation-fence-plan-spec-review`, `dev-drafter-cited-paths-fence`, `dev-no-hacky-workarounds`
 - Memory: `feedback_rca_vs_masking_discipline`, `project_substrate_gap8_code_author_dispatch_no_pr_observation_seed`
-- Self-audit finding P3: `docs/audit/2026-05-22-perpetual-self-audit-v0.md`
+- Self-audit V0 finding P3 (operator-readiness dashboard; audit artifact pending publication)

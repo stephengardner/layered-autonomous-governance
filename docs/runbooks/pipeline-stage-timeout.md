@@ -38,4 +38,4 @@ The recovery branches on whether the partial output is usable.
 - Code: `src/runtime/planning-pipeline/runner.ts`, `src/runtime/planning-pipeline/auditor-feedback-reprompt.ts`, `src/runtime/planning-pipeline/cross-stage-reprompt-config.ts`
 - Canon: `dev-deep-planning-pipeline`, `dev-no-hacky-workarounds`, `pol-stage-timeout-ms` (task #290)
 - Memory: `feedback_rca_vs_masking_discipline`
-- Self-audit finding P3: `docs/audit/2026-05-22-perpetual-self-audit-v0.md`
+- Self-audit V0 finding P3 (operator-readiness dashboard; audit artifact pending publication)

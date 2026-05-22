@@ -11,7 +11,7 @@ A `git worktree remove` (manual or via `scripts/lib/cleanup-merged-worktrees.mjs
 
 ## Atom kinds that fire
 
-- No specific `worktree-cleanup-failed` atom kind exists today; the planner in `scripts/lib/cleanup-merged-worktrees.mjs` is pure (decide-only) and never writes atoms. The driver (`scripts/run-cleanup-worktrees.mjs` or operator-invoked CLI) prints the failure to stderr.
+- No specific `worktree-cleanup-failed` atom kind exists today; the planner in `scripts/lib/cleanup-merged-worktrees.mjs` is pure (decide-only) and never writes atoms. The operator-invoked CLI that wraps the planner prints the failure to stderr.
 - `operator-action` atoms record manual cleanup attempts when the operator runs the cleanup script with `--write-audit`.
 
 ## Recovery steps
@@ -40,4 +40,4 @@ Per `feedback_no_head_tail_cat_in_bash` (the related memory) AND the worktree-cl
 - Code: `scripts/lib/cleanup-merged-worktrees.mjs`, `scripts/lib/scan-worktrees.mjs`, `scripts/lib/dev-server-cleanup.mjs`
 - Memory: `feedback_no_head_tail_cat_in_bash`, `feedback_bot_creds_copy_to_new_worktrees`
 - Canon: `dev-no-hacky-workarounds`, `dev-sub-agent-pr-driver-responsibility`
-- Self-audit finding P3: `docs/audit/2026-05-22-perpetual-self-audit-v0.md`
+- Self-audit V0 finding P3 (operator-readiness dashboard; audit artifact pending publication)

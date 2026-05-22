@@ -40,4 +40,4 @@ Until the LoopRunner pass ships, the absence-of-progress is the only signal; che
 
 - Code: `scripts/sub-agent-stall-watch.mjs`, `scripts/lib/sub-agent-stall-detect.mjs`, `scripts/lib/scan-worktrees.mjs`
 - Canon: `dev-sub-agent-pr-driver-responsibility`
-- Self-audit finding P3: `docs/audit/2026-05-22-perpetual-self-audit-v0.md`
+- Self-audit V0 finding P3 (operator-readiness dashboard; audit artifact pending publication)
