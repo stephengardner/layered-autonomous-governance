@@ -265,6 +265,110 @@ describe('resolveOutdatedThreadsAfterPush', () => {
     })).rejects.toThrow(/reviewThreads query returned no payload/);
   });
 
+  it('paginates reviewThreads across multiple pages before resolving', async () => {
+    // Pagination contract: when hasNextPage=true, the helper requests
+    // the next page with the prior endCursor. The total result set
+    // unions every page; resolution then runs across the union.
+    const host = createMemoryHost();
+    let listCalls = 0;
+    const observedCursors: Array<string | undefined> = [];
+    const client = {
+      rest: async () => undefined,
+      raw: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      executor: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      async graphql(query: string, variables: Record<string, unknown> = {}) {
+        if (query.includes('reviewThreads')) {
+          listCalls += 1;
+          observedCursors.push(variables['cursor'] as string | undefined);
+          if (listCalls === 1) {
+            return {
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    nodes: [{ id: 'gid-1', isResolved: false, isOutdated: true }],
+                    pageInfo: { hasNextPage: true, endCursor: 'c-page-2' },
+                  },
+                },
+              },
+            };
+          }
+          return {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [{ id: 'gid-2', isResolved: false, isOutdated: false }],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          };
+        }
+        return {
+          resolveReviewThread: {
+            thread: { id: String(variables['id']), isResolved: true },
+          },
+        };
+      },
+    } as unknown as GhClient;
+    const result = await resolveOutdatedThreadsAfterPush({
+      host,
+      ghClient: client,
+      principal: 'lag-pr-landing' as PrincipalId,
+      ...PR,
+      now: () => '2026-05-22T10:00:00.000Z',
+      newSuffix: () => 'paged',
+    });
+    // Two list calls; second carried the endCursor from page 1.
+    expect(listCalls).toBe(2);
+    expect(observedCursors[0]).toBeUndefined();
+    expect(observedCursors[1]).toBe('c-page-2');
+    // Union: 1 outdated (page 1) + 1 still-current (page 2). The
+    // outdated thread resolves; the still-current stays untouched.
+    expect(result.resolved).toBe(1);
+    expect(result.stillCurrent).toBe(1);
+  });
+
+  it('rejects with ResolveThreadsError when endCursor repeats (same-cursor guard)', async () => {
+    // Same-cursor guard: a misbehaving backend that returns
+    // hasNextPage=true with an unchanged endCursor would otherwise
+    // spin the pagination loop forever. The helper detects the stuck
+    // cursor on the second call and rejects with ResolveThreadsError.
+    const host = createMemoryHost();
+    let listCalls = 0;
+    const client = {
+      rest: async () => undefined,
+      raw: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      executor: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      async graphql(query: string) {
+        if (query.includes('reviewThreads')) {
+          listCalls += 1;
+          return {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [{ id: `gid-${listCalls}`, isResolved: false, isOutdated: false }],
+                  pageInfo: { hasNextPage: true, endCursor: 'stuck-cursor' },
+                },
+              },
+            },
+          };
+        }
+        throw new Error(`unexpected query: ${query.slice(0, 40)}`);
+      },
+    } as unknown as GhClient;
+    await expect(resolveOutdatedThreadsAfterPush({
+      host,
+      ghClient: client,
+      principal: 'lag-pr-landing' as PrincipalId,
+      ...PR,
+      now: () => '2026-05-22T10:00:00.000Z',
+      newSuffix: () => 'stuck',
+    })).rejects.toThrow(/cursor stuck/);
+    // Should have stopped at the 2nd call (when the cursor repeated),
+    // not spun forever.
+    expect(listCalls).toBe(2);
+  });
+
   it('reports partial-progress resolved count on a mid-loop mutation failure', async () => {
     // The first thread resolves successfully; the second throws. The
     // error-path audit atom must record `resolved: 1` (not 0) so an
