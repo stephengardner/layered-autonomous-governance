@@ -168,6 +168,15 @@ export class LoopRunner {
    * ticks do not re-hit the store.
    */
   private reaperPrincipalChecked: boolean = false;
+  /*
+   * Parallel guard for the heartbeat principal. Same shape and same
+   * semantics as `reaperPrincipalChecked`: the first claim-reaper
+   * pass that needs the heartbeat principal verifies it exists in
+   * the host's PrincipalStore, then caches the result so subsequent
+   * ticks do not re-hit the store. A miss does NOT flip the flag so
+   * a later (re-)provision is picked up on the next tick.
+   */
+  private heartbeatPrincipalChecked: boolean = false;
   /**
    * Refresher seam for the pr-observation refresh pass. `null` when
    * the pass is disabled OR when the caller did not wire a refresher
@@ -1552,11 +1561,33 @@ export class LoopRunner {
      * right heartbeat attribution. When the option is absent the
      * orchestrator skips the heartbeat write rather than fabricating
      * a principal.
+     *
+     * Validation: verify the principal exists in the host's
+     * PrincipalStore on the first pass that uses it. A misconfigured
+     * wiring fails loud (an error in the tick's errors[] array)
+     * rather than emitting audit rows attributed to a non-existent
+     * identity. Same shape as `reaperPass` above; we cache the check
+     * so subsequent ticks do not re-hit the store. A miss does NOT
+     * flip the checked flag so a later (re-)provision is picked up
+     * on the next tick.
      */
+    let heartbeatPrincipal: PrincipalId | undefined;
+    if (this.heartbeatPrincipal !== null) {
+      if (!this.heartbeatPrincipalChecked) {
+        const found = await this.host.principals.get(this.heartbeatPrincipal);
+        if (found === null) {
+          throw new Error(
+            `LoopRunner: heartbeat reaperPrincipal '${String(this.heartbeatPrincipal)}' not found in host.principals`,
+          );
+        }
+        this.heartbeatPrincipalChecked = true;
+      }
+      heartbeatPrincipal = this.heartbeatPrincipal;
+    }
     const result: RunClaimReaperTickResult = await runClaimReaperTick(
       this.host,
-      this.heartbeatPrincipal !== null
-        ? { reaperPrincipal: this.heartbeatPrincipal }
+      heartbeatPrincipal !== undefined
+        ? { reaperPrincipal: heartbeatPrincipal }
         : undefined,
     );
     // Only surface `halted` when actually true so the JSON tick
