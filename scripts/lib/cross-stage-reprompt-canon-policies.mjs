@@ -58,22 +58,22 @@ export function buildPolicies(_operatorId) {
       id: 'pol-cross-stage-reprompt-default',
       subject: 'cross-stage-reprompt-default',
       reason:
-        'Cross-stage re-prompt config for the deep planning pipeline. '
-        + 'When a stage`s audit() returns a finding whose reprompt_target '
-        + 'cites an upstream stage AND the severity is in '
-        + 'severities_to_reprompt, the runner walks the pipeline back to '
-        + 'the target stage and re-invokes it with the finding folded into '
-        + 'priorAuditFindings, bounded at max_attempts walks. '
-        + 'Default max_attempts=2, severities_to_reprompt=[`critical`], '
-        + 'allowed_targets=derive-from-pipeline-composition: a drafter '
-        + 'refusal in the dispatch stage can walk back to plan-stage with '
-        + 'the refusal notes, giving the plan-author a chance to repair '
-        + 'rather than halting the pipeline. Seeding this atom flips the '
-        + 'gate from dormant to active; the runner ignores reprompt_target '
-        + 'when the atom is absent. An org-ceiling deployment that wants '
-        + 'a stricter cap (max_attempts=1) or a narrower target surface '
-        + 'lands a higher-priority pol-cross-stage-reprompt-<scope> atom '
-        + 'via a deliberate canon edit.',
+        "Cross-stage re-prompt config for the deep planning pipeline. "
+        + "When a stage's audit() returns a finding whose reprompt_target "
+        + "cites an upstream stage AND the severity is in "
+        + "severities_to_reprompt, the runner walks the pipeline back to "
+        + "the target stage and re-invokes it with the finding folded into "
+        + "priorAuditFindings, bounded at max_attempts walks. "
+        + "Default max_attempts=2, severities_to_reprompt=['critical'], "
+        + "allowed_targets=derive-from-pipeline-composition: a drafter "
+        + "refusal in the dispatch stage can walk back to plan-stage with "
+        + "the refusal notes, giving the plan-author a chance to repair "
+        + "rather than halting the pipeline. Seeding this atom flips the "
+        + "gate from dormant to active; the runner ignores reprompt_target "
+        + "when the atom is absent. An org-ceiling deployment that wants "
+        + "a stricter cap (max_attempts=1) or a narrower target surface "
+        + "lands a higher-priority pol-cross-stage-reprompt-<scope> atom "
+        + "via a deliberate canon edit.",
       fields: {
         // Up to 2 cross-stage walks per pipeline run. Matches the
         // runner's HARDCODED_DEFAULT in cross-stage-reprompt-config.ts;
