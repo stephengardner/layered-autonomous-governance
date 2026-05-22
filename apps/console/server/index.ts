@@ -254,7 +254,15 @@ async function getCachedSystemHealth(): Promise<SystemHealthResponse> {
    * The canon-resolved reaper cadence lives inside the async IIFE
    * so the canon read benefits from the same dedupe.
    */
-  const value: Promise<SystemHealthResponse> = (async () => {
+  // Declared with definite-assignment assertion (`!`) because the
+  // IIFE body references `value` for the identity check on
+  // `systemHealthCacheEntry.value`; `const value = (async () => { ...
+  // value ... })();` raises TS2454 (use-before-assigned) and a plain
+  // `let value;` still raises the same diagnostic after the first
+  // `await` inside the IIFE. Every closure reference here runs after
+  // `value` has been synchronously assigned the IIFE Promise.
+  let value!: Promise<SystemHealthResponse>;
+  value = (async () => {
     const cadenceMs = await resolveClaimReaperCadenceMsFromCanon();
     /*
      * Source heartbeat atoms from the in-memory atom index. The
