@@ -94,6 +94,16 @@ export async function checkPatHealth(token, opts = {}) {
     } catch {
       // body unreadable; status is the only signal we have left
     }
+    // 5xx is a transient server outage (GitHub API down, gateway
+    // hiccup), not an authentication failure. Surface it as
+    // network-error so the caller treats it the same as a fetch
+    // exception: proceed and let the downstream request retry. A real
+    // expired-or-revoked token will surface as 401; routing 5xx to
+    // 'invalid' would prompt the operator with renewal steps during a
+    // GitHub outage when their PAT is fine.
+    if (response.status >= 500) {
+      return { kind: 'network-error', detail: `HTTP ${response.status}: ${detail}` };
+    }
     return { kind: 'invalid', status: response.status, detail };
   }
 

@@ -163,6 +163,39 @@ describe('checkPatHealth', () => {
     }
   });
 
+  it('treats 5xx as network-error (transient), not invalid (auth failure)', async () => {
+    // GitHub outage / gateway hiccup. The PAT is still valid; the
+    // caller should NOT see renewal steps. Per CR finding on PR #433:
+    // 5xx must surface as network-error so the operator does not get
+    // prompted with a token-rotation playbook during a GitHub outage.
+    const fetchFn = stubFetch(
+      new Response('upstream unavailable', { status: 503 }),
+    );
+    const result = await checkPatHealth('valid-token', { fetch: fetchFn });
+    expect(result.kind).toBe('network-error');
+    if (result.kind === 'network-error') {
+      expect(result.detail).toContain('503');
+      expect(result.detail).toContain('upstream unavailable');
+    }
+  });
+
+  it('treats other 4xx (403, 404) as invalid (the token cannot reach /user)', async () => {
+    // A 403 typically signals a missing scope on the PAT or a
+    // suspended account; the operator action is rotation/grant. A 404
+    // on /user is anomalous but still indicates the token is unusable
+    // for this endpoint. Both are 'invalid' so the caller surfaces
+    // the renewal path. (5xx is the only non-invalid 4xx/5xx case;
+    // see prior test.)
+    const fetchFn = stubFetch(
+      new Response('{"message":"Forbidden"}', { status: 403 }),
+    );
+    const result = await checkPatHealth('scope-limited-token', { fetch: fetchFn });
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.status).toBe(403);
+    }
+  });
+
   it('treats abort/timeout as network-error with timeout label', async () => {
     const fetchFn = () => {
       const err = new Error('Aborted');
