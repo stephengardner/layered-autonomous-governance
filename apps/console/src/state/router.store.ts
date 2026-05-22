@@ -196,6 +196,7 @@ export function routeHref(r: Route, id?: string): string {
 const PIPELINE_DESCENDANT_ACTIVITY_PREFIXES = [
   'pipeline-stage-event-',
   'pipeline-audit-finding-',
+  'pipeline-cross-stage-reprompt-',
   'pipeline-failed-',
   'pipeline-resume-',
 ] as const;

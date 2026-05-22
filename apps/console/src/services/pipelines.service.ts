@@ -47,6 +47,13 @@ export type {
 } from '../../server/pipeline-lifecycle-types';
 
 export type {
+  PipelineDeliberationEntry,
+  PipelineDeliberationFinding,
+  PipelineDeliberationResult,
+  PipelineDeliberationSeverity,
+} from '../../server/pipeline-deliberation-types';
+
+export type {
   IntentOutcome,
   IntentOutcomeSkipReason,
   IntentOutcomeState,
@@ -66,6 +73,7 @@ import type {
   PipelineLiveOpsResult,
 } from '../../server/pipelines-types';
 import type { PipelineLifecycle } from '../../server/pipeline-lifecycle-types';
+import type { PipelineDeliberationResult } from '../../server/pipeline-deliberation-types';
 import type { IntentOutcome } from '../../server/intent-outcome-types';
 import type { PipelineErrorState } from '../../server/pipeline-error-state-types';
 
@@ -114,6 +122,28 @@ export async function getPipelineLifecycle(
 ): Promise<PipelineLifecycle> {
   return transport.call<PipelineLifecycle>(
     'pipelines.lifecycle',
+    { pipeline_id: pipelineId },
+    signal ? { signal } : undefined,
+  );
+}
+
+/**
+ * Fetch the cross-stage deliberation thread for a pipeline. Returns
+ * the chain of `pipeline-cross-stage-reprompt` atoms (FROM_STAGE to
+ * TO_STAGE handoffs with finding payload + attempt counter +
+ * thread_parent pointer) sorted by attempt ascending so the renderer
+ * walks chronological chain order.
+ *
+ * The entries array is empty when the substrate has not emitted any
+ * cross-stage walks for the pipeline; the Console hides the surface
+ * cleanly in that case rather than showing an empty-state.
+ */
+export async function getPipelineDeliberation(
+  pipelineId: string,
+  signal?: AbortSignal,
+): Promise<PipelineDeliberationResult> {
+  return transport.call<PipelineDeliberationResult>(
+    'pipeline.deliberation',
     { pipeline_id: pipelineId },
     signal ? { signal } : undefined,
   );

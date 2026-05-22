@@ -60,6 +60,15 @@ describe('routeForAtomId', () => {
       expect(routeForAtomId('pipeline-audit-finding-xyz-2026-04-26T01-00-00-000Z')).toBe('activities');
     });
 
+    it('routes pipeline-cross-stage-reprompt-* descendants to activities', () => {
+      // Cross-stage re-prompt atoms are first-class transcript entries
+      // for the deliberation thread surface. Like other pipeline
+      // descendants, they route to activities so the focus-mode lands
+      // on /atom/<id> via the AtomDetailView dispatch path, not back
+      // to the parent pipeline.
+      expect(routeForAtomId('pipeline-cross-stage-reprompt-corr-a-b-attempt-1-corr')).toBe('activities');
+    });
+
     it('routes pipeline-failed-* descendants to activities', () => {
       expect(routeForAtomId('pipeline-failed-abc-2026-04-26T01-00-00-000Z')).toBe('activities');
     });
