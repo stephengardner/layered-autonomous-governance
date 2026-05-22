@@ -1,12 +1,23 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Activity, AlertCircle, CheckCircle2, HelpCircle, RefreshCw, XCircle } from 'lucide-react';
+import {
+  Activity,
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  ExternalLink,
+  HelpCircle,
+  RefreshCw,
+  XCircle,
+} from 'lucide-react';
 import { ErrorState } from '@/components/state-display/StateDisplay';
 import { Skeleton } from '@/components/skeleton/Skeleton';
 import {
-  getBotIdentityHealth,
+  getSystemHealth,
   type BotIdentityHealth,
   type IdentityStatus,
+  type ProbeRow,
+  type ProbeStatus,
 } from '@/services/system-health.service';
 import { toErrorMessage } from '@/services/errors';
 import styles from './SystemHealthView.module.css';
@@ -14,23 +25,31 @@ import styles from './SystemHealthView.module.css';
 /**
  * System Health dashboard.
  *
- * Renders per-bot-identity health rows so an operator can see at a
- * glance which provisioned bot identities still authenticate and
- * which are stale, network-flaky, or unprovisioned. Today the only
- * surface is bot-identity health; the page is named broadly because
- * future health probes (claim-reaper cadence, atom-store free space,
- * tunnel reachability) will land as additional rows or sections here.
+ * Renders four probe families on a single page:
+ *
+ *   1. Bot identity health, one row per provisioned role
+ *      (lag-ceo / lag-cto / lag-pr-landing / lag-actors). Each row
+ *      reflects whether the role's GitHub App credentials still mint
+ *      a valid installation token.
+ *   2. Claim-reaper cadence: green when the LoopRunner's reaper pass
+ *      emitted a recent heartbeat, yellow when slow, red when offline.
+ *   3. Tunnel reachability: green when cloudflared advertises an
+ *      active quick-tunnel, yellow on transient, red on no-tunnel.
+ *   4. Atom-store free space: green at >5% free, yellow 1-5%, red <1%.
+ *
+ * Each substrate-probe row carries a deep-link to its runbook so an
+ * operator sees the playbook directly from the dashboard without
+ * pattern-matching from atom activity.
  *
  * Refresh cadence: 30 seconds via TanStack Query refetchInterval. Bot
- * tokens normally live for an hour, so sub-minute resolution would
- * over-mint installation tokens against GitHub's API without
- * actionable operator-visible benefit. The Refresh button drives a
- * manual refetch when an operator wants a "right now" snapshot.
+ * tokens normally live for an hour and substrate probes change on
+ * minute-scale timescales (reaper heartbeat is one per minute on the
+ * indie default), so sub-minute resolution would over-poll without
+ * actionable benefit. The Refresh button drives a manual refetch.
  *
  * Mobile-first: single-column rows below 48rem; a tabular layout at
- * larger widths. Status pills meet the 44x44 touch-target floor only
- * if interactive; today they are purely informational (the row is the
- * click target if any future drill-through lands).
+ * larger widths. Runbook links + Refresh button meet the 44x44 touch-
+ * target floor.
  *
  * Loading state: skeleton rows that match the live layout, so the
  * page does not flicker from blank to populated. Per canon
@@ -41,8 +60,8 @@ const REFETCH_MS = 30_000;
 export function SystemHealthView() {
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number>(() => Date.now());
   const query = useQuery({
-    queryKey: ['system-health', 'bot-identities'],
-    queryFn: ({ signal }) => getBotIdentityHealth(signal),
+    queryKey: ['system-health', 'all'],
+    queryFn: ({ signal }) => getSystemHealth(signal),
     refetchInterval: REFETCH_MS,
     refetchIntervalInBackground: false,
   });
@@ -58,11 +77,10 @@ export function SystemHealthView() {
         <div className={styles.introText}>
           <h2 className={styles.heroTitle}>System Health</h2>
           <p className={styles.heroSubtitle}>
-            Per-bot-identity health probe. Each row reflects whether
-            the role's GitHub App credentials still mint a valid
-            installation token. Stale rows mean the App was uninstalled,
-            the private key rotated, or the installation revoked, and
-            the next push from that bot will fail with a 401.
+            Bot-identity credentials plus the substrate probes
+            (claim-reaper cadence, cloudflared tunnel reachability,
+            atom-store free space). Stale and red rows link to the
+            corresponding runbook.
           </p>
         </div>
         <div className={styles.refreshGroup}>
@@ -77,7 +95,7 @@ export function SystemHealthView() {
             onClick={handleRefresh}
             disabled={query.isFetching}
             aria-busy={query.isFetching}
-            aria-label="Refresh bot identity health"
+            aria-label="Refresh system health"
             data-testid="system-health-refresh"
           >
             <RefreshCw
@@ -91,6 +109,7 @@ export function SystemHealthView() {
         </div>
       </header>
 
+      <SubstrateProbesSection query={query} lastRefreshedAt={lastRefreshedAt} />
       <BotIdentitiesSection query={query} lastRefreshedAt={lastRefreshedAt} />
     </section>
   );
@@ -111,11 +130,146 @@ function formatRelative(ms: number): string {
   return `${Math.floor(deltaSeconds / 86400)}d ago`;
 }
 
+/**
+ * Visible label per probe id. Kept outside the component so the JSX
+ * tree stays declarative; the mapping is a small enum.
+ */
+const PROBE_LABELS: Record<ProbeRow['id'], string> = {
+  'claim-reaper-cadence': 'Claim-reaper cadence',
+  'tunnel-reachability': 'Tunnel reachability',
+  'atom-store-free-space': 'Atom-store free space',
+};
+
+function SubstrateProbesSection({
+  query,
+  lastRefreshedAt,
+}: {
+  readonly query: ReturnType<typeof useQuery<Awaited<ReturnType<typeof getSystemHealth>>>>;
+  readonly lastRefreshedAt: number;
+}) {
+  /*
+   * Substrate probes render on top of bot-identity because they are
+   * cross-cutting infrastructure health: an unreachable tunnel or
+   * stale reaper affects EVERY actor, while a single bot-identity
+   * row is scoped to one role. Operators triage the top section
+   * first.
+   */
+  if (query.isPending) {
+    return (
+      <div className={styles.tableWrap} key={`probe-skeleton-${lastRefreshedAt}`}>
+        <h3 className={styles.sectionHeading}>Substrate probes</h3>
+        <ul className={styles.probeList} data-testid="system-health-probes-loading">
+          {Array.from({ length: 3 }).map((_, idx) => (
+            <li key={idx} className={styles.probeRow}>
+              <div className={styles.probeMainCell}>
+                <Skeleton width="9rem" height="1.1rem" />
+                <Skeleton width="14rem" height="0.875rem" />
+              </div>
+              <div className={styles.probeStatusCell}>
+                <Skeleton width="4.5rem" height="1.5rem" radius="var(--radius-pill)" />
+              </div>
+              <div className={styles.probeRunbookCell}>
+                <Skeleton width="5rem" height="0.875rem" />
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  if (query.isError) {
+    return (
+      <ErrorState
+        title="Could not load substrate probes"
+        message={toErrorMessage(query.error)}
+        testId="system-health-probes-error"
+      />
+    );
+  }
+
+  const probes = query.data?.probes ?? [];
+  if (probes.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className={styles.tableWrap}>
+      <h3 className={styles.sectionHeading}>Substrate probes</h3>
+      <ul className={styles.probeList} data-testid="system-health-probes-list">
+        {probes.map((probe) => (
+          <ProbeRowItem key={probe.id} probe={probe} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ProbeRowItem({ probe }: { readonly probe: ProbeRow }) {
+  /*
+   * Truncate the detail at the row level so a long statfs path or
+   * cloudflared error string does not force a horizontal scroll on a
+   * narrow viewport. The full detail lives in the title attribute
+   * for hover discovery; the runbook deep-link carries the playbook.
+   */
+  return (
+    <li
+      className={styles.probeRow}
+      data-testid={`system-health-probe-row-${probe.id}`}
+      data-status={probe.status}
+    >
+      <div className={styles.probeMainCell}>
+        <div className={styles.probeLabel}>{PROBE_LABELS[probe.id]}</div>
+        <div className={styles.probeSummary}>{probe.summary}</div>
+        <div className={styles.probeDetail} title={probe.detail}>
+          {probe.detail}
+        </div>
+      </div>
+      <div className={styles.probeStatusCell}>
+        <ProbeStatusPill status={probe.status} />
+      </div>
+      <div className={styles.probeRunbookCell}>
+        <a
+          className={styles.runbookLink}
+          href={probe.runbookHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid={`system-health-probe-runbook-${probe.id}`}
+          aria-label={`Open runbook for ${PROBE_LABELS[probe.id]}`}
+        >
+          <ExternalLink size={14} strokeWidth={2} aria-hidden="true" />
+          <span>Runbook</span>
+        </a>
+      </div>
+    </li>
+  );
+}
+
+function ProbeStatusPill({ status }: { readonly status: ProbeStatus }) {
+  const config = {
+    green: { label: 'Healthy', Icon: CheckCircle2 },
+    yellow: { label: 'Warning', Icon: AlertTriangle },
+    red: { label: 'Critical', Icon: XCircle },
+  } as const;
+  const { label, Icon } = config[status];
+  return (
+    <span
+      className={styles.statusPill}
+      data-status={status}
+      role="status"
+      aria-label={`Status: ${label}`}
+    >
+      <Icon size={14} strokeWidth={2} aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+  );
+}
+
 function BotIdentitiesSection({
   query,
   lastRefreshedAt,
 }: {
-  readonly query: ReturnType<typeof useQuery<Awaited<ReturnType<typeof getBotIdentityHealth>>>>;
+  readonly query: ReturnType<typeof useQuery<Awaited<ReturnType<typeof getSystemHealth>>>>;
   readonly lastRefreshedAt: number;
 }) {
   /*
@@ -129,6 +283,7 @@ function BotIdentitiesSection({
   if (query.isPending) {
     return (
       <div className={styles.tableWrap} key={`skeleton-${lastRefreshedAt}`}>
+        <h3 className={styles.sectionHeading}>Bot identities</h3>
         <ul className={styles.identityList} data-testid="system-health-loading">
           {Array.from({ length: 4 }).map((_, idx) => (
             <li key={idx} className={styles.identityRow}>
@@ -178,6 +333,7 @@ function BotIdentitiesSection({
 
   return (
     <div className={styles.tableWrap}>
+      <h3 className={styles.sectionHeading}>Bot identities</h3>
       <ul className={styles.identityList} data-testid="system-health-list">
         {identities.map((identity) => (
           <IdentityRow key={identity.role} identity={identity} />
@@ -272,4 +428,3 @@ function formatAge(ageMs: number | null): string {
   const days = Math.floor(hours / 24);
   return `${days}d`;
 }
-

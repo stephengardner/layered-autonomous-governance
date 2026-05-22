@@ -172,7 +172,10 @@ import {
 } from './pipeline-abandon';
 import {
   buildBotIdentityHealth,
+  buildSystemHealth,
+  defaultLoadClaimReaperHeartbeatAtoms,
   type BotIdentityHealthResponse,
+  type SystemHealthResponse,
 } from './system-health';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -193,6 +196,52 @@ const ATOMS_DIR = join(LAG_DIR, 'atoms');
 const PRINCIPALS_DIR = join(LAG_DIR, 'principals');
 
 const PORT = Number.parseInt(process.env.LAG_CONSOLE_BACKEND_PORT ?? '9081', 10);
+
+/*
+ * System Health aggregator cache. Hot path: an operator on the System
+ * Health page refreshes every 30s. Cold path: rapid manual refresh
+ * presses or multiple browser tabs. Both should hit cloudflared +
+ * statfs + GitHub at most once per 5 seconds. The 5s window is below
+ * the page's 30s refresh cadence so a real refresh never sees stale
+ * data; bursty operator clicks are absorbed.
+ *
+ * Cache invalidation is purely time-based; the underlying data
+ * (token expiry / tunnel hostname / free-space) changes on its own
+ * cadence and is not driven by user-visible events.
+ */
+const SYSTEM_HEALTH_CACHE_TTL_MS = 5_000;
+let systemHealthCacheEntry: {
+  readonly expiresAt: number;
+  readonly value: Promise<SystemHealthResponse>;
+} | null = null;
+
+async function getCachedSystemHealth(): Promise<SystemHealthResponse> {
+  const now = Date.now();
+  if (systemHealthCacheEntry !== null && systemHealthCacheEntry.expiresAt > now) {
+    return systemHealthCacheEntry.value;
+  }
+  /*
+   * Read the cloudflared metrics port from env. cloudflared default
+   * is localhost:20241 (the first in its 20241..20245 sequence) so a
+   * fresh install with no env var hits the right port; an operator
+   * running on a custom metrics port sets LAG_TUNNEL_METRICS_PORT.
+   */
+  const metricsPortRaw = process.env.LAG_TUNNEL_METRICS_PORT;
+  const metricsPort = metricsPortRaw && /^\d+$/.test(metricsPortRaw)
+    ? Number.parseInt(metricsPortRaw, 10)
+    : undefined;
+  const value = buildSystemHealth(LAG_DIR, ATOMS_DIR, {
+    claimReaperOpts: {
+      loadAtoms: () => defaultLoadClaimReaperHeartbeatAtoms(ATOMS_DIR),
+    },
+    tunnelOpts: metricsPort !== undefined ? { metricsPort } : undefined,
+  });
+  systemHealthCacheEntry = {
+    expiresAt: now + SYSTEM_HEALTH_CACHE_TTL_MS,
+    value,
+  };
+  return value;
+}
 
 // ---------------------------------------------------------------------------
 // Atom types (re-declared here so server + frontend stay decoupled).
@@ -4038,9 +4087,43 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
      * console-allowlisted origin may read the surface because
      * identity health is operator-readiness telemetry, not secret
      * material (no tokens are returned to the client).
+     *
+     * Back-compat: this endpoint pre-dates the aggregated
+     * /api/system-health.all surface and stays live so existing
+     * clients (and the System Health page's older builds) keep
+     * working. New consumers should use the aggregated endpoint.
      */
     try {
       const data: BotIdentityHealthResponse = await buildBotIdentityHealth(LAG_DIR);
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'system-health-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/system-health.all' && req.method === 'POST') {
+    /*
+     * Aggregated System Health surface: bot-identity rows plus the
+     * three substrate probes (claim-reaper cadence, tunnel
+     * reachability, atom-store free space). The frontend hits this
+     * endpoint instead of four separate ones so a single 30s refresh
+     * fetches the complete page state.
+     *
+     * Probes are independent and run concurrently inside
+     * `buildSystemHealth`; the aggregate latency is bounded by the
+     * slowest one (normally the GitHub token-mint round-trip).
+     *
+     * Cache: the System Health page polls at 30s; an aggressive
+     * refresh (operator clicking Refresh repeatedly) would hit
+     * cloudflared + statfs + GitHub on every press. The 5s in-memory
+     * cache below absorbs that without introducing a tunable knob;
+     * the staleness window is below the 30s page refresh so an
+     * operator's click cadence never sees stale state on a real
+     * refresh.
+     */
+    try {
+      const data = await getCachedSystemHealth();
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'system-health-failed', (err as Error).message);

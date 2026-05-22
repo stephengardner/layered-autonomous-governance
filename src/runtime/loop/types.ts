@@ -160,6 +160,13 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   'claim-attestation-rejected': 365 * 24 * 60 * 60 * 1000,  // ~1 year
   'claim-stalled': 365 * 24 * 60 * 60 * 1000,               // ~1 year
   'claim-escalated': 365 * 24 * 60 * 60 * 1000,             // ~1 year
+  // Reaper sweep heartbeat atoms are operational telemetry written
+  // once per non-halted tick. A 7-day half-life is plenty for the
+  // System Health probe (which reads only the most recent atom) and
+  // keeps the atom-store from accumulating sweep heartbeats from a
+  // months-old loop run; operational purge belongs in a follow-up
+  // policy atom rather than the decay axis.
+  'claim-reaper-sweep-completed': 7 * 24 * 60 * 60 * 1000,  // ~1 week
 });
 
 export interface LoopOptions {

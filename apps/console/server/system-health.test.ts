@@ -1,9 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
 import {
+  ATOM_STORE_GREEN_FREE_PCT,
+  ATOM_STORE_YELLOW_FREE_PCT,
+  DEFAULT_CLAIM_REAPER_CADENCE_MS,
   buildBotIdentityHealth,
+  buildSystemHealth,
   PROBED_ROLES,
+  probeAtomStoreFreeSpace,
   probeBotIdentity,
+  probeClaimReaperCadence,
+  probeTunnelReachability,
+  type ProbeAtom,
+  type ProbeStatFs,
   type RoleCredentials,
 } from './system-health';
 
@@ -311,5 +320,417 @@ describe('buildBotIdentityHealth', () => {
     });
     expect(result.identities).toHaveLength(PROBED_ROLES.length);
     expect(result.identities.every((r) => r.status === 'not-provisioned')).toBe(true);
+  });
+});
+
+/*
+ * Tests for the three substrate probes: claim-reaper cadence, tunnel
+ * reachability, atom-store free space.
+ *
+ * Each probe is a pure function with injected dependencies (now,
+ * fetch, statfs, atom loader). Tests drive every status branch
+ * (green / yellow / red) plus the error-path branches that surface
+ * as red rows with a diagnostic detail string.
+ */
+
+function mkSweepAtom(id: string, createdAt: string): ProbeAtom {
+  return {
+    id,
+    type: 'claim-reaper-sweep-completed',
+    created_at: createdAt,
+    metadata: { reaper_sweep: { detected: 0, recovered: 0, escalated: 0 } },
+  };
+}
+
+describe('probeClaimReaperCadence', () => {
+  /*
+   * REFERENCE_NOW_MS is shared with the bot-identity suite above. The
+   * cadence default is 60_000ms so the test fixtures key elapsed-since
+   * values off that constant.
+   */
+  it('returns green when the most recent sweep is fresher than 2x cadence', async () => {
+    const recent = REFERENCE_NOW_MS - 30_000; // 0.5x cadence ago
+    const result = await probeClaimReaperCadence({
+      now: fixedNow,
+      loadAtoms: async () => [mkSweepAtom('a1', new Date(recent).toISOString())],
+    });
+    expect(result.status).toBe('green');
+    expect(result.id).toBe('claim-reaper-cadence');
+    expect(result.summary).toMatch(/Reaper swept/);
+    expect(result.runbookHref).toContain('reaper-not-running');
+  });
+
+  it('returns yellow when the most recent sweep is between 2x and 5x cadence ago', async () => {
+    const stale = REFERENCE_NOW_MS - 3 * DEFAULT_CLAIM_REAPER_CADENCE_MS; // 3x cadence
+    const result = await probeClaimReaperCadence({
+      now: fixedNow,
+      loadAtoms: async () => [mkSweepAtom('a2', new Date(stale).toISOString())],
+    });
+    expect(result.status).toBe('yellow');
+    expect(result.summary).toMatch(/slow/);
+  });
+
+  it('returns red when the most recent sweep is older than 5x cadence', async () => {
+    const veryStale = REFERENCE_NOW_MS - 10 * DEFAULT_CLAIM_REAPER_CADENCE_MS;
+    const result = await probeClaimReaperCadence({
+      now: fixedNow,
+      loadAtoms: async () => [mkSweepAtom('a3', new Date(veryStale).toISOString())],
+    });
+    expect(result.status).toBe('red');
+    expect(result.summary).toMatch(/offline/);
+  });
+
+  it('returns red with absent-heartbeat detail when no sweep atom is found', async () => {
+    const result = await probeClaimReaperCadence({
+      now: fixedNow,
+      loadAtoms: async () => [],
+    });
+    expect(result.status).toBe('red');
+    expect(result.detail).toContain('No claim-reaper-sweep-completed atom');
+  });
+
+  it('ignores atoms of other types in the loaded array', async () => {
+    /*
+     * The default loader only filters by filename prefix; the probe
+     * itself filters by `type` field so a future filename-pattern
+     * collision (e.g. test fixtures) does not poison the cadence
+     * calculation. Pin that behavior here.
+     */
+    const recent = REFERENCE_NOW_MS - 1_000;
+    const distractor: ProbeAtom = {
+      id: 'distractor',
+      type: 'observation',
+      created_at: new Date(REFERENCE_NOW_MS).toISOString(),
+    };
+    const result = await probeClaimReaperCadence({
+      now: fixedNow,
+      loadAtoms: async () => [distractor, mkSweepAtom('sweep', new Date(recent).toISOString())],
+    });
+    expect(result.status).toBe('green');
+  });
+
+  it('picks the most recent sweep when multiple atoms exist', async () => {
+    const old = REFERENCE_NOW_MS - 1_000_000;
+    const newest = REFERENCE_NOW_MS - 500;
+    const result = await probeClaimReaperCadence({
+      now: fixedNow,
+      loadAtoms: async () => [
+        mkSweepAtom('old', new Date(old).toISOString()),
+        mkSweepAtom('newest', new Date(newest).toISOString()),
+      ],
+    });
+    expect(result.status).toBe('green');
+    expect(result.detail).toContain('newest');
+  });
+
+  it('surfaces atom-loader failures as red without throwing', async () => {
+    const result = await probeClaimReaperCadence({
+      now: fixedNow,
+      loadAtoms: async () => {
+        throw new Error('EACCES: permission denied');
+      },
+    });
+    expect(result.status).toBe('red');
+    expect(result.detail).toContain('EACCES');
+  });
+
+  it('honours a caller-supplied cadenceMs override', async () => {
+    /*
+     * An org-ceiling deployment that tightens the reaper cadence to
+     * 10s expects the probe thresholds to follow (2x = 20s yellow,
+     * 5x = 50s red). The cadenceMs seam threads the canon-resolved
+     * value into the probe at the boundary; tests pin it directly.
+     */
+    const result = await probeClaimReaperCadence({
+      now: fixedNow,
+      cadenceMs: 10_000,
+      loadAtoms: async () => [
+        mkSweepAtom('a', new Date(REFERENCE_NOW_MS - 30_000).toISOString()),
+      ],
+    });
+    // 30s = 3x of 10s cadence -> yellow
+    expect(result.status).toBe('yellow');
+  });
+});
+
+describe('probeTunnelReachability', () => {
+  it('returns green when cloudflared returns 200 with a hostname', async () => {
+    const fetchFn = (async () => new Response(
+      JSON.stringify({ hostname: 'fluffy-rabbit-1234.trycloudflare.com' }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )) as typeof globalThis.fetch;
+    const result = await probeTunnelReachability({
+      now: fixedNow,
+      fetch: fetchFn,
+    });
+    expect(result.status).toBe('green');
+    expect(result.summary).toContain('fluffy-rabbit-1234.trycloudflare.com');
+    expect(result.runbookHref).toContain('tunnel-disconnected');
+  });
+
+  it('returns yellow on ECONNREFUSED (tunnel not running yet)', async () => {
+    const fetchFn = (() => Promise.reject(new Error('ECONNREFUSED'))) as unknown as typeof globalThis.fetch;
+    const result = await probeTunnelReachability({
+      now: fixedNow,
+      fetch: fetchFn,
+    });
+    expect(result.status).toBe('yellow');
+    expect(result.detail).toContain('ECONNREFUSED');
+  });
+
+  it('returns yellow on AbortError / timeout', async () => {
+    const fetchFn = (() => {
+      const err = new Error('signal aborted');
+      err.name = 'TimeoutError';
+      return Promise.reject(err);
+    }) as unknown as typeof globalThis.fetch;
+    const result = await probeTunnelReachability({
+      now: fixedNow,
+      fetch: fetchFn,
+    });
+    expect(result.status).toBe('yellow');
+  });
+
+  it('returns yellow on HTTP 5xx (cloudflared starting up)', async () => {
+    const fetchFn = (async () => new Response('Service Unavailable', { status: 503 })) as typeof globalThis.fetch;
+    const result = await probeTunnelReachability({
+      now: fixedNow,
+      fetch: fetchFn,
+    });
+    expect(result.status).toBe('yellow');
+    expect(result.summary).toContain('HTTP 503');
+  });
+
+  it('returns red on 200 with no hostname (cloudflared up but no quick-tunnel)', async () => {
+    const fetchFn = (async () => new Response(
+      JSON.stringify({ /* no hostname field */ }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )) as typeof globalThis.fetch;
+    const result = await probeTunnelReachability({
+      now: fixedNow,
+      fetch: fetchFn,
+    });
+    expect(result.status).toBe('red');
+    expect(result.summary).toMatch(/No active quick-tunnel/);
+  });
+
+  it('returns red on 200 with malformed JSON (proxy stripped body)', async () => {
+    const fetchFn = (async () => new Response(
+      'not-json-{',
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )) as typeof globalThis.fetch;
+    const result = await probeTunnelReachability({
+      now: fixedNow,
+      fetch: fetchFn,
+    });
+    expect(result.status).toBe('red');
+    expect(result.summary).toContain('malformed JSON');
+  });
+
+  it('returns red on 200 with hostname=empty-string (cloudflared bug surface)', async () => {
+    /*
+     * Defensive: cloudflared has historically had bug surfaces where
+     * the metrics endpoint returns an empty string. Empty string is
+     * not "active tunnel"; treat it as red.
+     */
+    const fetchFn = (async () => new Response(
+      JSON.stringify({ hostname: '' }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )) as typeof globalThis.fetch;
+    const result = await probeTunnelReachability({
+      now: fixedNow,
+      fetch: fetchFn,
+    });
+    expect(result.status).toBe('red');
+  });
+
+  it('uses the metricsPort override when supplied', async () => {
+    /*
+     * The probe is wired to cloudflared's first-port-default (20241)
+     * but an operator running on a custom port via --metrics flags
+     * the override through. Verify the URL the probe issues actually
+     * carries the custom port.
+     */
+    let calledWith: string | null = null;
+    const fetchFn = (async (url: string) => {
+      calledWith = url;
+      return new Response(
+        JSON.stringify({ hostname: 'h.trycloudflare.com' }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof globalThis.fetch;
+    await probeTunnelReachability({
+      now: fixedNow,
+      fetch: fetchFn,
+      metricsPort: 31415,
+    });
+    expect(calledWith).toContain(':31415');
+    expect(calledWith).toContain('/quicktunnel');
+  });
+});
+
+describe('probeAtomStoreFreeSpace', () => {
+  /*
+   * statfs returns block counts; the probe computes (bavail / blocks)
+   * as a percentage. We construct ProbeStatFs literals so the test
+   * isolates the threshold logic from any real filesystem.
+   *
+   * 1 KiB block size keeps the byte math human-readable in failures.
+   */
+  function mkStat(freePct: number, totalBlocks = 1_000_000): ProbeStatFs {
+    return {
+      bsize: 1024,
+      blocks: totalBlocks,
+      bfree: Math.floor(totalBlocks * freePct / 100),
+      bavail: Math.floor(totalBlocks * freePct / 100),
+    };
+  }
+
+  it('returns green when free space > 5%', async () => {
+    const result = await probeAtomStoreFreeSpace('/fake/atoms', {
+      now: fixedNow,
+      statfs: async () => mkStat(20),
+    });
+    expect(result.status).toBe('green');
+    expect(result.summary).toContain('healthy');
+    expect(result.runbookHref).toContain('atom-store-enospc');
+  });
+
+  it('returns green at exactly the green threshold ceiling', async () => {
+    // 5.01% is green (strictly greater than 5)
+    const result = await probeAtomStoreFreeSpace('/fake/atoms', {
+      now: fixedNow,
+      statfs: async () => mkStat(5.01),
+    });
+    expect(result.status).toBe('green');
+  });
+
+  it('returns yellow when free space is between 1% and 5%', async () => {
+    const result = await probeAtomStoreFreeSpace('/fake/atoms', {
+      now: fixedNow,
+      statfs: async () => mkStat(3),
+    });
+    expect(result.status).toBe('yellow');
+    expect(result.summary).toContain('tight');
+  });
+
+  it('returns yellow at exactly the yellow lower boundary', async () => {
+    // 1% is yellow (inclusive)
+    const result = await probeAtomStoreFreeSpace('/fake/atoms', {
+      now: fixedNow,
+      statfs: async () => mkStat(1),
+    });
+    expect(result.status).toBe('yellow');
+  });
+
+  it('returns red when free space is < 1%', async () => {
+    const result = await probeAtomStoreFreeSpace('/fake/atoms', {
+      now: fixedNow,
+      statfs: async () => mkStat(0.5),
+    });
+    expect(result.status).toBe('red');
+    expect(result.summary).toContain('critical');
+  });
+
+  it('returns red on statfs throw (filesystem unmounted or permission denied)', async () => {
+    const result = await probeAtomStoreFreeSpace('/fake/atoms', {
+      now: fixedNow,
+      statfs: async () => {
+        throw new Error('ENOENT: no such file or directory');
+      },
+    });
+    expect(result.status).toBe('red');
+    expect(result.detail).toContain('ENOENT');
+  });
+
+  it('returns red when statfs returns zero blocks (degenerate partition)', async () => {
+    const result = await probeAtomStoreFreeSpace('/fake/atoms', {
+      now: fixedNow,
+      statfs: async () => ({ bsize: 4096, blocks: 0, bfree: 0, bavail: 0 }),
+    });
+    expect(result.status).toBe('red');
+    expect(result.detail).toContain('zero capacity');
+  });
+
+  it('threshold constants stay aligned with the documented runbook prose', () => {
+    /*
+     * Regression guard: the runbook prose at docs/runbooks/atom-store-
+     * enospc.md cites 5% as the yellow ceiling and 1% as the red
+     * boundary. If a future tuning changes the constants, the runbook
+     * narrative needs to be updated in lock-step.
+     */
+    expect(ATOM_STORE_GREEN_FREE_PCT).toBe(5);
+    expect(ATOM_STORE_YELLOW_FREE_PCT).toBe(1);
+  });
+});
+
+describe('buildSystemHealth', () => {
+  it('returns identities + probes in a single response with stable probe order', async () => {
+    const result = await buildSystemHealth('/fake/lag', '/fake/atoms', {
+      identityOpts: {
+        now: fixedNow,
+        fetch: stubFetchOk(),
+        loadRoleCredentials: async (_dir, role) => stubCredentials(role),
+      },
+      claimReaperOpts: {
+        now: fixedNow,
+        loadAtoms: async () => [
+          mkSweepAtom('s', new Date(REFERENCE_NOW_MS - 1_000).toISOString()),
+        ],
+      },
+      tunnelOpts: {
+        now: fixedNow,
+        fetch: (async () => new Response(
+          JSON.stringify({ hostname: 'h.trycloudflare.com' }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )) as typeof globalThis.fetch,
+      },
+      atomStoreOpts: {
+        now: fixedNow,
+        statfs: async () => ({ bsize: 1024, blocks: 1_000_000, bfree: 200_000, bavail: 200_000 }),
+      },
+    });
+    expect(result.identities).toHaveLength(PROBED_ROLES.length);
+    expect(result.probes).toHaveLength(3);
+    expect(result.probes.map((p) => p.id)).toEqual([
+      'claim-reaper-cadence',
+      'tunnel-reachability',
+      'atom-store-free-space',
+    ]);
+    // All four surfaces green / fresh on the happy path
+    expect(result.identities.every((r) => r.status === 'fresh')).toBe(true);
+    expect(result.probes.every((p) => p.status === 'green')).toBe(true);
+  });
+
+  it('does not let one failing probe poison the others', async () => {
+    const result = await buildSystemHealth('/fake/lag', '/fake/atoms', {
+      identityOpts: {
+        now: fixedNow,
+        fetch: stubFetchOk(),
+        loadRoleCredentials: async (_dir, role) => stubCredentials(role),
+      },
+      claimReaperOpts: {
+        now: fixedNow,
+        loadAtoms: async () => { throw new Error('boom'); },
+      },
+      tunnelOpts: {
+        now: fixedNow,
+        fetch: (async () => new Response(
+          JSON.stringify({ hostname: 'h.trycloudflare.com' }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )) as typeof globalThis.fetch,
+      },
+      atomStoreOpts: {
+        now: fixedNow,
+        statfs: async () => ({ bsize: 1024, blocks: 1_000_000, bfree: 200_000, bavail: 200_000 }),
+      },
+    });
+    expect(result.probes).toHaveLength(3);
+    const reaper = result.probes.find((p) => p.id === 'claim-reaper-cadence')!;
+    const tunnel = result.probes.find((p) => p.id === 'tunnel-reachability')!;
+    const atomStore = result.probes.find((p) => p.id === 'atom-store-free-space')!;
+    expect(reaper.status).toBe('red');
+    expect(tunnel.status).toBe('green');
+    expect(atomStore.status).toBe('green');
   });
 });

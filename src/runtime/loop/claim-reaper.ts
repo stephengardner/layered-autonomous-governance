@@ -221,6 +221,13 @@ export interface RunClaimReaperTickResult {
  * - Phase B drains the stalled queue: cap-exceeded claims escalate +
  *   abandon; under-cap claims recover via the atomic recovery-step +
  *   dispatch.
+ * - Heartbeat: when neither phase threw, write one
+ *   `claim-reaper-sweep-completed` atom carrying the per-tick counts.
+ *   The atom is the substrate-visible signal that the reaper pass
+ *   actually ran; the Console System Health page reads its
+ *   created_at to surface a reaper-cadence probe row. Operators
+ *   pattern-match an aging heartbeat to "the reaper has stopped"
+ *   instead of reading tea leaves out of activity-feed silence.
  */
 export async function runClaimReaperTick(
   host: Host,
@@ -238,11 +245,83 @@ export async function runClaimReaperTick(
   }
   const detected = await detectStalledClaims(host);
   const drain = await drainStalledQueue(host, options);
+  // Best-effort heartbeat write. A failure here MUST NOT poison the
+  // tick: the reaper has already done its real work via Phase A and
+  // Phase B; the heartbeat is observability, not a load-bearing
+  // governance signal. Catch + log so a downstream atom-store
+  // outage does not surface as a reaper-tick exception that the
+  // LoopRunner counts toward its error budget.
+  try {
+    await writeReaperSweepCompletedAtom(host, {
+      detected: detected.length,
+      recovered: drain.recovered,
+      escalated: drain.escalated,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[claim-reaper] heartbeat write failed: ${(err as Error).message}`,
+    );
+  }
   return {
     detected: detected.length,
     recovered: drain.recovered,
     escalated: drain.escalated,
   };
+}
+
+/**
+ * Write the `claim-reaper-sweep-completed` heartbeat atom. The id is
+ * keyed by a host-clock timestamp + short random suffix so concurrent
+ * reaper ticks (rare; the LoopRunner serializes them) produce
+ * distinct ids. The metadata block carries the per-tick counts so
+ * the Console probe can read sweep activity without joining against
+ * `claim-stalled` / `claim-escalated` atoms.
+ *
+ * Layer is L0: the heartbeat is an observation, not canon.
+ * Provenance kind is `agent-inferred` so the audit chain shows the
+ * reaper itself as the source.
+ */
+async function writeReaperSweepCompletedAtom(
+  host: Host,
+  counts: { readonly detected: number; readonly recovered: number; readonly escalated: number },
+): Promise<void> {
+  const now = host.clock.now();
+  const id = `claim-reaper-sweep-completed-${now.replace(/[^0-9]/g, '')}-${randomShortSuffix()}` as AtomId;
+  await host.atoms.put({
+    schema_version: 1,
+    id,
+    content: `reaper-sweep detected=${counts.detected} recovered=${counts.recovered} escalated=${counts.escalated}`,
+    type: 'claim-reaper-sweep-completed',
+    layer: 'L0',
+    provenance: {
+      kind: 'agent-inferred',
+      source: { agent_id: 'claim-reaper' },
+      derived_from: [],
+    },
+    confidence: 1,
+    created_at: now,
+    last_reinforced_at: now,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'verified',
+      last_validated_at: now,
+    },
+    principal_id: 'claim-reaper' as PrincipalId,
+    taint: 'clean',
+    metadata: {
+      reaper_sweep: {
+        detected: counts.detected,
+        recovered: counts.recovered,
+        escalated: counts.escalated,
+      },
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------

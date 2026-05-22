@@ -251,11 +251,19 @@ export type AtomType =
   // reached and the claim's failure surfaces to the operator. Carries
   // the cumulative failure reasons and the chain of session-atom ids
   // that participated in the failed recovery attempts.
+  // `claim-reaper-sweep-completed`: written by the reaper orchestrator
+  // at the end of every non-halted tick. Carries the per-tick counts
+  // (detected / recovered / escalated) under metadata.reaper_sweep.
+  // The Console System Health page reads created_at across these atoms
+  // to surface a reaper-cadence probe row; an absent or aging sweep
+  // signals an offline reaper without requiring a join across
+  // claim-stalled / claim-escalated kinds.
   | 'work-claim'
   | 'claim-attestation-accepted'
   | 'claim-attestation-rejected'
   | 'claim-stalled'
-  | 'claim-escalated';
+  | 'claim-escalated'
+  | 'claim-reaper-sweep-completed';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite
