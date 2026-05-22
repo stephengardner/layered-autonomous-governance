@@ -101,7 +101,16 @@ interface BaseConfig {
   workspaceProvider?: WorkspaceProvider;
   ghClient?: GhClient;
   host?: ReturnType<typeof createMemoryHost>;
+  verifyCommitExists?: (workspacePath: string, sha: string) => Promise<void>;
 }
+
+// Pass-through verifier used by tests that exercise paths AFTER the
+// SHA-verification gate. The production default spawns
+// `git cat-file -e`, which cannot run against the stub workspace
+// path `/tmp/lag-test`; injecting a no-op keeps the happy-path tests
+// focused on what they pin (PR-create call shape, workspace release,
+// failure-mapping table) without coupling them to the verifier.
+const PASS_VERIFY: (workspacePath: string, sha: string) => Promise<void> = async () => undefined;
 
 function buildExec(opts: BaseConfig) {
   const host = opts.host ?? createMemoryHost();
@@ -118,6 +127,7 @@ function buildExec(opts: BaseConfig) {
     repo: 'r',
     baseRef: 'main',
     model: 'm',
+    verifyCommitExists: opts.verifyCommitExists ?? PASS_VERIFY,
   });
 }
 
@@ -408,6 +418,112 @@ describe('AgenticCodeAuthorExecutor failure mapping', () => {
       artifacts: { commitSha: 'a', branchName: 'b' },
     });
     await run(buildExec({ agentLoop: adapter, workspaceProvider: provider, ghClient: ghStub }));
+    expect(released.count).toBe(1);
+  });
+});
+
+describe('AgenticCodeAuthorExecutor SHA verification', () => {
+  it('short-circuits with agentic/sha-verification-failed when verifier rejects (fabricated SHA)', async () => {
+    // Threat model regression: a misbehaving AgentLoopAdapter returns
+    // a SHA that does not exist in the workspace. The executor MUST
+    // detect this before any GhClient.createPr call so no remote
+    // artifact is produced for an unverified commit.
+    const ghCalled = { count: 0 };
+    const ghStub = {
+      rest: async () => {
+        ghCalled.count += 1;
+        return {} as never;
+      },
+    } as unknown as GhClient;
+    const adapter = stubAdapter({
+      kind: 'completed',
+      sessionAtomId: 's' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'fabricated-sha-not-on-disk', branchName: 'agentic/br' },
+    });
+    const verifyCalls: Array<{ path: string; sha: string }> = [];
+    const verifyCommitExists = async (workspacePath: string, sha: string) => {
+      verifyCalls.push({ path: workspacePath, sha });
+      throw new Error('fatal: Not a valid object name fabricated-sha-not-on-disk');
+    };
+    const result = await run(buildExec({
+      agentLoop: adapter,
+      ghClient: ghStub,
+      verifyCommitExists,
+    }));
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') throw new Error('unreachable');
+    expect(result.stage).toBe('agentic/sha-verification-failed');
+    expect(result.reason).toContain('fabricated-sha-not-on-disk');
+    expect(result.reason).toContain('Not a valid object name');
+    expect(result.branchName).toBe('agentic/br');
+    // The verifier was consulted with the workspace path + SHA the
+    // adapter returned.
+    expect(verifyCalls).toEqual([{ path: '/tmp/lag-test', sha: 'fabricated-sha-not-on-disk' }]);
+    // The PR-create path never fired -- no remote artifact for an
+    // unverified commit.
+    expect(ghCalled.count).toBe(0);
+  });
+
+  it('proceeds to PR creation when verifier resolves (real SHA)', async () => {
+    let createdPr: Record<string, unknown> | null = null;
+    const ghStub = {
+      rest: async (req: Record<string, unknown>) => {
+        createdPr = req;
+        return {
+          number: 7,
+          html_url: 'https://example.test/pr/7',
+          url: 'https://example.test/api/pr/7',
+          node_id: 'PR_z',
+          state: 'open',
+        };
+      },
+    } as unknown as GhClient;
+    const adapter = stubAdapter({
+      kind: 'completed',
+      sessionAtomId: 's' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'real-sha', branchName: 'agentic/ok' },
+    });
+    const verifyCalls: Array<{ path: string; sha: string }> = [];
+    const verifyCommitExists = async (workspacePath: string, sha: string) => {
+      verifyCalls.push({ path: workspacePath, sha });
+    };
+    const result = await run(buildExec({
+      agentLoop: adapter,
+      ghClient: ghStub,
+      verifyCommitExists,
+    }));
+    expect(result.kind).toBe('dispatched');
+    if (result.kind !== 'dispatched') throw new Error('unreachable');
+    expect(result.prNumber).toBe(7);
+    expect(verifyCalls).toEqual([{ path: '/tmp/lag-test', sha: 'real-sha' }]);
+    expect(createdPr).not.toBeNull();
+  });
+
+  it('releases the workspace even when SHA verification fails', async () => {
+    const released = { count: 0 };
+    const provider: WorkspaceProvider = {
+      acquire: async () => ({ id: 'ws-v', path: '/tmp/lag-v', baseRef: 'main' }),
+      release: async () => { released.count += 1; },
+    };
+    const adapter = stubAdapter({
+      kind: 'completed',
+      sessionAtomId: 's' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'nope', branchName: 'br' },
+    });
+    const verifyCommitExists = async () => {
+      throw new Error('object missing');
+    };
+    await run(buildExec({
+      agentLoop: adapter,
+      workspaceProvider: provider,
+      verifyCommitExists,
+    }));
+    // Workspace release is non-negotiable; SHA-verification failure
+    // is just another exit through the same try/finally as every
+    // other failure mode.
     expect(released.count).toBe(1);
   });
 });
