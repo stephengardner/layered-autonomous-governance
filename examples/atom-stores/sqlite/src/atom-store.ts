@@ -217,7 +217,10 @@ export class SqliteAtomStore implements AtomStore {
     // the conformance bar is identical to the file adapter.
     const all = this.loadAll()
       .filter(a => matches(a, filter))
-      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+      .sort((a, b) => {
+        const cmp = b.created_at.localeCompare(a.created_at);
+        return cmp !== 0 ? cmp : a.id.localeCompare(b.id);
+      });
     const offset = cursor ? decodeCursor(cursor) : 0;
     const page = all.slice(offset, offset + limit);
     const nextOffset = offset + page.length;

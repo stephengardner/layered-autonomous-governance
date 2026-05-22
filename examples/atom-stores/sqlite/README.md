@@ -26,7 +26,7 @@ not bundle it so you control the native build.
 ## Usage
 
 ```ts
-import { SqliteAtomStore } from './examples/atom-stores/sqlite/src/index.js';
+import { SqliteAtomStore } from './src/index.js';
 
 // File-backed: data persists at <rootDir>/atoms.db.
 const atoms = new SqliteAtomStore({ rootDir: './my-lag-dir' });
@@ -77,7 +77,7 @@ atoms.close();
 Two suites:
 
 - `test/sqlite-adapter.test.ts` runs the shared `runAtomsSpec` so the
-  adapter satisfies the same 27-case contract as the memory + file
+  adapter satisfies the same conformance contract as the memory + file
   adapters.
 - `test/concurrent-cas.test.ts` proves the cross-process CAS
   guarantee: `N=50` concurrent updates with the same
