@@ -40,11 +40,11 @@ const REFERENCE_EXPIRES_AT = '2026-05-22T13:00:00.000Z';
  *
  * Generating at runtime (instead of inlining a literal) keeps the
  * repo free of static private-key material that would trip secret
- * scanners and weaken hygiene. 1024-bit is intentional: tests do not
- * need real cryptographic strength and the smaller modulus halves
- * the key-generation cost on cold-start.
+ * scanners. modulusLength is 2048 so CodeQL's js/insufficient-key-size
+ * rule stays green; the extra generation cost (~50ms) is paid once
+ * per file load.
  */
-const TEST_PEM = generateKeyPairSync('rsa', { modulusLength: 1024 })
+const TEST_PEM = generateKeyPairSync('rsa', { modulusLength: 2048 })
   .privateKey
   .export({ type: 'pkcs1', format: 'pem' })
   .toString();
