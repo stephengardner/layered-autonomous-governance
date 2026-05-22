@@ -842,6 +842,23 @@ export class LoopRunner {
         try {
           selfAuditReport = await this.selfAuditPass(this.selfAuditTick);
         } catch (err) {
+          // Preserve closure-failure timing: selfAuditPass attaches
+          // `selfAuditClosureErrorMs` on the thrown error when the
+          // closure itself threw (vs. an earlier canon-read failure).
+          // Surfacing it into the tick report lets a downstream
+          // consumer correlate the failure with the elapsed wall-time
+          // even when the throw bubbles up; without this branch the
+          // attached metadata would be unreachable.
+          const closureErrorMs =
+            typeof err === 'object'
+            && err !== null
+            && 'selfAuditClosureErrorMs' in err
+            && typeof (err as { selfAuditClosureErrorMs?: unknown }).selfAuditClosureErrorMs === 'number'
+              ? (err as { selfAuditClosureErrorMs: number }).selfAuditClosureErrorMs
+              : null;
+          if (closureErrorMs !== null) {
+            selfAuditReport = { fired: true, closureErrorMs };
+          }
           this.errorCounter += 1;
           errors.push(
             `self-audit-pass: ${err instanceof Error ? err.message : String(err)}`,

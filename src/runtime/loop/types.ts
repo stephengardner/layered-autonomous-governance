@@ -669,14 +669,17 @@ export interface LoopTickReport {
     | null;
   /**
    * Per-tick self-audit summary. `null` when the pass is disabled OR
-   * when the pass ran but the cadence policy gated the tick from
-   * firing (the common case: the tick runs every loop iteration but
-   * the cadence policy only allows the audit driver to fire once per
-   * `intervalMs`). When the audit closure actually fired, populated
-   * with `fired: true` so an operator scanning tick output can see
-   * which tick activated the driver, and `closureErrorMs: null`
-   * (closure ran clean) or a positive number (closure threw at that
-   * elapsed-ms; the throw is also recorded in `errors[]`).
+   * when the pass ran but a canon-read fault aborted the pass before
+   * the cadence check could resolve (the throw is recorded in
+   * `errors[]`). When the pass runs, populated with `fired: false`
+   * + `closureErrorMs: null` if the cadence policy blocked the
+   * closure from firing this tick (the common case: the tick runs
+   * every loop iteration but the cadence policy only allows the audit
+   * driver to fire once per `intervalMs`), `fired: true` +
+   * `closureErrorMs: null` when the closure fired clean, or
+   * `fired: true` + `closureErrorMs: <positive>` when the closure
+   * fired but threw at that elapsed-ms (the throw is also recorded
+   * in `errors[]`).
    */
   readonly selfAuditReport:
     | {

@@ -347,17 +347,27 @@ describe('LoopRunner self-audit pass wiring', () => {
       const report = await runner.tick();
       // Closure was called.
       expect(throwingTick).toHaveBeenCalledTimes(1);
-      // Throw recorded; the pass's outer try/catch caught it and
-      // left selfAuditReport at the initial-null value because the
-      // throw escaped the helper before it returned a struct.
+      // Throw recorded with full error message.
       expect(report.errors.some((e) => e.startsWith('self-audit-pass:'))).toBe(true);
       expect(
         report.errors.some((e) => e.includes('synthetic self-audit failure')),
       ).toBe(true);
-      // Tick still completed: other report fields are populated as if
-      // the closure had silent-skipped. tickNumber and finishedAt are
-      // load-bearing signals that the tick finished rather than
-      // halting at the closure throw.
+      // Failure timing preserved: the catch extracts
+      // `selfAuditClosureErrorMs` from the thrown error and surfaces
+      // it into the report so a downstream consumer can correlate the
+      // failure with elapsed wall-time. `fired: true` records that
+      // the closure was reached (vs. a cadence skip or canon-read
+      // fault which would carry `fired: false` or `selfAuditReport
+      // === null`). The error path uses the same host clock so the
+      // elapsed-ms is 0 in this synchronous-throw test; assert that
+      // closureErrorMs is a number (not null) so the contract is
+      // exercised without coupling to the specific timing value.
+      expect(report.selfAuditReport).not.toBeNull();
+      expect(report.selfAuditReport?.fired).toBe(true);
+      expect(typeof report.selfAuditReport?.closureErrorMs).toBe('number');
+      // Tick still completed: tickNumber and finishedAt are load-
+      // bearing signals that the tick finished rather than halting
+      // at the closure throw.
       expect(report.tickNumber).toBe(1);
       expect(report.finishedAt).not.toBe('');
     } finally {
