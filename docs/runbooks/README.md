@@ -14,13 +14,17 @@ Per `docs/audit/2026-05-22-perpetual-self-audit-v0.md` finding P1: the substrate
 
 | Incident | Severity | Runbook |
 |---|---|---|
-| Claim-reaper not running | High | [reaper-not-running.md](reaper-not-running.md) |
 | Bot token expired mid-PR | High | [bot-token-expired.md](bot-token-expired.md) |
+| Claim-reaper not running | High | [reaper-not-running.md](reaper-not-running.md) |
 | CodeRabbit silent-skip | Medium | [cr-silent-skip.md](cr-silent-skip.md) |
+| Dispatch failed (drafter refusal, budget, worktree) | High | [dispatch-failed.md](dispatch-failed.md) |
+| Pipeline stage timeout | Medium | [pipeline-stage-timeout.md](pipeline-stage-timeout.md) |
+| Sub-agent stalled | Medium | [sub-agent-stalled.md](sub-agent-stalled.md) |
+| Worktree cleanup failed (Windows EACCES) | Low | [worktree-cleanup-failed.md](worktree-cleanup-failed.md) |
 
 ## Coverage gap
 
-The audit named 8-10 most-common 3am incidents. This V0 ships 3. The remaining 5-7 (atom-store ENOSPC, tunnel disconnected, dispatch-stage timeout, sub-agent budget overrun, PR-landing actor stuck) are queued for follow-up PRs.
+The audit named 8-10 most-common 3am incidents. With this expansion the count is 7. The remaining 1-3 (atom-store ENOSPC, tunnel disconnected, PR-landing actor stuck) are queued for follow-up PRs.
 
 ## Discipline
 
