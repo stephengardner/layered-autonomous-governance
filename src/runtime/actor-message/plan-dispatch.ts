@@ -46,6 +46,8 @@
  * payload as before.
  */
 
+import { ConflictError } from '../../substrate/errors.js';
+import { runWithCas } from '../util/cas-retry.js';
 import type { Host } from '../../interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../types.js';
 import type { ActorMessageV1 } from './types.js';
@@ -187,15 +189,25 @@ export async function runDispatchTick(
     // update so the transition is atomic from the AtomStore's
     // perspective: a peer reader observing plan_state='executing'
     // also sees executing_at + executing_invoker, never the
-    // intermediate "executing without provenance" state.
+    // intermediate "executing without provenance" state. CAS via
+    // expectedRevision closes the read-then-update race: a peer
+    // dispatch tick that observed the same approved plan races us,
+    // and the loser sees ConflictError and continues so we never
+    // double-dispatch the plan.
     const executingAt = new Date(now()).toISOString();
-    await host.atoms.update(plan.id, {
-      plan_state: 'executing',
-      metadata: {
-        executing_at: executingAt,
-        executing_invoker: envelope.sub_actor_principal_id,
-      },
-    });
+    try {
+      await host.atoms.update(plan.id, {
+        plan_state: 'executing',
+        metadata: {
+          executing_at: executingAt,
+          executing_invoker: envelope.sub_actor_principal_id,
+        },
+        expectedRevision: fresh.revision ?? 0,
+      });
+    } catch (err) {
+      if (err instanceof ConflictError) continue;
+      throw err;
+    }
     await emitDispatchAudit(plan, 'plan.dispatch-executing', executingAt, {
       plan_id: String(plan.id),
       sub_actor_principal_id: envelope.sub_actor_principal_id,
@@ -229,7 +241,13 @@ export async function runDispatchTick(
     // outcome without parsing dispatch_result.kind.
     const terminalAt = new Date(now()).toISOString();
     if (result.kind === 'completed') {
-      await host.atoms.update(plan.id, {
+      // CAS via runWithCas: the plan should still be in 'executing'
+      // (we claimed it above) but a peer writer could have stamped
+      // additional metadata between our claim and this terminal
+      // transition. runWithCas re-reads + retries once so the
+      // succeeded transition lands without clobbering the peer's
+      // metadata patch.
+      await runWithCas(host, plan.id, () => ({
         plan_state: 'succeeded',
         metadata: {
           terminal_at: terminalAt,
@@ -241,7 +259,7 @@ export async function runDispatchTick(
             at: terminalAt,
           },
         },
-      });
+      }));
       await emitDispatchAudit(plan, 'plan.dispatch-succeeded', terminalAt, {
         plan_id: String(plan.id),
         sub_actor_principal_id: envelope.sub_actor_principal_id,
@@ -256,7 +274,9 @@ export async function runDispatchTick(
       // and terminal_kind intentionally NOT stamped: the plan has not
       // reached terminal yet. dispatch_result records the in-flight
       // hand-off so an audit consumer sees the dispatch happened.
-      await host.atoms.update(plan.id, {
+      // CAS via runWithCas for the same metadata-merge race rationale
+      // as the completed branch.
+      await runWithCas(host, plan.id, () => ({
         metadata: {
           dispatch_result: {
             kind: 'dispatched',
@@ -264,7 +284,7 @@ export async function runDispatchTick(
             at: terminalAt,
           },
         },
-      });
+      }));
       await emitDispatchAudit(plan, 'plan.dispatch-in-flight', terminalAt, {
         plan_id: String(plan.id),
         sub_actor_principal_id: envelope.sub_actor_principal_id,
@@ -275,7 +295,8 @@ export async function runDispatchTick(
     } else {
       // error case
       const errorMessage = truncateErrorMessage(result.message);
-      await host.atoms.update(plan.id, {
+      // CAS via runWithCas; same rationale as the succeeded branch.
+      await runWithCas(host, plan.id, () => ({
         plan_state: 'failed',
         metadata: {
           terminal_at: terminalAt,
@@ -287,7 +308,7 @@ export async function runDispatchTick(
             at: terminalAt,
           },
         },
-      });
+      }));
       await emitDispatchAudit(plan, 'plan.dispatch-failed', terminalAt, {
         plan_id: String(plan.id),
         sub_actor_principal_id: envelope.sub_actor_principal_id,

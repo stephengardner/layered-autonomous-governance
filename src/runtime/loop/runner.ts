@@ -1108,6 +1108,17 @@ export class LoopRunner {
    * Scan all layers for atoms with a past expires_at and mark them
    * quarantined. Idempotent: re-running leaves already-quarantined atoms
    * untouched.
+   *
+   * CAS skip rationale: this sweep is best-effort by design. The patch
+   * computed by `ttlExpirePatch` is purely a function of `atom.expires_at`
+   * and the wall clock, so two concurrent ticks observing the same atom
+   * produce identical patches; a lost update merely means the SAME
+   * expiration mark lands once instead of twice (no data loss).
+   * `expectedRevision` is intentionally omitted: a CAS race would just
+   * cause the loser to retry and re-write the same value, paying retry
+   * latency for no semantic gain. The audit-row double-fire is bounded
+   * by `try/catch { individual failure tolerated }` already present
+   * below.
    */
   private async ttlPass(): Promise<number> {
     const nowMs = Date.parse(this.host.clock.now());
@@ -1126,6 +1137,8 @@ export class LoopRunner {
         });
         if (patch) {
           try {
+            // CAS intentionally skipped per ttlPass() JSDoc: deterministic
+            // patch + idempotent outcome makes lost-update acceptable noise.
             await this.host.atoms.update(atom.id, patch);
             expired += 1;
             await this.host.auditor.log({
@@ -1148,9 +1161,24 @@ export class LoopRunner {
     return expired;
   }
 
+  /**
+   * Decay applies to non-superseded atoms at L0/L1/L2 (canon is
+   * human-signed and exempt). Limit per tick via maxAtomsPerTick to
+   * bound cost.
+   *
+   * CAS skip rationale: confidence decay is a deterministic function
+   * of `last_reinforced_at` and the wall clock. Two concurrent ticks
+   * computing decay for the same atom produce the same target
+   * confidence; a lost update means the SAME value is written once
+   * instead of twice. A peer write that BUMPED `confidence` between
+   * our read and write (e.g. an l2-promote that reinforced the atom)
+   * would be silently clobbered, but that race is acceptable: the
+   * next decay pass observes the bumped value via
+   * `shouldUpdateConfidence` and either re-applies a smaller decay
+   * or skips. CAS would not improve substrate correctness here, only
+   * pay retry latency on noise.
+   */
   private async decayPass(): Promise<number> {
-    // Decay applies to non-superseded atoms at L0/L1/L2 (canon is human-
-    // signed and exempt). Limit per tick via maxAtomsPerTick to bound cost.
     const nowMs = Date.parse(this.host.clock.now());
     let scanned = 0;
     let updated = 0;
@@ -1170,6 +1198,8 @@ export class LoopRunner {
         );
         if (shouldUpdateConfidence(atom.confidence, next)) {
           try {
+            // CAS intentionally skipped per decayPass() JSDoc:
+            // deterministic decay + acceptable-noise contract.
             await this.host.atoms.update(atom.id, { confidence: next });
             updated += 1;
           } catch {

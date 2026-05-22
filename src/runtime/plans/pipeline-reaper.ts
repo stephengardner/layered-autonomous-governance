@@ -50,6 +50,7 @@
  *     spec section 2.
  */
 
+import { ConflictError } from '../../substrate/errors.js';
 import type { Host } from '../../substrate/interface.js';
 import type {
   Atom,
@@ -313,10 +314,27 @@ export async function markPipelineReaped(
     return atom;
   }
   const now = host.clock.now();
-  const updated = await host.atoms.update(atomId, {
-    metadata: { reaped_at: now, reaped_reason: reason },
-    confidence: 0.01,
-  });
+  // CAS guard: two concurrent reaper sweeps observing the same
+  // un-reaped pipeline atom would both try to stamp the marker; the
+  // outcome is idempotent but the audit log would double-fire. The
+  // expectedRevision causes the loser to throw ConflictError, which
+  // we re-interpret as "another sweep beat us" by re-reading and
+  // returning the now-reaped atom without an audit row.
+  let updated: Atom;
+  try {
+    updated = await host.atoms.update(atomId, {
+      metadata: { reaped_at: now, reaped_reason: reason },
+      confidence: 0.01,
+      expectedRevision: atom.revision ?? 0,
+    });
+  } catch (err) {
+    if (err instanceof ConflictError) {
+      const fresh = await host.atoms.get(atomId);
+      if (fresh !== null) return fresh;
+      throw err;
+    }
+    throw err;
+  }
   await host.auditor.log({
     kind: 'pipeline.reaped',
     principal_id: principalId,
@@ -379,10 +397,25 @@ export async function markStageAtomReaped(
     return atom;
   }
   const now = host.clock.now();
-  const updated = await host.atoms.update(atomId, {
-    metadata: { reaped_at: now, reaped_reason: reason },
-    confidence: 0.01,
-  });
+  // CAS guard: same race shape as markPipelineReaped. Two reaper
+  // sweeps observing the same un-reaped stage atom both stamp the
+  // marker; the loser hits ConflictError and re-reads the post-reap
+  // state without emitting a duplicate audit row.
+  let updated: Atom;
+  try {
+    updated = await host.atoms.update(atomId, {
+      metadata: { reaped_at: now, reaped_reason: reason },
+      confidence: 0.01,
+      expectedRevision: atom.revision ?? 0,
+    });
+  } catch (err) {
+    if (err instanceof ConflictError) {
+      const fresh = await host.atoms.get(atomId);
+      if (fresh !== null) return fresh;
+      throw err;
+    }
+    throw err;
+  }
   await host.auditor.log({
     kind: 'pipeline.stage_atom_reaped',
     principal_id: principalId,

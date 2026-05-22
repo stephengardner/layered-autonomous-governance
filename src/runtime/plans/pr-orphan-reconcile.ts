@@ -50,6 +50,7 @@ import { createHash } from 'node:crypto';
 import type { Host } from '../../interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../types.js';
 import { ConflictError } from '../../substrate/errors.js';
+import { runWithCas } from '../util/cas-retry.js';
 import { readNumericCanonPolicy } from '../loop/canon-policy-cadence.js';
 import {
   findActiveDriverClaim,
@@ -455,24 +456,31 @@ export async function runPrOrphanReconcileTick(
       dispatched += 1;
       // Mark the orphan atom as "dispatch fired" for audit. Using
       // host.atoms.update because the atom was just successfully
-      // put; metadata merge is the canonical patch shape.
-      await host.atoms.update(orphanAtomId, {
+      // put; metadata merge is the canonical patch shape. CAS via
+      // runWithCas so a peer reconcile tick that observed the same
+      // bucket and is racing this update sees ConflictError; the
+      // helper re-reads + retries once so the dispatch_attempted
+      // marker still lands.
+      await runWithCas(host, orphanAtomId, () => ({
         metadata: { dispatch_attempted: true, dispatched_at: new Date(nowMs).toISOString() },
-      });
+      }));
     } catch (err) {
       failedDispatches += 1;
       // Record the failure on the orphan atom so the next tick can
       // see "we tried last cadence and it threw" without a
       // side-channel log. Logged here too for operator visibility.
+      // CAS via runWithCas: the failure-marker is informational and
+      // a lost race against another tick's success-marker is
+      // recoverable noise (next sweep observes the latest state).
       const cause = err instanceof Error ? err.message : String(err);
       try {
-        await host.atoms.update(orphanAtomId, {
+        await runWithCas(host, orphanAtomId, () => ({
           metadata: {
             dispatch_attempted: true,
             dispatch_failed: true,
             dispatch_failure_reason: cause,
           },
-        });
+        }));
       } catch {
         /* failure to record the failure is non-fatal */
       }

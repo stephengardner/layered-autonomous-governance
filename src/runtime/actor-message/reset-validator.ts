@@ -142,8 +142,16 @@ export async function validateResetWrite(
   // Mark the trip superseded. This runs before the reset atom itself
   // is written; if the trip-update fails for any reason, the reset
   // is not written either (caller should await validator then put).
+  // CAS via expectedRevision: a concurrent reset-validator on the
+  // same trip atom races us; the loser surfaces ConflictError so
+  // the caller observes the race instead of writing a stale
+  // supersession on top of the peer's. The patch passes only the
+  // new id (the adapter appends to existing.superseded_by; see
+  // src/adapters/memory/atom-store.ts:131-133), preserving the
+  // pre-CAS behavior bit-for-bit when no race fires.
   await host.atoms.update(tripAtom.id, {
     superseded_by: [...tripAtom.superseded_by, resetAtom.id],
+    expectedRevision: tripAtom.revision ?? 0,
   });
 }
 

@@ -36,6 +36,8 @@
  *   in dependsOn (forward-compat seam).
  */
 
+import { ConflictError } from '../../substrate/errors.js';
+import { runWithCas } from '../util/cas-retry.js';
 import type { Host } from '../../substrate/interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../substrate/types.js';
 import type {
@@ -810,12 +812,19 @@ export async function runPipeline(
       // ticks observing the same abandon atom would each rewrite the
       // stamp; pinning to abandonAtom.created_at keeps the value
       // stable across all observers (CR PR #402 finding).
-      await host.atoms.update(pipelineId, {
-        pipeline_state: 'abandoned',
-        metadata: {
-          abandoned_at: String(abandonAtom.created_at),
-          abandon_atom_id: String(abandonAtom.id),
-        },
+      // CAS via runWithCas: a peer pipeline tick that also observed
+      // the abandon atom could race this re-assert. The helper
+      // re-reads + returns null when the pipeline already moved to
+      // 'abandoned' so the duplicate write is suppressed cleanly.
+      await runWithCas(host, pipelineId, current => {
+        if (current.pipeline_state === 'abandoned') return null;
+        return {
+          pipeline_state: 'abandoned',
+          metadata: {
+            abandoned_at: String(abandonAtom.created_at),
+            abandon_atom_id: String(abandonAtom.id),
+          },
+        };
       });
       return { kind: 'abandoned', pipelineId, abandonAtomId: abandonAtom.id };
     }
@@ -891,10 +900,22 @@ export async function runPipeline(
     }
     crossStageWalkPending = false;
 
-    await host.atoms.update(pipelineId, {
-      pipeline_state: 'running',
-      metadata: { current_stage: stage.name, current_stage_index: i },
-    });
+    // CAS via expectedRevision: a peer pipeline tick that observed
+    // the same fresh state could race this stage-claim. The loser
+    // sees ConflictError and we halt rather than overwrite the
+    // peer's stage advance. The token-based re-read backstop below
+    // catches the best-effort-adapter case where CAS is in-process
+    // only.
+    try {
+      await host.atoms.update(pipelineId, {
+        pipeline_state: 'running',
+        metadata: { current_stage: stage.name, current_stage_index: i },
+        expectedRevision: fresh.revision ?? 0,
+      });
+    } catch (err) {
+      if (err instanceof ConflictError) return { kind: 'halted', pipelineId };
+      throw err;
+    }
     // Re-read after write to confirm we still hold the claim. If a
     // concurrent tick clobbered current_stage_index above our value
     // between our update and this read, halt rather than proceed.
@@ -1768,7 +1789,16 @@ export async function runPipeline(
       || (hil.pause_mode === 'on-critical-finding'
         && (hasCritical || auditorAbsent));
     if (shouldPause) {
-      await host.atoms.update(pipelineId, { pipeline_state: 'hil-paused' });
+      // CAS via runWithCas: a peer pipeline tick could have moved
+      // pipeline_state between the stage-output write and this HIL
+      // pause flip. runWithCas re-reads and short-circuits when the
+      // pipeline is already in a terminal state (the HIL pause is a
+      // forward transition; if a peer already advanced, the peer's
+      // state wins and the duplicate pause is suppressed).
+      await runWithCas(host, pipelineId, current => {
+        if (current.pipeline_state === 'hil-paused') return null;
+        return { pipeline_state: 'hil-paused' };
+      });
       // Carry the persisted stage-output atom id on the hil-pause
       // event so the operator's resume tooling can read the prior
       // output without re-walking the chain.
@@ -1849,10 +1879,15 @@ export async function runPipeline(
     }
   }
 
-  await host.atoms.update(pipelineId, {
+  // CAS via runWithCas: the terminal completed-transition runs
+  // after the final stage; a peer that observed the same final
+  // stage could race this write. The helper re-reads + writes; the
+  // metadata patch is shallow-merged by the AtomStore so the peer's
+  // metadata is preserved.
+  await runWithCas(host, pipelineId, () => ({
     pipeline_state: 'completed',
     metadata: { completed_at: now(), total_cost_usd: totalCostUsd },
-  });
+  }));
   return { kind: 'completed', pipelineId };
 }
 
@@ -2426,9 +2461,23 @@ async function failPipeline(
   // chain required). The metadata patch is shallow-merged by the
   // AtomStore implementations, preserving started_at, mode,
   // stage_policy_atom_id, and total_cost_usd from mkPipelineAtom.
-  await host.atoms.update(pipelineId, {
-    pipeline_state: 'failed',
-    metadata: { completed_at: terminalNow },
+  // CAS via runWithCas: a peer terminal-transition (completed or
+  // abandoned) could race this failed-write; the helper re-reads
+  // and writes the failed marker only when the pipeline has not
+  // already moved to a terminal state, so the FIRST terminal write
+  // wins.
+  await runWithCas(host, pipelineId, current => {
+    if (
+      current.pipeline_state === 'failed'
+      || current.pipeline_state === 'completed'
+      || current.pipeline_state === 'abandoned'
+    ) {
+      return null;
+    }
+    return {
+      pipeline_state: 'failed',
+      metadata: { completed_at: terminalNow },
+    };
   });
   return {
     kind: 'failed',
