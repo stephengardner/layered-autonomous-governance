@@ -32,12 +32,20 @@ export function parseArgs(argv) {
     } else if (flag === '--dest' && argv[i + 1]) {
       args.dest = argv[i + 1];
       i += 1;
-    } else if (flag === '--batch-size' && argv[i + 1]) {
+    } else if (flag === '--batch-size') {
+      // Missing-value guard: `--batch-size` at end-of-argv must fail
+      // fast, not silently fall back to the default. A user who typed
+      // the flag clearly wanted to override the default; ignoring the
+      // typo would produce a confusing "default of 100 was used"
+      // outcome with no diagnostic.
+      const raw = argv[i + 1];
+      if (raw === undefined) {
+        throw new Error('--batch-size requires a value');
+      }
       // Strict canonical-integer regex. Number.parseInt would silently
       // accept '1.5' (-> 1) and '10foo' (-> 10), breaking the
       // "positive integer" contract. /^[1-9]\d*$/ rejects leading
       // zeros, decimals, and trailing garbage.
-      const raw = argv[i + 1];
       if (!/^[1-9]\d*$/.test(raw)) {
         throw new Error(`--batch-size must be a positive integer, got ${raw}`);
       }
@@ -314,9 +322,18 @@ export async function run(argv, io = defaultIo()) {
     if (args.dryRun) {
       let conflicts = 0;
       if (existsSync(args.dest)) {
-        const db = openDestinationDb(args.dest);
+        // Read-only open so dry-run cannot mutate destination state.
+        // openDestinationDb() runs CREATE TABLE + PRAGMA writes
+        // (journal_mode=WAL touches disk on first open of a fresh
+        // file), breaking the preview-only promise. Read-only mode
+        // skips that path; if the destination file exists but does
+        // not have an `atoms` table yet, we count zero conflicts.
+        const db = new Database(args.dest, { readonly: true, fileMustExist: true });
         try {
-          conflicts = countConflicts(db, args.source, files);
+          const hasAtomsTable = db
+            .prepare("SELECT 1 AS one FROM sqlite_master WHERE type = 'table' AND name = 'atoms'")
+            .get();
+          conflicts = hasAtomsTable ? countConflicts(db, args.source, files) : 0;
         } finally {
           db.close();
         }

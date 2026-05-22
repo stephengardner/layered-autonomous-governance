@@ -176,6 +176,63 @@ suite('import-from-file.mjs migration tool', () => {
     }
   });
 
+  it('--dry-run against an existing destination opens it read-only (no mutation)', async () => {
+    // Seed a destination with one atom, then snapshot the byte
+    // content. A subsequent dry-run must not mutate the file (no
+    // schema rewrite, no PRAGMA writes, no read/write open). The
+    // previous shape opened the DB read/write and ran
+    // openDestinationDb's pragmas + CREATE TABLE IF NOT EXISTS,
+    // which broke the preview-only contract.
+    const seed = freshAtom({ id: 'rdonly-seed' as AtomId });
+    await writeAtom(seed.id, seed);
+    const first = await run(['--source', sourceDir, '--dest', destPath], io);
+    expect(first.ok).toBe(true);
+
+    const fsp = await import('node:fs/promises');
+    const beforeBytes = await fsp.readFile(destPath);
+
+    stdout = [];
+    stderr = [];
+    const dry = await run(['--source', sourceDir, '--dest', destPath, '--dry-run'], io);
+    expect(dry.ok).toBe(true);
+    expect(dry.conflicts).toBe(1);
+
+    const afterBytes = await fsp.readFile(destPath);
+    // Byte-equality across the main .db file proves the dry-run did
+    // not run a CREATE TABLE / PRAGMA pass. WAL sidecars may already
+    // exist from the prior write; we are not asserting on those.
+    expect(afterBytes.equals(beforeBytes)).toBe(true);
+  });
+
+  it('--dry-run against an existing-but-non-atoms-store .db returns zero conflicts (no schema rewrite)', async () => {
+    // Edge case: the destination exists but is not yet a
+    // SqliteAtomStore-shaped file (e.g., an empty file, or a SQLite
+    // file from another tool). The dry-run must not silently
+    // initialize it with the atoms schema; it should report zero
+    // conflicts because no `atoms` table exists yet, and the byte
+    // content must be unchanged.
+    const fsp = await import('node:fs/promises');
+    // Create an empty SQLite-able file with a non-atoms schema using
+    // better-sqlite3 directly.
+    const Database = (await import('better-sqlite3')).default;
+    const adhoc = new Database(destPath);
+    try {
+      adhoc.exec('CREATE TABLE other (id TEXT)');
+    } finally {
+      adhoc.close();
+    }
+    const beforeBytes = await fsp.readFile(destPath);
+
+    const atom = freshAtom({ id: 'preview-target' as AtomId });
+    await writeAtom(atom.id, atom);
+    const dry = await run(['--source', sourceDir, '--dest', destPath, '--dry-run'], io);
+    expect(dry.ok).toBe(true);
+    expect(dry.conflicts).toBe(0);
+
+    const afterBytes = await fsp.readFile(destPath);
+    expect(afterBytes.equals(beforeBytes)).toBe(true);
+  });
+
   it('--dry-run reports correct counts and writes nothing', async () => {
     for (let i = 0; i < 5; i += 1) {
       const atom = freshAtom({ id: `dry-${i}` as AtomId });
@@ -293,6 +350,13 @@ suite('import-from-file.mjs migration tool', () => {
     expect(result.ok).toBe(true);
     expect(result.inserted).toBe(10);
     expect(result.verified).toBe(10);
+  });
+
+  it('rejects --batch-size with no value (end-of-argv guard)', async () => {
+    const missing = await run(['--source', sourceDir, '--dest', destPath, '--batch-size'], io);
+    expect(missing.ok).toBe(false);
+    expect(missing.error).toContain('--batch-size requires a value');
+    expect(stderr.join('')).toContain('--batch-size requires a value');
   });
 
   it('rejects --batch-size 0, non-numeric, and non-canonical integer values', async () => {
