@@ -20,13 +20,14 @@ Per `docs/audit/2026-05-22-perpetual-self-audit-v0.md` finding P1: the substrate
 | Cloudflared tunnel disconnected | Medium | [tunnel-disconnected.md](tunnel-disconnected.md) |
 | CodeRabbit silent-skip | Medium | [cr-silent-skip.md](cr-silent-skip.md) |
 | Dispatch failed (drafter refusal, budget, worktree) | High | [dispatch-failed.md](dispatch-failed.md) |
+| Medium-tier kill switch tripped | High | [medium-tier-kill-switch-tripped.md](medium-tier-kill-switch-tripped.md) |
 | Pipeline stage timeout | Medium | [pipeline-stage-timeout.md](pipeline-stage-timeout.md) |
 | Sub-agent stalled | Medium | [sub-agent-stalled.md](sub-agent-stalled.md) |
 | Worktree cleanup failed (Windows EACCES) | Low | [worktree-cleanup-failed.md](worktree-cleanup-failed.md) |
 
 ## Coverage gap
 
-The audit named 8-10 most-common 3am incidents. With the atom-store ENOSPC + tunnel disconnected additions the count is 9. The remaining 1 (PR-landing actor stuck) is queued for a follow-up PR.
+The audit named 8-10 most-common 3am incidents. With the atom-store ENOSPC + tunnel disconnected + medium-tier kill-switch additions the count is 10. The remaining slot (PR-landing actor stuck) is queued for a follow-up PR.
 
 ## Discipline
 
