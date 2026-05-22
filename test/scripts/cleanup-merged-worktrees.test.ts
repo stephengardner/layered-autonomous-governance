@@ -122,6 +122,9 @@ describe('planWorktreeRemoval', () => {
       commitsAhead: null as never,
     });
     expect(result.kind).toBe('keep');
+    if (result.kind === 'keep') {
+      expect(result.reason).toBe('commits-ahead-unknown');
+    }
   });
 
   it('keeps when commitsAhead is NaN', () => {
@@ -130,6 +133,9 @@ describe('planWorktreeRemoval', () => {
       commitsAhead: Number.NaN,
     });
     expect(result.kind).toBe('keep');
+    if (result.kind === 'keep') {
+      expect(result.reason).toBe('commits-ahead-unknown');
+    }
   });
 
   it('keeps when commitsAhead is Infinity (non-finite)', () => {
@@ -138,6 +144,9 @@ describe('planWorktreeRemoval', () => {
       commitsAhead: Number.POSITIVE_INFINITY,
     });
     expect(result.kind).toBe('keep');
+    if (result.kind === 'keep') {
+      expect(result.reason).toBe('commits-ahead-unknown');
+    }
   });
 
   it('throws on missing worktreePath', () => {
