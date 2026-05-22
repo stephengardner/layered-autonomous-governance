@@ -295,11 +295,33 @@ suite('import-from-file.mjs migration tool', () => {
     expect(result.verified).toBe(10);
   });
 
-  it('rejects --batch-size 0 and non-numeric values', async () => {
-    const bad = await run(['--source', sourceDir, '--dest', destPath, '--batch-size', '0'], io);
-    expect(bad.ok).toBe(false);
-    expect(bad.error).toContain('--batch-size must be a positive integer');
+  it('rejects --batch-size 0, non-numeric, and non-canonical integer values', async () => {
+    const zero = await run(['--source', sourceDir, '--dest', destPath, '--batch-size', '0'], io);
+    expect(zero.ok).toBe(false);
+    expect(zero.error).toContain('--batch-size must be a positive integer');
     expect(stderr.join('')).toContain('--batch-size must be a positive integer');
+
+    stdout = [];
+    stderr = [];
+    const nonNumeric = await run(['--source', sourceDir, '--dest', destPath, '--batch-size', 'abc'], io);
+    expect(nonNumeric.ok).toBe(false);
+    expect(nonNumeric.error).toContain('--batch-size must be a positive integer');
+    expect(stderr.join('')).toContain('--batch-size must be a positive integer');
+
+    // The strict regex rejects fractional and trailing-garbage inputs
+    // that Number.parseInt would silently truncate; catching that
+    // regression is the point of testing these specific cases.
+    stdout = [];
+    stderr = [];
+    const decimal = await run(['--source', sourceDir, '--dest', destPath, '--batch-size', '1.5'], io);
+    expect(decimal.ok).toBe(false);
+    expect(decimal.error).toContain('--batch-size must be a positive integer');
+
+    stdout = [];
+    stderr = [];
+    const trailing = await run(['--source', sourceDir, '--dest', destPath, '--batch-size', '10foo'], io);
+    expect(trailing.ok).toBe(false);
+    expect(trailing.error).toContain('--batch-size must be a positive integer');
   });
 
   it('fails when --source is missing', async () => {
@@ -312,6 +334,41 @@ suite('import-from-file.mjs migration tool', () => {
     const result = await run(['--source', join(sourceDir, 'does-not-exist'), '--dest', destPath], io);
     expect(result.ok).toBe(false);
     expect(result.error).toContain('source directory not found');
+  });
+
+  it('normalizes runtime errors into RunResult (no thrown stack)', async () => {
+    // A non-JSON atom file would surface as a thrown SyntaxError from
+    // readAtomFile if the run() catch-block were missing. The
+    // expected shape is `{ ok: false, code: 1, error: '...' }` so the
+    // CLI exit code reflects the failure without spilling a stack
+    // trace to stderr.
+    await writeFile(join(sourceDir, 'broken.json'), 'this is not json');
+    const result = await run(['--source', sourceDir, '--dest', destPath], io);
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe(1);
+    expect(result.error).toContain('Failed to parse');
+    expect(result.error).toContain('broken.json');
+    // stderr carries the normalized error, not a raw stack.
+    expect(stderr.join('')).toContain('error: Failed to parse');
+  });
+
+  it('--dry-run fails on a malformed atom (no silent skip)', async () => {
+    // countConflicts must surface the same error importAtoms would
+    // raise, otherwise the preview lies about what the real import
+    // produces. Pre-existing destination DB exercises the lookup path
+    // (without it the dry-run skips the open-db branch entirely).
+    const seed = freshAtom({ id: 'seed-real' as AtomId });
+    await writeAtom(seed.id, seed);
+    const first = await run(['--source', sourceDir, '--dest', destPath], io);
+    expect(first.ok).toBe(true);
+
+    // Write a malformed atom (id is a number, not a string).
+    await writeFile(join(sourceDir, 'bad-id.json'), JSON.stringify({ id: 12345, content: 'no string id' }));
+    stdout = [];
+    stderr = [];
+    const dry = await run(['--source', sourceDir, '--dest', destPath, '--dry-run'], io);
+    expect(dry.ok).toBe(false);
+    expect(dry.error).toContain('non-string id');
   });
 
   it('--dry-run reports conflicts when destination already has rows', async () => {
@@ -337,6 +394,7 @@ suite('import-from-file.mjs migration tool', () => {
   it('--help prints usage and exits 0 without requiring --source/--dest', async () => {
     const result = await run(['--help'], io);
     expect(result.ok).toBe(true);
+    expect(result.code).toBe(0);
     expect(stdout.join('')).toContain('Usage:');
     expect(stdout.join('')).toContain('--source');
     expect(stdout.join('')).toContain('--verify');

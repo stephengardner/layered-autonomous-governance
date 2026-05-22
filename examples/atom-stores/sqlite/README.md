@@ -88,24 +88,35 @@ node examples/atom-stores/sqlite/scripts/import-from-file.mjs \
   --dest   ./.lag/atoms.db
 
 # Preview the migration without writing anything.
-node ... --source ./.lag/atoms --dest ./.lag/atoms.db --dry-run
+node examples/atom-stores/sqlite/scripts/import-from-file.mjs \
+  --source ./.lag/atoms \
+  --dest   ./.lag/atoms.db \
+  --dry-run
 
 # Trust-but-check before deleting the source directory. Reads every
 # imported row back through SQLite and asserts JSON-deep-equal with
 # the source file; hard-exits 1 on the first mismatch.
-node ... --source ./.lag/atoms --dest ./.lag/atoms.db --verify
+node examples/atom-stores/sqlite/scripts/import-from-file.mjs \
+  --source ./.lag/atoms \
+  --dest   ./.lag/atoms.db \
+  --verify
 
 # Tune transaction batch size when migrating very large stores.
-node ... --source ./.lag/atoms --dest ./.lag/atoms.db --batch-size 500
+node examples/atom-stores/sqlite/scripts/import-from-file.mjs \
+  --source ./.lag/atoms \
+  --dest   ./.lag/atoms.db \
+  --batch-size 500
 ```
 
 Re-running the tool against the same `--source` / `--dest` pair is
 idempotent: atoms whose id already exists in the destination are
 skipped (`INSERT OR IGNORE`), so an interrupted migration resumes
-cleanly. After `--verify` prints `OK: N/N atoms round-trip`, swapping
-your host construction from `createFileHost(rootDir)` to
-`new SqliteAtomStore({ dbPath })` is safe; the source directory can
-then be archived or deleted at the operator's discretion.
+cleanly. After `--verify` prints `OK: N/N atoms round-trip`,
+constructing `new SqliteAtomStore({ rootDir: './.lag' })` in place of
+your file-based store is safe (or `new SqliteAtomStore({ dbPath })` if
+you prefer the explicit path form shown in the Usage section above);
+the source directory can then be archived or deleted at the operator's
+discretion.
 
 ## Tests
 

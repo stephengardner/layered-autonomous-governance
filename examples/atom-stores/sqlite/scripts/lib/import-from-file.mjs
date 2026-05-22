@@ -33,11 +33,15 @@ export function parseArgs(argv) {
       args.dest = argv[i + 1];
       i += 1;
     } else if (flag === '--batch-size' && argv[i + 1]) {
-      const n = Number.parseInt(argv[i + 1], 10);
-      if (!Number.isFinite(n) || n < 1) {
-        throw new Error(`--batch-size must be a positive integer, got ${argv[i + 1]}`);
+      // Strict canonical-integer regex. Number.parseInt would silently
+      // accept '1.5' (-> 1) and '10foo' (-> 10), breaking the
+      // "positive integer" contract. /^[1-9]\d*$/ rejects leading
+      // zeros, decimals, and trailing garbage.
+      const raw = argv[i + 1];
+      if (!/^[1-9]\d*$/.test(raw)) {
+        throw new Error(`--batch-size must be a positive integer, got ${raw}`);
       }
-      args.batchSize = n;
+      args.batchSize = Number(raw);
       i += 1;
     }
   }
@@ -202,7 +206,13 @@ export function countConflicts(db, source, files) {
   let conflicts = 0;
   for (const name of files) {
     const atom = readAtomFile(join(source, name));
-    if (typeof atom.id !== 'string') continue;
+    // Match importAtoms semantics: a malformed atom is a fatal input,
+    // not a silent skip. The dry-run must fail on the same files the
+    // real import would fail on, otherwise the preview lies about what
+    // the destination will look like.
+    if (typeof atom.id !== 'string') {
+      throw new Error(`Atom in ${name} has missing or non-string id`);
+    }
     if (lookup.get(atom.id)) conflicts += 1;
   }
   return conflicts;
@@ -293,46 +303,57 @@ export async function run(argv, io = defaultIo()) {
     return { ok: false, code: 1, error: message, args };
   }
 
-  const files = listAtomFiles(args.source);
-
-  if (args.dryRun) {
-    let conflicts = 0;
-    if (existsSync(args.dest)) {
-      const db = openDestinationDb(args.dest);
-      try {
-        conflicts = countConflicts(db, args.source, files);
-      } finally {
-        db.close();
-      }
-    }
-    io.stdout(
-      `[dry-run] would import ${files.length} atoms (${conflicts} would conflict on duplicate id)\n`
-    );
-    return { ok: true, code: 0, args, files: files.length, conflicts };
-  }
-
-  const db = openDestinationDb(args.dest);
-  let summary;
+  // Normalize every runtime failure into a RunResult so the CLI never
+  // surfaces a raw stack trace and tests can assert on `error` instead
+  // of catching a thrown promise. Failures from listAtomFiles,
+  // openDestinationDb, importAtoms, and verifyRoundTrip all funnel
+  // through this catch.
   try {
-    const { inserted, skipped } = importAtoms(db, args.source, files, args.batchSize);
-    io.stdout(
-      `[import] inserted ${inserted}/${files.length} atoms (${skipped} skipped as duplicates)\n`
-    );
-    summary = { inserted, skipped };
+    const files = listAtomFiles(args.source);
 
-    if (args.verify) {
-      const result = verifyRoundTrip(db, args.source, files);
-      if (!result.ok) {
-        io.stderr(`[verify] FAIL: ${result.reason}\n`);
-        return { ok: false, code: 1, error: result.reason, args, ...summary };
+    if (args.dryRun) {
+      let conflicts = 0;
+      if (existsSync(args.dest)) {
+        const db = openDestinationDb(args.dest);
+        try {
+          conflicts = countConflicts(db, args.source, files);
+        } finally {
+          db.close();
+        }
       }
-      io.stdout(`[verify] OK: ${result.count}/${files.length} atoms round-trip\n`);
-      summary.verified = result.count;
+      io.stdout(
+        `[dry-run] would import ${files.length} atoms (${conflicts} would conflict on duplicate id)\n`
+      );
+      return { ok: true, code: 0, args, files: files.length, conflicts };
     }
-  } finally {
-    db.close();
+
+    const db = openDestinationDb(args.dest);
+    let summary;
+    try {
+      const { inserted, skipped } = importAtoms(db, args.source, files, args.batchSize);
+      io.stdout(
+        `[import] inserted ${inserted}/${files.length} atoms (${skipped} skipped as duplicates)\n`
+      );
+      summary = { inserted, skipped };
+
+      if (args.verify) {
+        const result = verifyRoundTrip(db, args.source, files);
+        if (!result.ok) {
+          io.stderr(`[verify] FAIL: ${result.reason}\n`);
+          return { ok: false, code: 1, error: result.reason, args, ...summary };
+        }
+        io.stdout(`[verify] OK: ${result.count}/${files.length} atoms round-trip\n`);
+        summary.verified = result.count;
+      }
+    } finally {
+      db.close();
+    }
+    return { ok: true, code: 0, args, ...summary };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    io.stderr(`error: ${message}\n`);
+    return { ok: false, code: 1, error: message, args };
   }
-  return { ok: true, code: 0, args, ...summary };
 }
 
 export function defaultIo() {
