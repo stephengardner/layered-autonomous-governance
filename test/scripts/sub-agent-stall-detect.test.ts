@@ -197,6 +197,57 @@ describe('classifySubAgentProgress', () => {
     });
   });
 
+  describe('clock-skew clamps ageMs to null (per CR PR #434)', () => {
+    it('silent-but-working: negative lastEditAtMs age clamps ageMs to null', () => {
+      // Worktree clock is ahead of parent. lastEditAtMs > nowMs would
+      // produce a negative "time since last edit" -- a lie. The
+      // detector clamps to null so the caller knows the age is
+      // unobservable, not "very recent".
+      const result = classifySubAgentProgress({
+        nowMs: NOW_MS,
+        lastCommitAtMs: null,
+        lastEditAtMs: NOW_MS + 5 * MINUTE_MS,
+        workingTreeDirty: true,
+        commitsAhead: 0,
+      });
+      expect(result.kind).toBe('silent-but-working');
+      if (result.kind === 'silent-but-working') {
+        expect(result.ageMs).toBeNull();
+      }
+    });
+
+    it('stalled: future-dated lastEditAtMs falls back to commit ageMs (also clamped)', () => {
+      // Edit timestamp is in the future (skew). The detector falls
+      // back to lastCommitAtMs. Both can be skewed independently.
+      const result = classifySubAgentProgress({
+        nowMs: NOW_MS,
+        lastCommitAtMs: NOW_MS - 90 * MINUTE_MS,
+        lastEditAtMs: NOW_MS + 1 * MINUTE_MS,
+        workingTreeDirty: false,
+        commitsAhead: 1,
+      });
+      expect(result.kind).toBe('stalled');
+      if (result.kind === 'stalled') {
+        expect(result.ageMs).toBe(90 * MINUTE_MS);
+      }
+    });
+
+    it('stalled: BOTH edit AND commit in the future clamps to null', () => {
+      // Both timestamps skewed forward. Caller gets null, not a lie.
+      const result = classifySubAgentProgress({
+        nowMs: NOW_MS,
+        lastCommitAtMs: NOW_MS + 10 * MINUTE_MS,
+        lastEditAtMs: NOW_MS + 5 * MINUTE_MS,
+        workingTreeDirty: false,
+        commitsAhead: 1,
+      });
+      expect(result.kind).toBe('stalled');
+      if (result.kind === 'stalled') {
+        expect(result.ageMs).toBeNull();
+      }
+    });
+  });
+
   describe('deadline override', () => {
     it('honors a smaller deadline (org-ceiling tight SLA)', () => {
       // Edit 5 minutes ago; default deadline 30min would classify as

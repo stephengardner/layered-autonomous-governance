@@ -10,10 +10,10 @@
 // This helper closes that gap: given a worktree's git state and the
 // configured deadline, classify the sub-agent's progress as one of
 // three discriminated kinds: 'fresh' (commit or working-tree edit
-// within deadline), 'silent-but-working' (file mtimes within
-// deadline AND uncommitted work present), or 'stalled' (no commit
-// AND no recent edits AND deadline passed). Callers act on the kind
-// rather than ad-hoc time arithmetic.
+// within deadline), 'silent-but-working' (working tree dirty but no
+// edits within deadline -- the sub-agent typed once then paused),
+// or 'stalled' (no commit AND no recent edits AND deadline passed).
+// Callers act on the kind rather than ad-hoc time arithmetic.
 //
 // Design choices:
 // - The detector is PURE: takes a state struct, returns a classification.
@@ -126,11 +126,13 @@ export function classifySubAgentProgress(state) {
   // sub-agent typed something, then paused. Ambiguous: could be
   // mid-thought, could be hung. Surface as a distinct kind so the
   // caller can decide.
+  //
+  // Negative ageMs (lastEditAtMs > nowMs from clock skew) is clamped
+  // to null. The caller's escalation math reads ageMs as "how long
+  // since the last sign of life"; a negative value would lie about
+  // that. Same pattern in Rule 4 below.
   if (state.workingTreeDirty === true) {
-    const ageMs =
-      typeof state.lastEditAtMs === 'number' && Number.isFinite(state.lastEditAtMs)
-        ? nowMs - state.lastEditAtMs
-        : null;
+    const ageMs = clampAgeMs(state.lastEditAtMs, nowMs);
     return { kind: 'silent-but-working', ageMs };
   }
 
@@ -140,10 +142,25 @@ export function classifySubAgentProgress(state) {
       ? 'stale-after-last-commit'
       : 'no-progress';
   const ageMs =
-    typeof state.lastEditAtMs === 'number' && Number.isFinite(state.lastEditAtMs)
-      ? nowMs - state.lastEditAtMs
-      : typeof state.lastCommitAtMs === 'number' && Number.isFinite(state.lastCommitAtMs)
-        ? nowMs - state.lastCommitAtMs
-        : null;
+    clampAgeMs(state.lastEditAtMs, nowMs) ?? clampAgeMs(state.lastCommitAtMs, nowMs);
   return { kind: 'stalled', ageMs, reason };
+}
+
+/**
+ * Compute nowMs - sourceMs and return it only when finite AND
+ * non-negative. Null otherwise. Centralizes the clock-skew guard
+ * that rules 3 and 4 both need.
+ *
+ * Negative ageMs happens when the worktree's clock is ahead of the
+ * parent (NTP drift, mtime from a different machine). The detector
+ * should not propagate a negative "how long since last sign of
+ * life" because the caller's escalation math would mis-interpret it
+ * as "very recently" when it actually means "we cannot tell".
+ */
+function clampAgeMs(sourceMs, nowMs) {
+  if (typeof sourceMs !== 'number' || !Number.isFinite(sourceMs)) {
+    return null;
+  }
+  const ageMs = nowMs - sourceMs;
+  return ageMs >= 0 ? ageMs : null;
 }
