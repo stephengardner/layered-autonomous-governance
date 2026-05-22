@@ -33,6 +33,7 @@ deployment:
 
 ## Indented code
 
+<!-- markdownlint-disable-next-line MD046 -->
     function exampleHandler(input) {
         return input.trim();
     }
