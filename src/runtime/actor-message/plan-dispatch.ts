@@ -246,8 +246,11 @@ export async function runDispatchTick(
       // additional metadata between our claim and this terminal
       // transition. The closure is gated to plan_state='executing'
       // so a retry cannot flip a peer's terminal succeeded/failed/
-      // abandoned outcome.
-      await runWithCas(host, plan.id, current => {
+      // abandoned outcome. The audit row + dispatched counter only
+      // fire when the CAS WON; a null result means a peer terminal-
+      // wrote first and our this-tick observation has no audit
+      // claim on the persisted outcome.
+      const casResult = await runWithCas(host, plan.id, current => {
         if (current.plan_state !== 'executing') return null;
         return {
           plan_state: 'succeeded',
@@ -263,14 +266,16 @@ export async function runDispatchTick(
           },
         };
       });
-      await emitDispatchAudit(plan, 'plan.dispatch-succeeded', terminalAt, {
-        plan_id: String(plan.id),
-        sub_actor_principal_id: envelope.sub_actor_principal_id,
-        correlation_id: envelope.correlation_id,
-        summary: result.summary,
-        produced_atom_ids: [...result.producedAtomIds],
-      });
-      dispatched += 1;
+      if (casResult !== null) {
+        await emitDispatchAudit(plan, 'plan.dispatch-succeeded', terminalAt, {
+          plan_id: String(plan.id),
+          sub_actor_principal_id: envelope.sub_actor_principal_id,
+          correlation_id: envelope.correlation_id,
+          summary: result.summary,
+          produced_atom_ids: [...result.producedAtomIds],
+        });
+        dispatched += 1;
+      }
     } else if (result.kind === 'dispatched') {
       // Plan stays in 'executing'; the terminal transition lands on a
       // future tick when the async sub-actor completes. terminal_at
@@ -278,8 +283,9 @@ export async function runDispatchTick(
       // reached terminal yet. dispatch_result records the in-flight
       // hand-off so an audit consumer sees the dispatch happened.
       // CAS gated to executing so a peer terminal-write is not
-      // overwritten with a stale dispatched marker.
-      await runWithCas(host, plan.id, current => {
+      // overwritten with a stale dispatched marker. Audit + counter
+      // only fire when CAS won.
+      const casResult = await runWithCas(host, plan.id, current => {
         if (current.plan_state !== 'executing') return null;
         return {
           metadata: {
@@ -291,19 +297,22 @@ export async function runDispatchTick(
           },
         };
       });
-      await emitDispatchAudit(plan, 'plan.dispatch-in-flight', terminalAt, {
-        plan_id: String(plan.id),
-        sub_actor_principal_id: envelope.sub_actor_principal_id,
-        correlation_id: envelope.correlation_id,
-        summary: result.summary,
-      });
-      dispatched += 1;
+      if (casResult !== null) {
+        await emitDispatchAudit(plan, 'plan.dispatch-in-flight', terminalAt, {
+          plan_id: String(plan.id),
+          sub_actor_principal_id: envelope.sub_actor_principal_id,
+          correlation_id: envelope.correlation_id,
+          summary: result.summary,
+        });
+        dispatched += 1;
+      }
     } else {
       // error case
       const errorMessage = truncateErrorMessage(result.message);
       // CAS gated to plan_state='executing' so a peer's terminal
-      // outcome (succeeded/abandoned) is preserved.
-      await runWithCas(host, plan.id, current => {
+      // outcome (succeeded/abandoned) is preserved. Audit + counter
+      // + escalation-message only fire when CAS won.
+      const casResult = await runWithCas(host, plan.id, current => {
         if (current.plan_state !== 'executing') return null;
         return {
           plan_state: 'failed',
@@ -319,6 +328,12 @@ export async function runDispatchTick(
           },
         };
       });
+      if (casResult === null) {
+        // Peer terminal-wrote first; suppress the audit row,
+        // counter, and escalation message so this tick does not
+        // double-report an outcome the peer already persisted.
+        continue;
+      }
       await emitDispatchAudit(plan, 'plan.dispatch-failed', terminalAt, {
         plan_id: String(plan.id),
         sub_actor_principal_id: envelope.sub_actor_principal_id,

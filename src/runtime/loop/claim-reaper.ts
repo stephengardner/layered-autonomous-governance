@@ -785,6 +785,33 @@ async function escalateStalledClaim(
   if (freshMeta.claim_state !== 'stalled') return 'skipped';
 
   const now = host.clock.now();
+
+  // CAS-protected abandon-flip FIRST: a peer reaper that observed
+  // the same cap-exceeded condition could also try to flip the
+  // claim to 'abandoned'; the closure is source-gated to 'stalled'
+  // so a retry cannot overwrite a peer's recovery transition
+  // (stalled -> executing). On null (peer beat us), we skip the
+  // escalation atom + notifier event so the audit stream does not
+  // double-report an escalation the peer's path already handled.
+  const casResult = await runWithCas(host, atom.id, current => {
+    const currentMeta = current.metadata.work_claim as WorkClaimMeta | undefined;
+    if (currentMeta === undefined) return null;
+    if (currentMeta.claim_state !== 'stalled') return null;
+    return {
+      metadata: {
+        work_claim: { ...currentMeta, claim_state: 'abandoned' },
+      },
+    };
+  });
+  if (casResult === null) {
+    // Peer reaper claimed the stalled -> abandoned (or stalled ->
+    // executing recovery) transition first. Suppress the
+    // escalation atom + notifier event so this tick does not
+    // emit a duplicate side-effect; the peer's path is
+    // responsible for its own audit trail.
+    return 'skipped';
+  }
+
   const escalation: ClaimEscalatedMeta = {
     claim_id: freshMeta.claim_id,
     failure_reasons: ['recovery-attempts-exceeded-cap'],
@@ -840,26 +867,6 @@ async function escalateStalledClaim(
   // response here; the escalation atom is already written.
   await host.notifier.telegraph(event, null, 'pending', 0);
 
-  // CAS-protected via runWithCas. A peer reaper that observed the
-  // same cap-exceeded condition could also try to flip the claim to
-  // 'abandoned'; the helper re-reads on ConflictError so the flip
-  // still lands when the source state is still 'stalled'. The
-  // closure is source-gated to 'stalled' so a retry cannot
-  // overwrite a peer's recovered transition (stalled -> executing)
-  // or a different terminal write (stalled -> abandoned via a
-  // racing escalateStalledClaim is identical-outcome and safe; we
-  // short-circuit on already-abandoned to suppress the duplicate
-  // metadata write).
-  await runWithCas(host, atom.id, current => {
-    const currentMeta = current.metadata.work_claim as WorkClaimMeta | undefined;
-    if (currentMeta === undefined) return null;
-    if (currentMeta.claim_state !== 'stalled') return null;
-    return {
-      metadata: {
-        work_claim: { ...currentMeta, claim_state: 'abandoned' },
-      },
-    };
-  });
   return 'escalated';
 }
 
