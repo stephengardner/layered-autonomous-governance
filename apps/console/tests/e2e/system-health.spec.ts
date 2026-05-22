@@ -217,11 +217,17 @@ test.describe('system health page', () => {
     await expect(atomStoreLink).toHaveAttribute('href', '/docs/runbooks/atom-store-enospc.md');
     /*
      * Anchor must open in a new tab (target="_blank") so the operator
-     * does not lose dashboard state mid-incident. Also test rel for
-     * the noopener/noreferrer security pair.
+     * does not lose dashboard state mid-incident. The rel attribute
+     * must carry BOTH noopener (blocks window.opener access from the
+     * new tab) and noreferrer (suppresses the Referer header on the
+     * outbound request) so a future change that re-assembles the rel
+     * string without one half does not silently weaken the security
+     * pair.
      */
     await expect(reaperLink).toHaveAttribute('target', '_blank');
-    await expect(reaperLink).toHaveAttribute('rel', /noopener/);
+    const rel = await reaperLink.getAttribute('rel');
+    expect(rel).toContain('noopener');
+    expect(rel).toContain('noreferrer');
   });
 
   test('Refresh button drives a second backend call', async ({ page }) => {

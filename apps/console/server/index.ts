@@ -230,9 +230,19 @@ async function getCachedSystemHealth(): Promise<SystemHealthResponse> {
   const metricsPort = metricsPortRaw && /^\d+$/.test(metricsPortRaw)
     ? Number.parseInt(metricsPortRaw, 10)
     : undefined;
+  /*
+   * Resolve the reaper cadence from canon at cache-fill time. An
+   * org-ceiling deployment that has tuned the cadence to 30 seconds
+   * gets a probe that fires yellow at 60s and red at 150s; without
+   * threading the resolved value, every deployment uses the indie-
+   * floor default of 60s and the probe misreports a tuned reaper as
+   * yellow on every refresh.
+   */
+  const cadenceMs = await resolveClaimReaperCadenceMsFromCanon();
   const value = buildSystemHealth(LAG_DIR, ATOMS_DIR, {
     claimReaperOpts: {
       loadAtoms: () => defaultLoadClaimReaperHeartbeatAtoms(ATOMS_DIR),
+      cadenceMs,
     },
     tunnelOpts: metricsPort !== undefined ? { metricsPort } : undefined,
   });
@@ -240,6 +250,53 @@ async function getCachedSystemHealth(): Promise<SystemHealthResponse> {
     expiresAt: now + SYSTEM_HEALTH_CACHE_TTL_MS,
     value,
   };
+  return value;
+}
+
+/*
+ * Resolve the claim-reaper cadence (ms) from the in-memory atom
+ * index. Mirrors the substrate's `resolveReaperCadenceMs` reader at
+ * src/substrate/policy/claim-reaper-config.ts but reads from the
+ * Console's projection rather than calling through a Host bundle
+ * (the Console server intentionally has zero runtime dependency on
+ * the framework's compiled dist/).
+ *
+ * Resolution rules:
+ *   - Scan L3 atoms whose metadata.policy.kind === 'claim-reaper-
+ *     cadence-ms'; pick the most recently created clean unsuperseded
+ *     one (mirrors the substrate reader's tie-break).
+ *   - Validate metadata.policy.value is a finite positive number.
+ *   - Return undefined (NOT a default) when no clean policy atom is
+ *     present so the probe's own DEFAULT_CLAIM_REAPER_CADENCE_MS
+ *     kicks in. Returning a synthesized default here would mask the
+ *     missing-canon-policy signal the audit chain depends on.
+ */
+async function resolveClaimReaperCadenceMsFromCanon(): Promise<number | undefined> {
+  const atoms = await readAllAtoms();
+  let bestAtom: Atom | null = null;
+  let bestCreatedAt = '';
+  for (const a of atoms) {
+    if (a.layer !== 'L3') continue;
+    if (a.taint && a.taint !== 'clean') continue;
+    if (Array.isArray(a.superseded_by) && a.superseded_by.length > 0) continue;
+    const meta = a.metadata;
+    if (!meta || typeof meta !== 'object') continue;
+    const policy = (meta as Record<string, unknown>)['policy'];
+    if (!policy || typeof policy !== 'object') continue;
+    const kind = (policy as Record<string, unknown>)['kind'];
+    if (kind !== 'claim-reaper-cadence-ms') continue;
+    const createdAt = a.created_at ?? '';
+    if (createdAt > bestCreatedAt) {
+      bestCreatedAt = createdAt;
+      bestAtom = a;
+    }
+  }
+  if (bestAtom === null) return undefined;
+  const policy = (bestAtom.metadata as Record<string, unknown>)['policy'] as Record<string, unknown>;
+  const value = policy['value'];
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
   return value;
 }
 

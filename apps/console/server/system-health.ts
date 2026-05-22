@@ -944,20 +944,28 @@ function formatBytes(n: number): string {
  * Read `claim-reaper-sweep-completed` atoms from a `.lag/atoms/`
  * directory without depending on the server's in-memory atom index.
  * This helper is the production wiring of `ProbeClaimReaperOpts.loadAtoms`;
- * tests skip it and pass a stub directly. Returns an empty array on
- * read errors (the probe surfaces the absent-heartbeat case loudly,
- * so a missing directory shows up as red, not as a transport-failure
- * stack trace).
+ * tests skip it and pass a stub directly.
+ *
+ * Failure modes deliberately propagate to the caller:
+ *   - readdir() on the atoms directory throws (ENOENT / EACCES /
+ *     filesystem unmounted): the throw bubbles up so the probe's
+ *     catch-block reports "Atom load failed" with the underlying
+ *     errno. Swallowing this as an empty array would point operators
+ *     at "no heartbeat observed" when the real problem is "the atom
+ *     store is unreadable."
+ *
+ * Per-file read errors stay caught: a single corrupted JSON file
+ * inside the atoms directory should not poison the probe's view of
+ * the rest of the heartbeat set. That branch logs nothing because
+ * the broader probe surfaces aggregate state, not per-atom errors.
  */
 export async function defaultLoadClaimReaperHeartbeatAtoms(
   atomsDir: string,
 ): Promise<ReadonlyArray<ProbeAtom>> {
-  let entries: string[];
-  try {
-    entries = await readdir(atomsDir);
-  } catch {
-    return [];
-  }
+  // No try/catch here. readdir() failure means the atom-store is
+  // inaccessible; the caller's catch translates that into a red row
+  // with the underlying error message in detail.
+  const entries = await readdir(atomsDir);
   const out: ProbeAtom[] = [];
   /*
    * Atoms of this type are very small and rare (one per tick when the
@@ -976,7 +984,10 @@ export async function defaultLoadClaimReaperHeartbeatAtoms(
         out.push(parsed);
       }
     } catch {
-      // Skip unreadable / malformed; the probe handles empty results.
+      // Skip unreadable / malformed individual files; the probe
+      // handles empty results and the aggregate state is what
+      // matters. A corrupted single atom does not justify failing
+      // the whole probe.
     }
   }
   return out;

@@ -434,6 +434,28 @@ describe('probeClaimReaperCadence', () => {
     expect(result.detail).toContain('EACCES');
   });
 
+  it('atom-loader failure detail names the right subsystem (atom load, not reaper)', async () => {
+    /*
+     * Regression guard: an earlier draft swallowed readdir() failure
+     * inside defaultLoadClaimReaperHeartbeatAtoms as empty array,
+     * which surfaced as "No reaper heartbeat observed" instead of
+     * "Atom load failed". Operators chasing a missing-heartbeat
+     * symptom would investigate the LoopRunner reaper pass when the
+     * actual problem was an unreadable atom store. The probe's
+     * detail string must point at the right subsystem.
+     */
+    const result = await probeClaimReaperCadence({
+      now: fixedNow,
+      loadAtoms: async () => {
+        throw new Error('ENOENT: no such file or directory, scandir');
+      },
+    });
+    expect(result.status).toBe('red');
+    expect(result.summary).toMatch(/Atom load failed/);
+    expect(result.detail).toContain('Could not read atoms');
+    expect(result.detail).not.toContain('heartbeat'); // not the wrong subsystem
+  });
+
   it('honours a caller-supplied cadenceMs override', async () => {
     /*
      * An org-ceiling deployment that tightens the reaper cadence to

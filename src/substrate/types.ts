@@ -254,9 +254,9 @@ export type AtomType =
   // `claim-reaper-sweep-completed`: written by the reaper orchestrator
   // at the end of every non-halted tick. Carries the per-tick counts
   // (detected / recovered / escalated) under metadata.reaper_sweep.
-  // The Console System Health page reads created_at across these atoms
-  // to surface a reaper-cadence probe row; an absent or aging sweep
-  // signals an offline reaper without requiring a join across
+  // Operator-readiness projections (or any consumer querying the
+  // atom store) read created_at across these atoms to detect an
+  // aging or absent sweep without requiring a join across
   // claim-stalled / claim-escalated kinds.
   | 'work-claim'
   | 'claim-attestation-accepted'

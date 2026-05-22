@@ -224,10 +224,12 @@ export interface RunClaimReaperTickResult {
  * - Heartbeat: when neither phase threw, write one
  *   `claim-reaper-sweep-completed` atom carrying the per-tick counts.
  *   The atom is the substrate-visible signal that the reaper pass
- *   actually ran; the Console System Health page reads its
- *   created_at to surface a reaper-cadence probe row. Operators
- *   pattern-match an aging heartbeat to "the reaper has stopped"
- *   instead of reading tea leaves out of activity-feed silence.
+ *   actually ran. Operators (and any consumer querying the atom
+ *   store) pattern-match an aging heartbeat to "the reaper has
+ *   stopped" instead of reading tea leaves out of activity-feed
+ *   silence. Surfacing the absence in a dashboard or other operator-
+ *   readiness projection is a consumer concern; the substrate only
+ *   guarantees the atom is written.
  */
 export async function runClaimReaperTick(
   host: Host,
