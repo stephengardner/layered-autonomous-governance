@@ -313,3 +313,5 @@ export function isKillSwitchAbortReason(
   if (typeof r.sentinelPath !== 'string') return false;
   return true;
 }
+
+export type { MediumTierKillSwitch } from './medium-tier.js';

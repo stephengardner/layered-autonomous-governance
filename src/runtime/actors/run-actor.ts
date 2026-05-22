@@ -23,7 +23,10 @@
 
 import { checkToolPolicy } from '../../policy/index.js';
 import type { PolicyContext } from '../../policy/index.js';
-import { isKillSwitchAbortReason } from '../../kill-switch/index.js';
+import {
+  isKillSwitchAbortReason,
+  type MediumTierKillSwitch,
+} from '../../kill-switch/index.js';
 import {
   mkKillSwitchTrippedAtom,
   type KillSwitchTripPhase,
@@ -86,6 +89,22 @@ export interface RunActorOptions<Adapters extends ActorAdapters> {
    * supplied; the metadata key is omitted entirely.
    */
   readonly killSwitchRevocationNotes?: string;
+  /**
+   * Optional out-of-process kill-switch the actor uses to track and
+   * forcibly terminate any subprocesses it spawns. When configured:
+   *   - runActor surfaces it on `ActorContext.mediumTierKillSwitch`
+   *     so the actor's `apply` calls can `arm(pid)` / `disarm(pid)`
+   *     against spawned children.
+   *   - runActor calls `tripAll()` automatically on a kill-switch
+   *     halt (predicate-fired or signal-fired) so any still-armed
+   *     subprocesses are killed before the loop unwinds.
+   * Absent by default: the indie-floor path has no out-of-process
+   * supervisor dependency, only the soft tier (kill-switch predicate
+   * + AbortSignal). A deployment that needs cooperative subprocess
+   * termination (e.g. when the LLM CLI ignores SIGTERM) wires this
+   * option at the caller layer.
+   */
+  readonly mediumTierKillSwitch?: MediumTierKillSwitch;
   /**
    * Optional audit sink. Receives a structured event per phase. If
    * omitted, the driver still writes a minimal record to host.auditor.
@@ -353,6 +372,29 @@ export async function runActor<
   }
 
   const endedAt = options.host.clock.now();
+
+  // Reconcile kill-switch state before emitting halt side-effects.
+  // A killSwitchSignal abort fired during observe/classify/propose/
+  // apply/reflect surfaces as a thrown error in the phase catch,
+  // which sets haltReason='error'. Without this reconciliation a
+  // kill-triggered halt would skip the kill-switch audit observation
+  // and the medium-tier tripAll() below. Walking detectKillSwitchTrip
+  // once more here is cheap (it inspects the same options.killSwitchSignal
+  // / .lag/STOP sentinel the loop has been polling) and the override
+  // matches operator expectation that a kill trip always lands as a
+  // kill-switch halt regardless of which phase the abort intercepted.
+  if (haltReason !== 'kill-switch') {
+    const trippedAtExit = detectKillSwitchTrip(options);
+    if (trippedAtExit !== null) {
+      haltReason = 'kill-switch';
+      trippedTrigger = trippedAtExit;
+      // Phase is always reassigned here because the original
+      // 'between-iterations' default is misleading once we know the
+      // trip was caught at halt-reconciliation time.
+      trippedPhase = 'halt-reconciliation';
+    }
+  }
+
   await emitAudit(options, actor, {
     kind: 'halt',
     iteration,
@@ -361,6 +403,24 @@ export async function runActor<
     actor: actor.name,
     payload: { haltReason, escalations: escalations.slice() },
   });
+
+  // On kill-switch halt with a medium-tier supervisor configured,
+  // forcibly terminate any subprocesses the actor armed. The soft
+  // tier (AbortSignal + cooperative killSwitch predicate) handles
+  // well-behaved adapters; tripAll() handles the case where a
+  // spawned child ignored SIGTERM or never subscribed to the
+  // signal. Best-effort: errors are logged but never block the
+  // halt path.
+  if (haltReason === 'kill-switch' && options.mediumTierKillSwitch !== undefined) {
+    try {
+      await options.mediumTierKillSwitch.tripAll();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[runActor] medium-tier tripAll() failed (continuing halt): ${errString(err)}`,
+      );
+    }
+  }
 
   // On kill-switch halt, write the kill-switch-tripped L1 observation
   // so there is a durable atom record of WHAT got interrupted and
@@ -413,7 +473,11 @@ function buildContext<Adapters extends ActorAdapters>(
   options: RunActorOptions<Adapters>,
   iteration: number,
 ): ActorContext<Adapters> {
-  return {
+  // Build the context with an exactOptionalPropertyTypes-friendly
+  // shape: only attach mediumTierKillSwitch when the caller passed
+  // one. Always-attaching an `undefined` value would conflict with
+  // tsconfig's exactOptionalPropertyTypes: true.
+  const base: ActorContext<Adapters> = {
     host: options.host,
     principal: options.principal,
     adapters: options.adapters,
@@ -431,6 +495,9 @@ function buildContext<Adapters extends ActorAdapters>(
       });
     },
   };
+  return options.mediumTierKillSwitch !== undefined
+    ? { ...base, mediumTierKillSwitch: options.mediumTierKillSwitch }
+    : base;
 }
 
 /**
