@@ -1,3 +1,7 @@
+# Claim-reaper not running
+
+The reaper passes that clean up stalled plans, expired pipelines, and stuck claims have stopped firing on the LoopRunner. Without them, the `.lag/atoms/` store accumulates terminal state that downstream consumers (Console projections, plan dispatchers) treat as in-flight.
+
 ## Symptoms
 
 - PRs reported open by the watcher but no progress in the last hour.
