@@ -99,7 +99,6 @@ export function SystemHealthView() {
             data-testid="system-health-refresh"
           >
             <RefreshCw
-              size={14}
               strokeWidth={2}
               aria-hidden="true"
               className={query.isFetching ? styles.refreshSpinning : undefined}
@@ -237,7 +236,7 @@ function ProbeRowItem({ probe }: { readonly probe: ProbeRow }) {
           data-testid={`system-health-probe-runbook-${probe.id}`}
           aria-label={`Open runbook for ${PROBE_LABELS[probe.id]}`}
         >
-          <ExternalLink size={14} strokeWidth={2} aria-hidden="true" />
+          <ExternalLink strokeWidth={2} aria-hidden="true" />
           <span>Runbook</span>
         </a>
       </div>
@@ -259,7 +258,7 @@ function ProbeStatusPill({ status }: { readonly status: ProbeStatus }) {
       role="status"
       aria-label={`Status: ${label}`}
     >
-      <Icon size={14} strokeWidth={2} aria-hidden="true" />
+      <Icon strokeWidth={2} aria-hidden="true" />
       <span>{label}</span>
     </span>
   );
@@ -402,7 +401,7 @@ function StatusPill({ status }: { readonly status: IdentityStatus }) {
       role="status"
       aria-label={`Status: ${label}`}
     >
-      <Icon size={14} strokeWidth={2} aria-hidden="true" />
+      <Icon strokeWidth={2} aria-hidden="true" />
       <span>{label}</span>
     </span>
   );

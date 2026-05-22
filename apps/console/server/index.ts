@@ -254,7 +254,7 @@ async function getCachedSystemHealth(): Promise<SystemHealthResponse> {
         loadAtoms: () => defaultLoadClaimReaperHeartbeatAtoms(ATOMS_DIR),
         ...(cadenceMs !== undefined ? { cadenceMs } : {}),
       },
-      tunnelOpts: metricsPort !== undefined ? { metricsPort } : undefined,
+      ...(metricsPort !== undefined ? { tunnelOpts: { metricsPort } } : {}),
     });
   })();
   systemHealthCacheEntry = {

@@ -6,7 +6,7 @@ The cloudflared quick-tunnel that exposes the Console dev surface to the public 
 
 - Console System Health row `tunnel-reachability` is yellow or red.
 - External GETs to `https://<random>.trycloudflare.com/` return 502 Bad Gateway.
-- `curl http://127.0.0.1:20241/quicktunnel` returns connection refused.
+- `curl http://127.0.0.1:${LAG_TUNNEL_METRICS_PORT:-20241}/quicktunnel` returns connection refused. (The probe's `DEFAULT_TUNNEL_METRICS_PORT` is 20241; `LAG_TUNNEL_METRICS_PORT` or `opts.metricsPort` overrides it. Discover the active port with `echo $LAG_TUNNEL_METRICS_PORT` or check the Console System Health row detail.)
 - Loop tick reports include `tunnel-watchdog` exit-code lines in stderr.
 - Any session that depends on the public URL (webhook callback, Telegram link preview, mobile-browser dev access) fails silently.
 
@@ -36,5 +36,5 @@ The tunnel itself does not emit atoms; its absence is what surfaces on the Conso
 
 - Code: `scripts/tunnel-watchdog.mjs`, `scripts/lib/tunnel-watchdog.mjs`
 - Console probe: `apps/console/server/system-health.ts` (probeTunnelReachability)
-- Memory: `feedback_loop_must_keep_tunnel_and_servers_alive`, `feedback_tunnel_restart_needs_allowlist_update`
+- Agent auto-memory (operator-side, not tracked in this repo): `feedback_loop_must_keep_tunnel_and_servers_alive` (watchdog discipline), `feedback_tunnel_restart_needs_allowlist_update` (allowlist mutation on every restart). These are operator-local memory entries consumed by future agent sessions for context; the runbook + the watchdog scripts above are the in-repo source of truth.
 - Audit: `docs/audit/2026-05-22-perpetual-self-audit-v1.md` PR-7

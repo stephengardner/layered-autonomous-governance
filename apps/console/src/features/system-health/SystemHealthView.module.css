@@ -344,6 +344,13 @@
   align-items: center;
 }
 
+.runbookLink svg,
+.statusPill svg,
+.refreshButton svg {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
 .runbookLink {
   display: inline-flex;
   align-items: center;
