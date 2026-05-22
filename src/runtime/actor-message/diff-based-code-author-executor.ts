@@ -55,6 +55,7 @@ import type {
   CodeAuthorExecutor,
   CodeAuthorExecutorResult,
 } from './code-author-invoker.js';
+import { resolveOutdatedThreadsAfterPush } from './resolve-outdated-threads-after-push.js';
 
 export interface DiffBasedExecutorConfig {
   readonly host: Host;
@@ -661,6 +662,30 @@ export function buildDiffBasedCodeAuthorExecutor(
       // `code-author-started` atom before the drafter call) begin to
       // consume it.
       void correlationId;
+
+      // Post-PR-creation: sweep outdated review threads. A freshly
+      // opened PR has no threads yet, so this is a no-op on the
+      // create path; the call is present so the substrate enforces
+      // the rule regardless of which executor flavor opened the PR.
+      // Per the canonical discipline, PR-authoring agents that push
+      // code-changing commits MUST resolve outdated CR threads so
+      // the unresolved-thread merge gate clears as soon as CI does.
+      // Failure of this sweep MUST NOT roll back the PR-creation
+      // result; the .catch swallows. Skipped when `config.principal`
+      // is unset because the audit-atom write requires a principal
+      // identifier; back-compat consumers that did not provide one
+      // continue to work unchanged.
+      if (config.principal !== undefined) {
+        await resolveOutdatedThreadsAfterPush({
+          host: config.host,
+          ghClient: config.ghClient,
+          principal: config.principal,
+          owner: config.owner,
+          repo: config.repo,
+          prNumber: prResult.number,
+          ...(signal !== undefined ? { signal } : {}),
+        }).catch(() => undefined);
+      }
 
       // Filter findings down to the non-critical severities the
       // success result surfaces. Critical findings short-circuited

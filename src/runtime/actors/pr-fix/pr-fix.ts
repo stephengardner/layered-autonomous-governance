@@ -35,6 +35,7 @@ import { defaultBudgetCap, type BudgetCap } from '../../../substrate/agent-budge
 import { loadReplayTier } from '../../../substrate/policy/replay-tier.js';
 import { loadBlobThreshold } from '../../../substrate/policy/blob-threshold.js';
 import { sendOperatorEscalation } from '../../actor-message/index.js';
+import { resolveOutdatedThreadsAfterPush } from '../../actor-message/resolve-outdated-threads-after-push.js';
 import type { ActorReport } from '../types.js';
 import type {
   PrFixObservation,
@@ -754,6 +755,26 @@ export class PrFixActor implements Actor<
         // See classify() rationale: a transient store error here must
         // not mask the upstream fix-pushed outcome.
       }
+
+      // Post-fix-push: sweep outdated review threads. The fix-commit
+      // already changed lines a CR thread was anchored to; those
+      // threads are now `isOutdated: true` but still in the
+      // unresolved bucket until something calls
+      // `resolveReviewThread`. Substrate-side enforcement of the
+      // canonical rule for PR-authoring agents that push code-
+      // changing commits. Failure of this sweep MUST NOT roll back
+      // the fix-pushed outcome (the commit and resolveComment calls
+      // already landed); the .catch swallows so the actor returns
+      // fix-pushed regardless.
+      await resolveOutdatedThreadsAfterPush({
+        host: ctx.host,
+        ghClient: ctx.adapters.ghClient,
+        principal: ctx.principal.id,
+        owner: obs.pr.owner,
+        repo: obs.pr.repo,
+        prNumber: obs.pr.number,
+        signal: ctx.abortSignal,
+      }).catch(() => undefined);
 
       return {
         kind: 'fix-pushed',
