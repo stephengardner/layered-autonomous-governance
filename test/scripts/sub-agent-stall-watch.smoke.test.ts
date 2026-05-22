@@ -84,6 +84,13 @@ describe('sub-agent-stall-watch.mjs exit-code contract', () => {
       timeout: 30_000,
     });
     expect(result.status).toBe(0);
+    // Assert the actual classification surfaces in human-readable
+    // output. Without this the test could pass via the "no worktrees"
+    // exit-0 path even if scanWorktree mis-classified the fixture.
+    // Per CR finding on PR #436: exit-0 alone is too weak; the
+    // stdout's [FRESH] tag is the contract that fresh-by-edit-within-
+    // deadline was actually exercised.
+    expect(result.stdout).toContain('[FRESH]');
   });
 
   it('rejects --deadline-ms with non-integer value (CR-flagged strict int parse)', () => {
