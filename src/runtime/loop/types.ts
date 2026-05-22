@@ -436,6 +436,49 @@ export interface LoopOptions {
    * stall the rest of the loop's responsibilities.
    */
   readonly runClaimReaperPass?: boolean;
+  /**
+   * Run the self-audit pass on every tick. Default `false` so existing
+   * callers observe no behavior change (default-off; a deployment that
+   * opts into a long-running daemon does not surprise-spend on a
+   * substrate-deep pipeline run at midnight). When enabled AND a
+   * cadence policy atom is seeded with `enabled: true`, the pass
+   * invokes the caller-supplied `selfAuditTick` closure at the
+   * configured `intervalMs` cadence.
+   *
+   * Resolution chain (highest to lowest precedence):
+   *   1. canon `pol-self-audit-cadence` policy atom (re-read every
+   *      tick so an operator edit takes effect on the next pass
+   *      without a daemon restart). Default `{enabled: false,
+   *      intervalMs: 3_600_000}` when no atom is seeded.
+   *   2. `LoopOptions.runSelfAuditPass` (this field; CLI / env)
+   *      gates whether the pass runs AT ALL; the canon policy gates
+   *      whether the closure fires when the pass runs.
+   *
+   * The pass is mechanism-only at this layer: the framework holds no
+   * subprocess seam, no shell call, no spawn. The caller-supplied
+   * `selfAuditTick` closure is the integration point. A pass failure
+   * logs to `errors` but does NOT fail the tick: the self-audit is
+   * best-effort observation and one aborted run should not stall the
+   * rest of the loop's responsibilities.
+   */
+  readonly runSelfAuditPass?: boolean;
+  /**
+   * Caller-supplied closure the self-audit pass invokes when the
+   * cadence policy allows it. The framework stays mechanism-only: it
+   * does not import `node:child_process` or `node:fs` to spawn the
+   * self-audit driver. A deployment wires this to whatever shape it
+   * wants (a `spawn` call, an in-process function, a queued message
+   * to an external worker). Required when `runSelfAuditPass: true`
+   * AND the cadence policy is enabled; absent activates the silent-
+   * skip path with a once-per-runner stderr warning.
+   *
+   * The closure receives no arguments and returns `Promise<void>`. Any
+   * thrown error is caught by the pass and recorded on the tick's
+   * `errors[]` array; the throw does not cascade into following passes
+   * (mirrors the plan-reaper / claim-reaper best-effort cleanup
+   * discipline).
+   */
+  readonly selfAuditTick?: () => Promise<void>;
 }
 
 /**
@@ -622,6 +665,23 @@ export interface LoopTickReport {
         readonly recovered: number;
         readonly escalated: number;
         readonly halted?: boolean;
+      }
+    | null;
+  /**
+   * Per-tick self-audit summary. `null` when the pass is disabled OR
+   * when the pass ran but the cadence policy gated the tick from
+   * firing (the common case: the tick runs every loop iteration but
+   * the cadence policy only allows the audit driver to fire once per
+   * `intervalMs`). When the audit closure actually fired, populated
+   * with `fired: true` so an operator scanning tick output can see
+   * which tick activated the driver, and `closureErrorMs: null`
+   * (closure ran clean) or a positive number (closure threw at that
+   * elapsed-ms; the throw is also recorded in `errors[]`).
+   */
+  readonly selfAuditReport:
+    | {
+        readonly fired: boolean;
+        readonly closureErrorMs: number | null;
       }
     | null;
 }

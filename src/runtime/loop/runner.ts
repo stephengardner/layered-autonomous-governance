@@ -74,6 +74,7 @@ import {
   type OrphanPrDispatcher,
   type PrOrphanReconcileTickResult,
 } from '../plans/pr-orphan-reconcile.js';
+import { loadSelfAuditCadence } from '../../substrate/policy/self-audit-cadence.js';
 
 /**
  * A canon target after resolution: the manager is instantiated, and the
@@ -105,6 +106,7 @@ export class LoopRunner {
       | 'runPlanProposalNotifyPass'
       | 'runPrOrphanReconcilePass'
       | 'runClaimReaperPass'
+      | 'runSelfAuditPass'
     >
   >;
   private readonly l2Engine: PromotionEngine;
@@ -221,6 +223,30 @@ export class LoopRunner {
    * Mirrors warnedMissingRefresher.
    */
   private warnedMissingPrOrphanSeams: boolean = false;
+  /**
+   * Caller-supplied closure the self-audit pass invokes when the
+   * cadence policy gates the tick to fire. `null` when the pass is
+   * disabled OR when the caller did not wire a closure (the silent-
+   * skip path). The framework consumes the closure only through this
+   * `() => Promise<void>` shape; concrete spawn / queue / in-process
+   * wiring happens outside framework code.
+   */
+  private readonly selfAuditTick: (() => Promise<void>) | null;
+  /**
+   * Last `host.clock.now()` value (parsed to ms) when the self-audit
+   * closure actually fired. `null` until the first fire. The cadence
+   * check compares `now - lastSelfAuditAt >= intervalMs`; storing
+   * parsed-ms here lets the comparison stay simple integer math
+   * regardless of the host clock's ISO string format.
+   */
+  private lastSelfAuditAt: number | null = null;
+  /**
+   * Latch for the once-per-runner gap-warning when the self-audit
+   * pass is enabled but no closure was supplied. Mirrors
+   * `warnedMissingRefresher` to keep stderr clean across long-running
+   * daemons. Reset is implicit on runner re-construction.
+   */
+  private warnedMissingSelfAuditTick: boolean = false;
   private tickCounter: number = 0;
   private errorCounter: number = 0;
   private lastReport: LoopTickReport | null = null;
@@ -247,7 +273,17 @@ export class LoopRunner {
       runPlanProposalNotifyPass: options.runPlanProposalNotifyPass ?? false,
       runPrOrphanReconcilePass: options.runPrOrphanReconcilePass ?? false,
       runClaimReaperPass: options.runClaimReaperPass ?? false,
+      runSelfAuditPass: options.runSelfAuditPass ?? false,
     };
+    // Capture the self-audit closure at construction time. Storing
+    // here (vs. reading off `options` per tick) keeps the per-tick
+    // path free of optional-property reads on the caller's options
+    // object. The pass silent-skips when this is null; the
+    // construction-time path does not throw because a caller opting
+    // into the flag without wiring a closure may be a coherent
+    // choice (the deployment plans to wire it later; the once-per-
+    // runner warning surfaces the gap without halting the loop).
+    this.selfAuditTick = options.selfAuditTick ?? null;
     // Capture the refresher seam at construction time. Storing here
     // (vs. reading off `options` per tick) keeps the per-tick path
     // free of optional-property reads on the caller's options
@@ -449,6 +485,7 @@ export class LoopRunner {
     let planProposalNotifyReport: LoopTickReport['planProposalNotifyReport'] = null;
     let prOrphanReconcileReport: LoopTickReport['prOrphanReconcileReport'] = null;
     let claimReaperReport: LoopTickReport['claimReaperReport'] = null;
+    let selfAuditReport: LoopTickReport['selfAuditReport'] = null;
 
     if (this.host.scheduler.killswitchCheck()) {
       killSwitchTriggered = true;
@@ -472,6 +509,7 @@ export class LoopRunner {
         planProposalNotifyReport,
         prOrphanReconcileReport,
         claimReaperReport,
+        selfAuditReport,
       };
       this.lastReport = report;
       return report;
@@ -764,6 +802,54 @@ export class LoopRunner {
       }
     }
 
+    // --- Self-audit pass ----------------------------------------------------
+    // Default-disabled. When the option is true AND the canon cadence
+    // policy carries `enabled: true` AND the configured `intervalMs`
+    // has elapsed since the last fire, the pass invokes the caller-
+    // supplied `selfAuditTick` closure. Mechanism-only at this layer:
+    // the framework holds no spawn / shell / subprocess seam; the
+    // closure is the integration point so deployments wire to whatever
+    // shape they want.
+    //
+    // Resolution chain (highest to lowest precedence):
+    //   1. canon `pol-self-audit-cadence` (re-read every tick so an
+    //      operator edit takes effect on the next pass without a
+    //      daemon restart). Default `{enabled: false, intervalMs:
+    //      3_600_000}` when no atom is seeded.
+    //   2. `LoopOptions.runSelfAuditPass` gates whether the pass runs
+    //      at all; the canon policy gates whether the closure fires
+    //      when the pass runs.
+    //
+    // Both the cadence read AND the closure invocation sit inside one
+    // try/catch so a canon-read fault (an `await host.atoms.query(...)`
+    // that throws) does NOT abort the entire tick. Mirrors the
+    // claim-reaper pass's best-effort cleanup discipline: one fault
+    // per sub-pass surfaces through `errors[]`, never cascades.
+    if (this.options.runSelfAuditPass) {
+      if (this.selfAuditTick === null) {
+        if (!this.warnedMissingSelfAuditTick) {
+          this.warnedMissingSelfAuditTick = true;
+          // eslint-disable-next-line no-console
+          console.error(
+            '[self-audit] WARN: runSelfAuditPass=true but no selfAuditTick '
+              + 'closure was supplied; pass is skipped this tick. Wire one '
+              + 'through LoopOptions.selfAuditTick to activate. (This warning '
+              + 'is logged once per runner; subsequent silent-skip ticks stay '
+              + 'quiet.)',
+          );
+        }
+      } else {
+        try {
+          selfAuditReport = await this.selfAuditPass(this.selfAuditTick);
+        } catch (err) {
+          this.errorCounter += 1;
+          errors.push(
+            `self-audit-pass: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+
     const finishedAt = this.host.clock.now();
     const report: LoopTickReport = {
       tickNumber,
@@ -784,6 +870,7 @@ export class LoopRunner {
       planProposalNotifyReport,
       prOrphanReconcileReport,
       claimReaperReport,
+      selfAuditReport,
     };
     this.lastReport = report;
 
@@ -869,6 +956,12 @@ export class LoopRunner {
         claimReaperReport.escalated,
       );
     }
+    if (selfAuditReport !== null) {
+      this.host.auditor.metric(
+        'loop.self_audit_fired',
+        selfAuditReport.fired ? 1 : 0,
+      );
+    }
 
     await this.host.auditor.log({
       kind: 'loop.tick',
@@ -935,6 +1028,14 @@ export class LoopRunner {
               claim_reaper_escalated: claimReaperReport.escalated,
               ...(claimReaperReport.halted === true
                 ? { claim_reaper_halted: true }
+                : {}),
+            }
+          : {}),
+        ...(selfAuditReport !== null
+          ? {
+              self_audit_fired: selfAuditReport.fired,
+              ...(selfAuditReport.closureErrorMs !== null
+                ? { self_audit_closure_error_ms: selfAuditReport.closureErrorMs }
                 : {}),
             }
           : {}),
@@ -1388,6 +1489,76 @@ export class LoopRunner {
       recovered: result.recovered,
       escalated: result.escalated,
     };
+  }
+
+  /**
+   * Run one self-audit pass. Reads the cadence policy from canon every
+   * tick so an operator edit takes effect on the next pass without a
+   * daemon restart. The pass:
+   *
+   *   1. Loads the cadence policy. If `enabled === false`, returns
+   *      `{fired: false, closureErrorMs: null}` so the report carries
+   *      the "pass ran but driver did not fire" signal.
+   *   2. Compares `now - lastSelfAuditAt` against `intervalMs`. If the
+   *      interval has not elapsed (and a prior fire has occurred),
+   *      returns `{fired: false, ...}` so the cadence is honored.
+   *   3. Invokes the caller-supplied closure. A throw is captured into
+   *      `errors[]` by the caller via the outer try/catch; this method
+   *      records `closureErrorMs` on the return struct so the audit
+   *      log carries the timing signal.
+   *   4. Updates `lastSelfAuditAt` to the host clock's parsed-ms time.
+   *      Updating on success only (not on throw) means a throwing
+   *      closure does NOT advance the cadence window; the next tick
+   *      reattempts. This matches the operator intent: a failed audit
+   *      is not "an audit fired", it is "the audit attempted to fire."
+   *
+   * The cadence-policy malformed-payload path falls through to
+   * `DEFAULT_SELF_AUDIT_CADENCE` (default-off) per the reader's
+   * documented behavior, so a fat-fingered JSON value takes the audit
+   * driver offline rather than crashing the loop.
+   */
+  private async selfAuditPass(
+    selfAuditTick: () => Promise<void>,
+  ): Promise<NonNullable<LoopTickReport['selfAuditReport']>> {
+    const cadence = await loadSelfAuditCadence(this.host);
+    if (!cadence.enabled) {
+      return { fired: false, closureErrorMs: null };
+    }
+    const nowMs = Date.parse(this.host.clock.now());
+    if (
+      this.lastSelfAuditAt !== null
+      && nowMs - this.lastSelfAuditAt < cadence.intervalMs
+    ) {
+      return { fired: false, closureErrorMs: null };
+    }
+    // Loud-at-boundaries: one line per fire naming the cadence so an
+    // operator scanning the log can confirm the driver is engaging on
+    // the configured schedule. Goes to stderr so it does not pollute
+    // the structured tick stdout stream.
+    // eslint-disable-next-line no-console
+    console.error(
+      `[self-audit] firing closure (cadence=${cadence.intervalMs}ms)`,
+    );
+    const startedAt = nowMs;
+    try {
+      await selfAuditTick();
+    } catch (err) {
+      // Re-throw so the outer try/catch in tick() records the
+      // failure into `errors[]`. Record the elapsed-ms here so the
+      // report carries the timing signal even on failure.
+      const elapsedMs = Date.parse(this.host.clock.now()) - startedAt;
+      // Build the partial report carrying the failure timing; the
+      // outer catch will swap this for the throw-recorded errors[].
+      // Re-throw to surface the original error message verbatim.
+      throw Object.assign(
+        err instanceof Error ? err : new Error(String(err)),
+        { selfAuditClosureErrorMs: elapsedMs },
+      );
+    }
+    // Update the cadence anchor ONLY on success so a throwing closure
+    // does not advance the window (the next tick reattempts).
+    this.lastSelfAuditAt = nowMs;
+    return { fired: true, closureErrorMs: null };
   }
 }
 
