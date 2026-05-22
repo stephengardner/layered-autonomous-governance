@@ -41,7 +41,8 @@
  * - The `AgentLoopResult.artifacts.commitSha` is adapter-supplied; a
  *   misbehaving adapter could fabricate a SHA. Before any PR-creation
  *   call, the executor verifies the commit object exists in the
- *   workspace via `git cat-file -e <sha>`; a verification miss maps
+ *   workspace via `git cat-file -e <sha>^{commit}` (peel forces the
+ *   resolved object to be a commit, not a blob/tree/tag); a miss maps
  *   to `agentic/sha-verification-failed` and short-circuits before
  *   GhClient touches the remote. The default verifier wraps
  *   `child_process.execFile`; tests inject a fake via the optional
@@ -121,7 +122,9 @@ export interface AgenticExecutorConfig {
   readonly draft?: boolean;
   /**
    * Optional override for the commit-existence verifier. Defaults to
-   * `git cat-file -e <sha>` via `child_process.execFile`. The default
+   * `git cat-file -e <sha>^{commit}` via `child_process.execFile`
+   * (the `^{commit}` peel forces git to confirm the resolved object
+   * is a commit, not a blob/tree/tag). The default
    * path always uses the default; this seam lets tests drive both the
    * "fabricated SHA" and "real SHA" branches without spawning git.
    * Implementations resolve on existence and reject on absence (or on
@@ -524,13 +527,13 @@ function errorMessage(err: unknown): string {
 
 /**
  * Default commit-existence verifier. Runs `git -C <workspacePath>
- * cat-file -e <sha>`; the command resolves with exit 0 when the
- * object exists in the workspace's git database and exits non-zero
- * (which `execFile` surfaces as a thrown promise) when the object is
- * absent or malformed. Resolves on success; rejects with the
- * underlying execFile error on failure so the executor surfaces the
- * git stderr in the returned `agentic/sha-verification-failed`
- * reason field.
+ * cat-file -e <sha>^{commit}`; the `^{commit}` peel forces git to
+ * resolve the sha specifically to a commit object (not a blob, tree,
+ * or tag) and exits non-zero (which `execFile` surfaces as a thrown
+ * promise) when the object is absent, malformed, or not a commit.
+ * Resolves on success; rejects with the underlying execFile error on
+ * failure so the executor surfaces the git stderr in the returned
+ * `agentic/sha-verification-failed` reason field.
  *
  * The check is strictly an existence query against the git object
  * database: it does NOT enforce that the commit is at workspace
@@ -540,7 +543,7 @@ function errorMessage(err: unknown): string {
  * the executor would otherwise propagate into a PR head ref.
  */
 async function defaultVerifyCommitExists(workspacePath: string, sha: string): Promise<void> {
-  await execFileAsync('git', ['-C', workspacePath, 'cat-file', '-e', sha]);
+  await execFileAsync('git', ['-C', workspacePath, 'cat-file', '-e', `${sha}^{commit}`]);
 }
 
 function extractStringArray(
