@@ -1,0 +1,18 @@
+{
+  "name": "@lag-examples/atom-store-sqlite",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Reference SQLite-backed AtomStore adapter with strict cross-process compare-and-swap.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "peerDependencies": {
+    "better-sqlite3": "^11.5.0",
+    "layered-autonomous-governance": "*"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": { "optional": false }
+  }
+}

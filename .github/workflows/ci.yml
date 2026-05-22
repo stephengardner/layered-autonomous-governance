@@ -36,6 +36,13 @@ jobs:
         # suite doesn't need ONNX (gated behind LAG_REAL_EMBED=1).
         run: npm ci --ignore-scripts
 
+      - name: Rebuild better-sqlite3 native bindings
+        # --ignore-scripts above skips better-sqlite3's prebuild-install
+        # alongside onnx. The SQLite reference adapter test suite needs
+        # the .node binding; rebuilding only this one native module is
+        # cheap (a few seconds) and unblocks the conformance run.
+        run: npm rebuild better-sqlite3
+
       - name: Typecheck
         run: npm run typecheck
 

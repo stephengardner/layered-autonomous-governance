@@ -7,7 +7,7 @@
     "composite": true
   },
   "include": ["examples/**/*"],
-  "exclude": ["node_modules", "dist", "test"],
+  "exclude": ["node_modules", "dist", "test", "examples/**/test/**"],
   "references": [
     { "path": "./tsconfig.json" }
   ]
