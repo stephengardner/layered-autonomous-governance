@@ -285,8 +285,18 @@ async function getCachedSystemHealth(): Promise<SystemHealthResponse> {
      * loader THROWS on readdir failure and the probe translates the
      * throw into the correct "Atom load failed" detail.
      */
+    /*
+     * Gate the indexed loader on BOTH `atomIndexPrimed` (priming
+     * finished) AND `atomIndexReadable` (priming actually succeeded).
+     * `atomIndexPrimed` flips true even when the initial readdir
+     * fails, so a check on it alone would install the empty in-
+     * memory map as the loader and the probe would regress to
+     * "No reaper heartbeat observed" instead of surfacing the real
+     * atom-store read failure. The readable flag distinguishes the
+     * healthy-and-empty case from the unreadable case.
+     */
     const indexedLoader: (() => Promise<ReadonlyArray<ProbeAtom>>) | undefined =
-      atomIndexPrimed
+      atomIndexPrimed && atomIndexReadable
         ? async () =>
           (await readAllAtoms())
             .filter((a) => a.type === 'claim-reaper-sweep-completed')
@@ -452,6 +462,21 @@ interface Principal {
 
 const atomIndex = new Map<string, Atom>();
 let atomIndexPrimed = false;
+/*
+ * Separate flag tracking whether `primeAtomIndex` successfully read
+ * the atoms directory. `atomIndexPrimed` flips to true even when the
+ * initial readdir() fails (so subsequent requests don't keep hitting
+ * the disk fallback in `readAllAtoms`); without a separate flag, a
+ * consumer checking only `atomIndexPrimed` cannot distinguish "index
+ * is healthy and ready to read" from "priming failed and the index
+ * is empty because we cannot reach the atoms directory."
+ *
+ * Used by `getCachedSystemHealth` to decide whether to install an
+ * in-memory loader (when readable) or let the probe fall through to
+ * its filesystem-backed default which surfaces the real ENOENT to
+ * the operator.
+ */
+let atomIndexReadable = false;
 
 async function refreshAtomInIndex(filename: string): Promise<void> {
   try {
@@ -470,13 +495,15 @@ async function primeAtomIndex(): Promise<void> {
   let entries: string[];
   try {
     entries = await readdir(ATOMS_DIR);
+    atomIndexReadable = true;
   } catch (err) {
     console.error(`[backend] could not read ${ATOMS_DIR}: ${(err as Error).message}`);
+    atomIndexReadable = false;
     atomIndexPrimed = true;
     return;
   }
   const files = entries.filter((n) => n.endsWith('.json'));
-  // Parallel reads — startup cost is bounded by disk, not sequential I/O.
+  // Parallel reads: startup cost is bounded by disk, not sequential I/O.
   await Promise.all(files.map((f) => refreshAtomInIndex(f)));
   atomIndexPrimed = true;
   console.log(`[backend] atom index primed with ${atomIndex.size} entries`);
