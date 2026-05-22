@@ -231,25 +231,45 @@ async function getCachedSystemHealth(): Promise<SystemHealthResponse> {
     ? Number.parseInt(metricsPortRaw, 10)
     : undefined;
   /*
-   * Resolve the reaper cadence from canon at cache-fill time. An
-   * org-ceiling deployment that has tuned the cadence to 30 seconds
-   * gets a probe that fires yellow at 60s and red at 150s; without
-   * threading the resolved value, every deployment uses the indie-
-   * floor default of 60s and the probe misreports a tuned reaper as
-   * yellow on every refresh.
+   * Install the in-flight Promise into the cache BEFORE the first
+   * await. Concurrent callers in the 5s window after expiration must
+   * see the same Promise (so they share one round of cloudflared +
+   * statfs + GitHub work). The cache slot is overwritten with the
+   * resolved value's expiresAt anchored to completion time, so the
+   * TTL window measures freshness-since-resolution, not freshness-
+   * since-cache-fill.
+   *
+   * On rejection we clear the entry so the next caller retries. A
+   * cached rejection would have served stale errors to every poll
+   * for the entire TTL window, amplifying transient outages into
+   * dashboard-visible blackouts.
+   *
+   * The canon-resolved reaper cadence lives inside the async IIFE
+   * so the canon read benefits from the same dedupe.
    */
-  const cadenceMs = await resolveClaimReaperCadenceMsFromCanon();
-  const value = buildSystemHealth(LAG_DIR, ATOMS_DIR, {
-    claimReaperOpts: {
-      loadAtoms: () => defaultLoadClaimReaperHeartbeatAtoms(ATOMS_DIR),
-      cadenceMs,
-    },
-    tunnelOpts: metricsPort !== undefined ? { metricsPort } : undefined,
-  });
+  const value: Promise<SystemHealthResponse> = (async () => {
+    const cadenceMs = await resolveClaimReaperCadenceMsFromCanon();
+    return buildSystemHealth(LAG_DIR, ATOMS_DIR, {
+      claimReaperOpts: {
+        loadAtoms: () => defaultLoadClaimReaperHeartbeatAtoms(ATOMS_DIR),
+        ...(cadenceMs !== undefined ? { cadenceMs } : {}),
+      },
+      tunnelOpts: metricsPort !== undefined ? { metricsPort } : undefined,
+    });
+  })();
   systemHealthCacheEntry = {
-    expiresAt: now + SYSTEM_HEALTH_CACHE_TTL_MS,
+    expiresAt: Date.now() + SYSTEM_HEALTH_CACHE_TTL_MS,
     value,
   };
+  // On rejection, evict so the next caller does a fresh fill rather
+  // than re-throwing the cached error for 5s. The `if` guards against
+  // the rare race where a later cache fill replaced our entry before
+  // our promise rejected; we only clear OUR own entry.
+  void value.catch(() => {
+    if (systemHealthCacheEntry !== null && systemHealthCacheEntry.value === value) {
+      systemHealthCacheEntry = null;
+    }
+  });
   return value;
 }
 

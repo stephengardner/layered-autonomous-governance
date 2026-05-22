@@ -1519,7 +1519,19 @@ export class LoopRunner {
   private async claimReaperPass(): Promise<
     NonNullable<LoopTickReport['claimReaperReport']>
   > {
-    const result: RunClaimReaperTickResult = await runClaimReaperTick(this.host);
+    /*
+     * Thread the LoopRunner's reaperPrincipal through to the
+     * orchestrator so the per-tick heartbeat atom carries the right
+     * audit attribution. When reaperPrincipal is null (no principal
+     * configured for the claim-reaper pass), the orchestrator skips
+     * the heartbeat write rather than fabricating a principal id.
+     */
+    const result: RunClaimReaperTickResult = await runClaimReaperTick(
+      this.host,
+      this.reaperPrincipal !== null
+        ? { reaperPrincipal: this.reaperPrincipal }
+        : undefined,
+    );
     // Only surface `halted` when actually true so the JSON tick
     // report stays one-line cleaner on the common case (every
     // non-STOP tick).

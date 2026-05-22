@@ -968,15 +968,22 @@ export async function defaultLoadClaimReaperHeartbeatAtoms(
   const entries = await readdir(atomsDir);
   const out: ProbeAtom[] = [];
   /*
-   * Atoms of this type are very small and rare (one per tick when the
-   * reaper pass is enabled, deleted by the reaper's own age-out
-   * sweep). The full directory scan is bounded by the small number of
-   * heartbeat files; we still filter by filename prefix to skip the
-   * thousands of non-heartbeat atoms in a typical deployment.
+   * Filter authoritatively on the parsed `type` field, not on the
+   * filename. The file adapter writes `<atom-id>.json` and the
+   * reaper's atom ids do start with the type string today, but
+   * relying on that is fragile: a future content-hash-based id
+   * scheme (or any unrelated atom that happens to share the prefix)
+   * would silently break the probe.
+   *
+   * Atoms of this type are very small and rare (one per tick when
+   * the reaper pass is enabled, aged out via half-life decay).
+   * The full directory scan is acceptable at indie-floor cardinality;
+   * an org-ceiling deployment with 10k+ atoms should swap in a
+   * type-indexed AtomStore adapter via the existing seam rather than
+   * trying to optimize this helper.
    */
   for (const name of entries) {
     if (!name.endsWith('.json')) continue;
-    if (!name.startsWith('claim-reaper-sweep-completed-')) continue;
     try {
       const raw = await readFile(join(atomsDir, name), 'utf8');
       const parsed = JSON.parse(raw) as ProbeAtom;
