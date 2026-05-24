@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { PLAN_STATE_TONE, type PlanStateName } from '../../src/features/plan-state/tones';
+import { trueOutcomeTone, type TrueOutcome } from '../../src/features/plan-state/trueOutcome';
 
 /**
  * State-pill-tones e2e: every plan_state value the runtime can emit
@@ -52,16 +53,24 @@ interface PlanShape {
 const MUTED_BY_DESIGN: ReadonlySet<PlanStateName> = new Set(['draft', 'abandoned']);
 
 /*
- * Extract the bare token name from a `var(--token)` or
- * `var(--token, fallback)` CSS expression. Lets the spec ask the
- * browser to resolve the same token tones.ts declared, without
- * re-spelling the var() syntax in two places.
+ * Render sites use trueOutcomeTone for non-unknown outcomes and
+ * planStateTone only for the unknown fallback (per PlansView and
+ * PlanLifecycleView). The test must derive the expected tone the
+ * SAME way the runtime does, otherwise a `proposed` pill (which
+ * renders as `in-progress` -> --status-info under trueOutcomeTone)
+ * is asserted against `--accent` (planStateTone's mapping) and
+ * fails with a tone-mismatch that is not actually a regression.
+ *
+ * We read the rendered `data-true-outcome` attribute from the pill
+ * to learn which TrueOutcome the runtime derived, then resolve the
+ * matching tone token. This mirrors the runtime exactly without
+ * re-implementing deriveTrueOutcome in the test.
  */
-function tokenNameFor(state: PlanStateName): string {
-  const expr = PLAN_STATE_TONE[state];
+function tokenNameForTrueOutcome(outcome: TrueOutcome, fallbackState: PlanStateName): string {
+  const expr = outcome === 'unknown' ? PLAN_STATE_TONE[fallbackState] : trueOutcomeTone(outcome);
   const match = expr.match(/var\((--[a-z0-9-]+)/i);
   if (!match || !match[1]) {
-    throw new Error(`tones.ts entry for '${state}' is not a var() expression: ${expr}`);
+    throw new Error(`tone expression for outcome '${outcome}' is not a var() expression: ${expr}`);
   }
   return match[1];
 }
@@ -147,9 +156,6 @@ test.describe('plan_state pill tones', () => {
     expect(mutedGray, 'muted-gray token should resolve').toMatch(/rgb/);
 
     for (const state of presentStates) {
-      const tokenName = tokenNameFor(state);
-      const expectedColor = await resolveToken(page, tokenName);
-
       // succeeded plans can now render as noop when their dispatch did
       // no work; filter to the genuine successes so we only assert green
       // on pills that actually represent shipped work.
@@ -162,13 +168,23 @@ test.describe('plan_state pill tones', () => {
       expect(pillCount, `plans view should render at least one pill for state '${state}'`)
         .toBeGreaterThan(0);
 
+      // Read the runtime's TrueOutcome from the data attribute the
+      // render site emits, then resolve the matching tone token. This
+      // mirrors the runtime exactly (planStateTone only when outcome ===
+      // 'unknown', trueOutcomeTone otherwise).
+      const pillLocator = page.locator(pillSelector).first();
+      const renderedOutcome
+        = ((await pillLocator.getAttribute('data-true-outcome')) ?? 'unknown') as TrueOutcome;
+      const tokenName = tokenNameForTrueOutcome(renderedOutcome, state);
+      const expectedColor = await resolveToken(page, tokenName);
+
       const pillColor = await readPillColor(page, pillSelector);
       expect(
         pillColor,
-        `state '${state}' pill should resolve to ${tokenName}`,
+        `state '${state}' pill (outcome=${renderedOutcome}) should resolve to ${tokenName}`,
       ).toBe(expectedColor);
 
-      if (!MUTED_BY_DESIGN.has(state)) {
+      if (!MUTED_BY_DESIGN.has(state) && renderedOutcome !== 'unknown') {
         expect(
           pillColor,
           `state '${state}' pill must not render as muted gray (regression: tones map missing entry)`,
@@ -202,9 +218,6 @@ test.describe('plan_state pill tones', () => {
     const mutedGray = await resolveToken(page, '--text-tertiary');
 
     for (const state of presentStates) {
-      const tokenName = tokenNameFor(state);
-      const expectedColor = await resolveToken(page, tokenName);
-
       const baseSelector = `[data-testid="plan-lifecycle-row-state"][data-plan-state="${state}"]`;
       const pillSelector = state === 'succeeded'
         ? `${baseSelector}[data-true-outcome="succeeded"]`
@@ -217,13 +230,19 @@ test.describe('plan_state pill tones', () => {
         continue;
       }
 
+      const pillLocator = page.locator(pillSelector).first();
+      const renderedOutcome
+        = ((await pillLocator.getAttribute('data-true-outcome')) ?? 'unknown') as TrueOutcome;
+      const tokenName = tokenNameForTrueOutcome(renderedOutcome, state);
+      const expectedColor = await resolveToken(page, tokenName);
+
       const pillColor = await readPillColor(page, pillSelector);
       expect(
         pillColor,
-        `lifecycle row for state '${state}' should resolve to ${tokenName}`,
+        `lifecycle row for state '${state}' (outcome=${renderedOutcome}) should resolve to ${tokenName}`,
       ).toBe(expectedColor);
 
-      if (!MUTED_BY_DESIGN.has(state)) {
+      if (!MUTED_BY_DESIGN.has(state) && renderedOutcome !== 'unknown') {
         expect(pillColor, `lifecycle row '${state}' must not be muted gray`).not.toBe(mutedGray);
       }
     }
