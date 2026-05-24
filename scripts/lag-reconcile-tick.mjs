@@ -197,6 +197,7 @@ async function main() {
       bot: args.bot,
       prTimeoutMs: args.prTimeoutMs,
       mkPrObservationAtomId,
+      maxScan: args.maxScan,
     });
     const tick = await runPlanObservationRefreshTick(host, refresher, {
       maxScan: args.maxScan,

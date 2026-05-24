@@ -59,6 +59,18 @@ export const DEFAULT_MAX_REFRESHES = 50;
  * }}
  */
 export function parseArgs(argv) {
+  // Reject a flag-shaped token where a value is expected. Without this
+  // guard `--root --skip-reap` would read `--skip-reap` as the root
+  // value and silently disable the intended skip flag, a class of
+  // argv-parser bug CR flagged on this PR.
+  const readValue = (flag, index) => {
+    const next = argv[index + 1];
+    if (typeof next !== 'string' || next.length === 0 || next.startsWith('--')) {
+      throw new Error(`Missing value for ${flag}`);
+    }
+    return next;
+  };
+
   const args = {
     rootDir: undefined,
     prTimeoutMs: DEFAULT_PR_TIMEOUT_MS,
@@ -76,30 +88,30 @@ export function parseArgs(argv) {
       args.help = true;
       continue;
     }
-    if (a === '--root' && argv[i + 1]) {
-      args.rootDir = argv[i + 1];
+    if (a === '--root') {
+      args.rootDir = readValue(a, i);
       i += 1;
       continue;
     }
-    if (a === '--pr-timeout-ms' && argv[i + 1]) {
-      const v = Number(argv[i + 1]);
+    if (a === '--pr-timeout-ms') {
+      const v = Number(readValue(a, i));
       if (Number.isFinite(v) && v > 0) args.prTimeoutMs = v;
       i += 1;
       continue;
     }
-    if (a === '--bot' && argv[i + 1]) {
-      args.bot = argv[i + 1];
+    if (a === '--bot') {
+      args.bot = readValue(a, i);
       i += 1;
       continue;
     }
-    if (a === '--max-scan' && argv[i + 1]) {
-      const v = Number(argv[i + 1]);
+    if (a === '--max-scan') {
+      const v = Number(readValue(a, i));
       if (Number.isFinite(v) && v > 0) args.maxScan = v;
       i += 1;
       continue;
     }
-    if (a === '--max-refreshes' && argv[i + 1]) {
-      const v = Number(argv[i + 1]);
+    if (a === '--max-refreshes') {
+      const v = Number(readValue(a, i));
       if (Number.isFinite(v) && v > 0) args.maxRefreshes = v;
       i += 1;
       continue;
@@ -143,10 +155,19 @@ export function parseArgs(argv) {
  * @returns {string | null}
  */
 export function resolveOperatorPrincipal(env) {
-  const fromTick = env.LAG_RECONCILE_TICK_PRINCIPAL;
-  if (typeof fromTick === 'string' && fromTick.length > 0) return fromTick;
-  const fromOp = env.LAG_OPERATOR_ID;
-  if (typeof fromOp === 'string' && fromOp.length > 0) return fromOp;
+  // Trim before length check: whitespace-only env values (e.g.
+  // LAG_OPERATOR_ID="  " from a cron file with trailing spaces) would
+  // otherwise pass length>0 and become audit principal ids, attributing
+  // every refresh and reaper write to a value that does not resolve in
+  // the PrincipalStore. CR finding 2026-05-24.
+  const fromTick = typeof env.LAG_RECONCILE_TICK_PRINCIPAL === 'string'
+    ? env.LAG_RECONCILE_TICK_PRINCIPAL.trim()
+    : '';
+  if (fromTick.length > 0) return fromTick;
+  const fromOp = typeof env.LAG_OPERATOR_ID === 'string'
+    ? env.LAG_OPERATOR_ID.trim()
+    : '';
+  if (fromOp.length > 0) return fromOp;
   return null;
 }
 
@@ -386,6 +407,7 @@ export function formatTickSummary(result) {
  *   bot: string,
  *   prTimeoutMs: number,
  *   mkPrObservationAtomId: (owner: string, repo: string, number: number, headSha: string, observedAt: string) => string,
+ *   maxScan?: number,
  *   nowFn?: () => Date,
  *   fetchLivePrStateImpl?: typeof fetchLivePrState,
  * }} opts
@@ -398,6 +420,7 @@ export function createInlineGhRefresher(opts) {
     bot,
     prTimeoutMs,
     mkPrObservationAtomId,
+    maxScan = DEFAULT_MAX_SCAN,
     nowFn = () => new Date(),
     fetchLivePrStateImpl = fetchLivePrState,
   } = opts;
@@ -418,7 +441,7 @@ export function createInlineGhRefresher(opts) {
       // store is filesystem-paged and the tick already gated this PR.
       // In practice the stale atom carries metadata.pr_state in
       // {OPEN, undefined} so the discriminator is reliable.
-      const priorObservation = await findLatestPrObservation(host, pr);
+      const priorObservation = await findLatestPrObservation(host, pr, maxScan);
       if (priorObservation === null) {
         // No prior observation: should not happen because the tick
         // narrowed by it, but defensively treat as a write of a fresh
@@ -454,22 +477,24 @@ export function createInlineGhRefresher(opts) {
 
 /**
  * Walk pages of observation atoms to find the latest non-superseded
- * pr-observation for the given PR. Cheap enough at indie scale (5000
- * atom cap mirrors the tick's maxScan); org-ceiling deployments can
- * override via --max-scan.
+ * pr-observation for the given PR. The default cap of DEFAULT_MAX_SCAN
+ * mirrors the framework tick's default maxScan so indie deployments
+ * see the same scan budget; org-ceiling deployments thread their
+ * `--max-scan` value through createInlineGhRefresher to keep the
+ * predecessor lookup and the tick scan on the same budget.
  *
  * @param {{ atoms: { query: (filter: any, limit: number, cursor?: string) => Promise<{ atoms: any[], nextCursor: string | null }> } }} host
  * @param {{ owner: string, repo: string, number: number }} pr
+ * @param {number} [maxScan=DEFAULT_MAX_SCAN]
  * @returns {Promise<any | null>}
  */
-export async function findLatestPrObservation(host, pr) {
+export async function findLatestPrObservation(host, pr, maxScan = DEFAULT_MAX_SCAN) {
   const PAGE_SIZE = 500;
-  const MAX_SCAN = 5_000;
   let scanned = 0;
   let latest = null;
   let cursor;
   do {
-    const remaining = MAX_SCAN - scanned;
+    const remaining = maxScan - scanned;
     if (remaining <= 0) break;
     const page = await host.atoms.query(
       { type: ['observation'] },

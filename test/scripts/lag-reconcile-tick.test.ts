@@ -195,6 +195,21 @@ describe('parseArgs', () => {
   it('rejects positional arguments', () => {
     expect(() => parseArgs(['unexpected'])).toThrow(/unexpected/);
   });
+
+  it('rejects a flag-shaped token where a value is expected (regression: CR PR #475)', () => {
+    // Without the readValue guard, --root --skip-reap would consume
+    // --skip-reap as the rootDir value and silently disable the skip
+    // flag. The guard requires every value-bearing flag to land on a
+    // non-flag token.
+    expect(() => parseArgs(['--root', '--skip-reap'])).toThrow(/Missing value for --root/);
+    expect(() => parseArgs(['--bot', '--skip-reconcile'])).toThrow(/Missing value for --bot/);
+    expect(() => parseArgs(['--max-scan', '--max-refreshes'])).toThrow(/Missing value for --max-scan/);
+  });
+
+  it('rejects a missing trailing value', () => {
+    expect(() => parseArgs(['--root'])).toThrow(/Missing value for --root/);
+    expect(() => parseArgs(['--bot'])).toThrow(/Missing value for --bot/);
+  });
 });
 
 describe('resolveOperatorPrincipal', () => {
@@ -226,6 +241,25 @@ describe('resolveOperatorPrincipal', () => {
         LAG_OPERATOR_ID: '',
       }),
     ).toBeNull();
+  });
+
+  it('trims whitespace and treats whitespace-only values as unset (regression: CR PR #475)', () => {
+    // A cron file with trailing spaces or a copy/paste with leading
+    // tabs would otherwise produce a whitespace-only principal id;
+    // every refresh/reaper write would then attribute to that string,
+    // which fails to resolve against the PrincipalStore.
+    expect(
+      resolveOperatorPrincipal({
+        LAG_RECONCILE_TICK_PRINCIPAL: '   ',
+        LAG_OPERATOR_ID: '\t\n ',
+      }),
+    ).toBeNull();
+    expect(
+      resolveOperatorPrincipal({ LAG_RECONCILE_TICK_PRINCIPAL: '  tick-bot  ' }),
+    ).toBe('tick-bot');
+    expect(
+      resolveOperatorPrincipal({ LAG_OPERATOR_ID: '\tapex\n' }),
+    ).toBe('apex');
   });
 });
 
@@ -452,6 +486,36 @@ describe('findLatestPrObservation', () => {
     await host.atoms.put(prObservationAtom('other', { pr_number: 41 }));
     const result = await findLatestPrObservation(host, { owner: OWNER, repo: REPO, number: 42 });
     expect(result).toBeNull();
+  });
+
+  it('honors the maxScan cap (regression: CR PR #475)', async () => {
+    // The hardcoded MAX_SCAN=5000 used to multiply scan cost per
+    // refreshed PR regardless of the operator's --max-scan setting.
+    // Use a counted-query stub host so we can observe the cap.
+    let queryCount = 0;
+    let totalLimitRequested = 0;
+    const stubHost = {
+      atoms: {
+        async query(_filter: unknown, limit: number, _cursor?: string) {
+          queryCount += 1;
+          totalLimitRequested += limit;
+          // Return zero atoms + null cursor on first call so the loop
+          // terminates; we are pinning the limit math, not the
+          // result.
+          return { atoms: [], nextCursor: null };
+        },
+      },
+    };
+    await findLatestPrObservation(
+      stubHost as never,
+      { owner: OWNER, repo: REPO, number: 42 },
+      37,
+    );
+    expect(queryCount).toBeGreaterThan(0);
+    // The first page request must be bounded by the explicit cap (37),
+    // not the default 5000. PAGE_SIZE=500 but maxScan=37 narrows
+    // remaining to 37 on the first call.
+    expect(totalLimitRequested).toBeLessThanOrEqual(37);
   });
 });
 

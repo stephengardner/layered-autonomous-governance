@@ -53,7 +53,7 @@ substrate primitives stay unchanged; this is a thin orchestrator.
 
 ## Run it once
 
-```
+```bash
 node scripts/lag-reconcile-tick.mjs
 ```
 
@@ -93,7 +93,7 @@ Exit codes:
 
 Output: one stdout line like
 
-```
+```text
 [lag-reconcile-tick] refresh: refreshed=2 scanned=120 rate-limited=0 | reconcile: scanned=120 matched=2 transitioned=2 claim-conflicts=0 | reap: classified=15 abandoned=1
 ```
 
@@ -101,7 +101,7 @@ Output: one stdout line like
 
 A 5-minute recurring task using `schtasks`:
 
-```
+```powershell
 schtasks /Create ^
   /SC MINUTE ^
   /MO 5 ^
@@ -125,7 +125,7 @@ Notes:
 
 To stop the task:
 
-```
+```powershell
 schtasks /Delete /TN "LAG-Reconcile-Tick" /F
 ```
 
@@ -133,7 +133,7 @@ schtasks /Delete /TN "LAG-Reconcile-Tick" /F
 
 A 5-minute crontab entry:
 
-```
+```bash
 */5 * * * * cd /path/to/memory-governance && /usr/bin/env LAG_OPERATOR_ID=apex-agent node scripts/lag-reconcile-tick.mjs >> /var/log/lag-reconcile-tick.log 2>&1
 ```
 
