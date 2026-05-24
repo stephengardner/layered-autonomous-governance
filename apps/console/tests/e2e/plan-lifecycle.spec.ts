@@ -157,7 +157,7 @@ test.describe('plan lifecycle', () => {
     const succeededPlans = plans.filter((p) => p.plan_state === 'succeeded');
     test.skip(
       succeededPlans.length === 0,
-      'no merged plan in atom store; this test requires a completed lifecycle to assert against',
+      'no succeeded plan in atom store; this test requires a plan with plan_state=succeeded to scan',
     );
 
     let planId: string | null = null;
@@ -181,7 +181,7 @@ test.describe('plan lifecycle', () => {
       'no succeeded plan in atom store with observation + merge transitions (only noop-succeeded plans available)',
     );
 
-    await page.goto(`/plan-lifecycle/${planId}`);
+    await page.goto(`/plan-lifecycle/${planId!}`);
 
     const timeline = page.getByTestId('plan-lifecycle-timeline');
     await expect(timeline).toBeVisible({ timeout: 10_000 });
