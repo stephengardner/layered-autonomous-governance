@@ -222,7 +222,17 @@ test.describe('resume-audit last-refreshed indicator', () => {
    * (DRY at N=2 within this describe block).
    */
   test.beforeEach(async ({ page }) => {
+    /*
+     * Use `pauseAt` (Playwright >=1.45) instead of `install({time})`:
+     * `install` only installs fake-timer infrastructure but does not
+     * pause real time, so the `setInterval` tick keeps incrementing on
+     * the wall clock between when the React component mounts and when
+     * the test asserts the indicator text. `pauseAt` freezes virtual
+     * time at the given instant; `fastForward` is then the ONLY way
+     * time advances, making the assertion deterministic.
+     */
     await page.clock.install({ time: new Date('2026-05-05T14:00:00Z') });
+    await page.clock.pauseAt(new Date('2026-05-05T14:00:00Z'));
   });
 
   test('renders "0 seconds ago" on mount, ticks to 1 second after one second', async ({ page }) => {

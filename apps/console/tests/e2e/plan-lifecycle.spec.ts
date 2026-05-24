@@ -144,12 +144,43 @@ test.describe('plan lifecycle', () => {
     const plansBody = await plansResponse.json();
     const plans: ReadonlyArray<{ id: string; plan_state?: string }> =
       plansBody?.data ?? plansBody ?? [];
-    const merged = plans.find((p) => p.plan_state === 'succeeded');
+    /*
+     * Scan succeeded plans for one whose lifecycle has the full chain
+     * (observation + merge transitions). A succeeded plan with
+     * dispatch_summary.dispatched === 0 (silent-skip / drafter-empty
+     * per dev-state-pill-true-outcome) lands at plan_state='succeeded'
+     * but the dispatch chain produced no PR, so the lifecycle has no
+     * observation/merge transitions. Pick a plan whose lifecycle
+     * actually has the chain so the assertion exercises the merged
+     * shape, not the noop shape.
+     */
+    const succeededPlans = plans.filter((p) => p.plan_state === 'succeeded');
     test.skip(
-      !merged,
+      succeededPlans.length === 0,
       'no merged plan in atom store; this test requires a completed lifecycle to assert against',
     );
-    const planId = merged!.id;
+
+    let planId: string | null = null;
+    for (const candidate of succeededPlans) {
+      const lifecycleRes = await request.post('/api/plan-lifecycle.get', {
+        data: { plan_id: candidate.id },
+      });
+      if (!lifecycleRes.ok()) continue;
+      const lifecycleBody = await lifecycleRes.json();
+      const transitions = lifecycleBody?.data?.transitions ?? [];
+      const phases = new Set(
+        transitions.map((t: { phase?: string }) => t.phase ?? ''),
+      );
+      if (phases.has('observation') && phases.has('merge')) {
+        planId = candidate.id;
+        break;
+      }
+    }
+    test.skip(
+      planId === null,
+      'no succeeded plan in atom store with observation + merge transitions (only noop-succeeded plans available)',
+    );
+
     await page.goto(`/plan-lifecycle/${planId}`);
 
     const timeline = page.getByTestId('plan-lifecycle-timeline');
@@ -168,6 +199,6 @@ test.describe('plan lifecycle', () => {
     // Focus banner shows the plan id we navigated to.
     const banner = page.getByTestId('focus-banner');
     await expect(banner).toBeVisible();
-    await expect(banner).toContainText(planId);
+    await expect(banner).toContainText(planId!);
   });
 });

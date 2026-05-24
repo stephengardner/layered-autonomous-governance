@@ -37,6 +37,20 @@ test.describe('file-intent panel', () => {
   });
 
   test('enables submit once a valid request is typed', async ({ page }) => {
+    /*
+     * Submit also requires an actor id resolved from the session;
+     * the dogfood backend may return null actor_id when
+     * LAG_CONSOLE_ACTOR_ID isn't set. Stub a stable actor id so this
+     * assertion isolates the valid-request -> enabled-submit
+     * transition independent of operator-env config.
+     */
+    await page.route('**/api/session.current', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, data: { actor_id: 'apex-operator' } }),
+      });
+    });
     await page.goto('/file-intent');
     const textarea = page.getByTestId('file-intent-request');
     await textarea.fill('Add a TODO badge to the plans header');
@@ -186,7 +200,19 @@ test.describe('file-intent panel', () => {
      * write-enabled CI lane), this test skips because the success
      * path is the right green-state -- it's covered by the
      * "shows success toast on a write-enabled run" branch below.
+     *
+     * Stub session.current so the submit button enables even when
+     * the dogfood backend returns actor_id=null (which would
+     * otherwise gate the submit click behind a missing-operator
+     * disclaimer).
      */
+    await page.route('**/api/session.current', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, data: { actor_id: 'apex-operator' } }),
+      });
+    });
     await page.goto('/file-intent');
     const textarea = page.getByTestId('file-intent-request');
     await textarea.fill('Add a TODO badge to the plans header');

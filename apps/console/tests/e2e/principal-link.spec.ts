@@ -27,7 +27,13 @@ interface PlanRow {
 }
 
 interface PipelineRow {
-  readonly id: string;
+  /*
+   * The /api/pipelines.list endpoint returns `pipeline_id`; `id` is
+   * a back-compat alias when the data came from another projection.
+   * Keep both fields readable so the test handles either shape.
+   */
+  readonly id?: string;
+  readonly pipeline_id?: string;
   readonly principal_id: string;
 }
 
@@ -94,19 +100,39 @@ test.describe('principal-link cross-surface relationships', () => {
     test.skip(target === undefined, 'no plans with a principal_id');
 
     await page.goto('/plans');
-    // Expand the plan card so the footer (with the principal link) renders.
+    /*
+     * Show all bucket states so the test is not dependent on the
+     * default `active` filter leaving the target plan visible.
+     */
+    await page.evaluate(() => {
+      localStorage.setItem('lag-console.plans-filter-bucket', JSON.stringify('all'));
+    });
+    await page.reload();
+    /*
+     * PlanCard emits `data-atom-id` on the article ROOT (not a child).
+     * Select directly on the attribute rather than via a `has:` filter
+     * which would look for a CHILD carrying the attribute.
+     */
     const card = page
-      .getByTestId('plan-card')
-      .filter({ has: page.locator(`[data-plan-atom-id="${target!.id}"]`) })
+      .locator(`[data-testid="plan-card"][data-atom-id="${target!.id}"]`)
       .first();
     /*
-     * Plan cards may already be expanded; click the expand toggle only
-     * when the footer link is not yet visible. Avoids a double-toggle
-     * that collapses the card mid-test.
+     * Wait for the card itself to mount before reaching for its
+     * expand toggle. Without this the toggle lookup races against
+     * the plans grid render.
+     */
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    /*
+     * The principal link lives inside the footer that only renders
+     * when the card is expanded. Click the per-card expand toggle if
+     * the link is not already visible. The toggle testid is
+     * `plan-expand-<id>` (defined on the dedicated expand button)
+     * so we target it explicitly rather than catching the first
+     * `role="button"` which can resolve to other affordances.
      */
     const link = card.getByTestId('plan-card-principal-link').first();
     if (!(await link.isVisible().catch(() => false))) {
-      const toggle = card.getByRole('button').first();
+      const toggle = card.getByTestId(`plan-expand-${target!.id}`);
       if (await toggle.isVisible().catch(() => false)) {
         await toggle.click();
       }
@@ -129,7 +155,13 @@ test.describe('principal-link cross-surface relationships', () => {
     const target = pipelines.find((p) => Boolean(p.principal_id));
     test.skip(target === undefined, 'no pipelines with a principal_id');
 
-    await page.goto(`/pipelines/${encodeURIComponent(target!.id)}`);
+    /*
+     * pipelines.list returns `pipeline_id` (canonical wire field) but
+     * older projections used `id`. Resolve whichever is present.
+     */
+    const pipelineId = target!.pipeline_id ?? target!.id ?? '';
+    expect(pipelineId, 'pipeline row must carry an id field').toBeTruthy();
+    await page.goto(`/pipelines/${encodeURIComponent(pipelineId)}`);
     const link = page.getByTestId('pipeline-detail-principal-link');
     await expect(link).toBeVisible({ timeout: 10_000 });
     await expect(link).toHaveText(target!.principal_id);
