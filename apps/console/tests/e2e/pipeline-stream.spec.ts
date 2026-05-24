@@ -56,50 +56,62 @@ async function pickPipelineId(page: Page): Promise<string | null> {
 }
 
 test.describe('pipeline SSE stream', () => {
-  test('SSE endpoint returns text/event-stream and the initial open + state frames', async ({ page, request }) => {
+  test('SSE endpoint returns text/event-stream and the initial open + state frames', async ({ page }) => {
     const pipelineId = await pickPipelineId(page);
     test.skip(pipelineId === null, 'no pipeline atoms in the local store; skipping');
 
     /*
-     * Use page.request (Playwright's request fixture) so we can
-     * abort the streaming response after reading the initial frames.
-     * A raw fetch() in the page context would never resolve because
-     * SSE responses do not close on their own.
+     * Read the SSE channel from inside the browser context using the
+     * native ReadableStream API. Playwright's `request` fixture buffers
+     * the entire response body and an SSE stream never closes, so the
+     * earlier shape timed out at the request level. Reading via fetch +
+     * stream-reader inside the page lets us pull bytes for a short
+     * window then abort the underlying connection deterministically.
+     *
+     * We need a real page origin so `fetch('/api/events/...')` resolves
+     * to the dev server (relative URLs require window.location.origin
+     * which is `about:blank` until the page navigates).
      */
-    const response = await request.get(`/api/events/pipeline.${pipelineId}`, {
-      timeout: 5_000,
-    });
-    /*
-     * We expect to OBSERVE the streaming response start; the request
-     * will close from the client side once we have read enough.
-     * Playwright's request.get returns once headers arrive, but the
-     * body stream is held open. Read body() with a short timeout to
-     * collect the buffered frames, accepting any timeout error
-     * because the SSE response never naturally closes.
-     */
-    expect(response.status(), 'SSE endpoint should return 200').toBe(200);
-    expect(response.headers()['content-type']).toContain('text/event-stream');
+    await page.goto('/');
+    const collected = await page.evaluate(async (id) => {
+      const controller = new AbortController();
+      // Abort after a short window so the test does not hang on the
+      // never-closing SSE response.
+      setTimeout(() => controller.abort(), 2000);
+      const res = await fetch(`/api/events/pipeline.${id}`, {
+        signal: controller.signal,
+      });
+      const status = res.status;
+      const contentType = res.headers.get('content-type') ?? '';
+      let body = '';
+      if (res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            body += decoder.decode(value, { stream: true });
+            // Stop early once we have both expected frames so the
+            // assertion runs against a focused window rather than the
+            // 2s timeout's full buffer.
+            if (body.includes('event: open') && body.includes('event: pipeline-state-change')) {
+              controller.abort();
+              break;
+            }
+          }
+        } catch {
+          // Abort throws AbortError; intentional.
+        }
+      }
+      return { status, contentType, body };
+    }, pipelineId);
 
-    let body = '';
-    try {
-      body = await response.body().then((b) => b.toString('utf8'));
-    } catch {
-      // Streaming body read interrupted; whatever we got is what we
-      // assert against.
-    }
-    /*
-     * If body() returned (because Playwright internally aborts the
-     * pending read at request scope end), we should see the initial
-     * frames. If body() failed, we cannot assert; treat as a
-     * substrate-environment skip rather than a test failure because
-     * the streaming-response semantics depend on Node http client
-     * version.
-     */
-    if (body.length > 0) {
-      expect(body, 'should emit `open` SSE event').toContain('event: open');
-      expect(body, 'should emit `pipeline-state-change` SSE event').toContain('event: pipeline-state-change');
-      expect(body, `should reference pipeline_id ${pipelineId}`).toContain(pipelineId);
-    }
+    expect(collected.status, 'SSE endpoint should return 200').toBe(200);
+    expect(collected.contentType).toContain('text/event-stream');
+    expect(collected.body, 'should emit `open` SSE event').toContain('event: open');
+    expect(collected.body, 'should emit `pipeline-state-change` SSE event').toContain('event: pipeline-state-change');
+    expect(collected.body, `should reference pipeline_id ${pipelineId}`).toContain(pipelineId);
   });
 
   test('SSE endpoint returns 404 for a pipeline_id with no backing atom', async ({ request }) => {
