@@ -4590,7 +4590,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
      * finding.
      */
     if (pipelineChannelId === null && channel.startsWith('pipeline.')) {
-      sendErr(req, res, 404, 'invalid-pipeline-channel', `invalid pipeline channel ${channel}`);
+      /*
+       * Do NOT echo the user-supplied channel back in the error
+       * message. A malformed channel like `pipeline.../etc/passwd`
+       * would otherwise reflect filesystem-shape data in the error
+       * envelope, surfacing as a data-leak smell in logs / clients.
+       * The static message preserves the failure semantics without
+       * the reflection.
+       */
+      sendErr(req, res, 404, 'invalid-pipeline-channel', 'invalid pipeline channel');
       return;
     }
 

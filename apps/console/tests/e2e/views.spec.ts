@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 /**
  * Smoke tests across the four top-level views. Each one:
@@ -8,7 +8,45 @@ import { test, expect } from '@playwright/test';
  *
  * Deeper per-view assertions (filter, search, expand) live in
  * view-specific specs; this file guards the cross-view contract.
+ *
+ * Mobile/desktop dual nav: the sidebar renders both a desktop nav
+ * (`data-testid="nav-<id>"`) and a mobile bottom-tab bar
+ * (`data-testid="mobile-nav-<id>"` for the 4 critical items, plus an
+ * overflow drawer for the rest). At iPhone-13-class viewports the
+ * desktop nav is `display:none`. Tests that click a nav item must
+ * route through the visible chrome: the mobile bar for `dashboard`,
+ * `control`, `canon`, `plans`; the overflow drawer for everything
+ * else (e.g. `principals`).
  */
+
+/**
+ * Click a sidebar item by id. Picks the visible chrome:
+ *   - desktop:  data-testid="nav-<id>"
+ *   - mobile bar (4 critical items): data-testid="mobile-nav-<id>"
+ *   - mobile overflow (everything else): opens drawer + clicks
+ *     data-testid="mobile-nav-overflow-item-<id>"
+ *
+ * The active-attribute assertion still uses the desktop testid -- the
+ * desktop anchor stays in the DOM at mobile widths (just hidden via
+ * `display:none`), so `aria-current="page"` is still readable from it.
+ */
+async function clickNav(page: Page, id: string): Promise<void> {
+  const viewport = page.viewportSize();
+  const isMobile = viewport ? viewport.width <= 768 : false;
+  if (!isMobile) {
+    await page.getByTestId(`nav-${id}`).click();
+    return;
+  }
+  const mobileBar = page.getByTestId(`mobile-nav-${id}`);
+  if (await mobileBar.isVisible().catch(() => false)) {
+    await mobileBar.click();
+    return;
+  }
+  // Item lives in the overflow drawer.
+  await page.getByTestId('mobile-nav-more').click();
+  const overflowItem = page.getByTestId(`mobile-nav-overflow-item-${id}`);
+  await overflowItem.click();
+}
 
 test.describe('views smoke', () => {
   test('canon renders at least one canon-card', async ({ page }) => {
@@ -58,8 +96,12 @@ test.describe('views smoke', () => {
   test('clicking a sidebar item navigates without page reload', async ({ page }) => {
     await page.goto('/canon');
     const before = await page.evaluate(() => performance.now());
-    await page.getByTestId('nav-principals').click();
+    await clickNav(page, 'principals');
     await expect(page).toHaveURL(/\/principals$/);
+    // The desktop anchor stays in DOM at every viewport and carries the
+    // active aria-current attribute; reading from it works regardless of
+    // whether the user clicked it directly (desktop) or routed through
+    // the mobile overflow drawer.
     await expect(page.getByTestId('nav-principals')).toHaveAttribute('aria-current', 'page');
     const after = await page.evaluate(() => performance.now());
     // `performance.now()` resets on full page load. If `after < before`
@@ -70,17 +112,40 @@ test.describe('views smoke', () => {
   test('atom-ref link navigates to /<view>/<id>', async ({ page }) => {
     await page.goto('/canon');
     await page.locator('[data-testid="canon-card"]').first().waitFor();
-    // Expand the first card and click an atom-ref chip if any.
-    const firstCard = page.locator('[data-testid="canon-card"]').first();
-    const expand = firstCard.locator('[data-testid^="card-expand-"]');
-    await expand.click();
-    const ref = firstCard.locator('[data-testid="atom-ref"]').first();
-    const targetId = await ref.getAttribute('data-atom-ref-id');
-    const targetRoute = await ref.getAttribute('data-atom-ref-target');
-    if (!targetId || !targetRoute) test.skip(true, 'no atom-ref to click');
-    await ref.click();
-    const escaped = encodeURIComponent(targetId!).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    await expect(page).toHaveURL(new RegExp(`/${targetRoute}/${escaped}$`));
+    // Expand cards until one yields an atom-ref chip. Earlier the test
+    // hard-coded "first card" but canon ordering is unstable across
+    // viewports (mobile may render a card first that has zero refs
+    // since `refs` is a derived field; the desktop spec passed because
+    // index 0 happened to carry refs). Walk a small candidate window
+    // so the test asserts the cross-surface link contract without
+    // depending on which card lands first.
+    const cards = page.locator('[data-testid="canon-card"]');
+    const cardCount = await cards.count();
+    const limit = Math.min(cardCount, 5);
+    let found: { id: string; route: string; ref: ReturnType<typeof page.locator> } | null = null;
+    for (let i = 0; i < limit; i++) {
+      const card = cards.nth(i);
+      const expand = card.locator('[data-testid^="card-expand-"]');
+      await expand.click();
+      const ref = card.locator('[data-testid="atom-ref"]').first();
+      const refCount = await card.locator('[data-testid="atom-ref"]').count();
+      if (refCount === 0) {
+        // collapse and try the next card
+        await expand.click();
+        continue;
+      }
+      const targetId = await ref.getAttribute('data-atom-ref-id');
+      const targetRoute = await ref.getAttribute('data-atom-ref-target');
+      if (targetId && targetRoute) {
+        found = { id: targetId, route: targetRoute, ref };
+        break;
+      }
+      await expand.click();
+    }
+    if (!found) test.skip(true, 'no atom-ref to click in the first 5 canon cards');
+    await found!.ref.click();
+    const escaped = encodeURIComponent(found!.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await expect(page).toHaveURL(new RegExp(`/${found!.route}/${escaped}$`));
   });
 
   test('plan card is clickable → opens in focus mode', async ({ page }) => {
@@ -112,8 +177,16 @@ test.describe('views smoke', () => {
   test('kill-switch pill renders in header', async ({ page }) => {
     await page.goto('/canon');
     await expect(page.getByTestId('kill-switch-pill')).toBeVisible();
-    const tier = await page.getByTestId('kill-switch-pill').getAttribute('data-tier');
-    expect(tier).toMatch(/^(off|soft|medium|hard)$/);
+    // The pill renders in a loading state (no data-tier attribute) until
+    // /api/kill-switch.read settles. Poll for the tier attribute so the
+    // test passes regardless of whether the network request was already
+    // cached or had to round-trip on a fresh load. Without this, mobile
+    // viewports (which mount slower under animation) can read the
+    // loading pill before the query resolves and see `null`.
+    await expect.poll(
+      async () => await page.getByTestId('kill-switch-pill').getAttribute('data-tier'),
+      { timeout: 10_000 },
+    ).toMatch(/^(off|soft|medium|hard)$/);
   });
 
   /*
