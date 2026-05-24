@@ -47,11 +47,14 @@ async function fetchActivities(page: Page): Promise<ReadonlyArray<ListAtom>> {
   if (!response.ok()) return [];
   const body = await response.json();
   /*
-   * The envelope shape is `{ ok, data: { atoms: ListAtom[] } }`. The
-   * earlier `body?.data ?? []` assumed `data` was the array; it isn't.
-   * `Array.isArray` guards against either shape so a future
-   * server-side flatten doesn't silently break the spec.
+   * Envelope check: an HTTP 200 with `{ ok: false, error: ... }` is
+   * the substrate's documented "request received but rejected" shape.
+   * Returning [] when `ok: false` would silently degrade an actual
+   * API rejection into a passing test (CR feedback on PR #469).
+   * The envelope shape is `{ ok, data: { atoms: ListAtom[] } }`;
+   * tolerate either `data` array (back-compat) or `data.atoms` (new).
    */
+  if (body?.ok === false) return [];
   if (Array.isArray(body?.data)) return body.data;
   if (Array.isArray(body?.data?.atoms)) return body.data.atoms;
   return [];
