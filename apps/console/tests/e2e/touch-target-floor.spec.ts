@@ -40,10 +40,13 @@ interface ControlCheck {
    * thumb-reachability). Icon-only controls keep the both-axes floor
    * because they have no content to lean on.
    *
-   * Per PR #345 (2026-05-07 operator decision): TypeFilter chips,
-   * dashboard window picker buttons, and theme/density toggles ship
-   * with height-only floor; the test fixture mirrors that decision
-   * so a regression that re-tightens the floor surfaces in CI.
+   * Per PR #345 (2026-05-07 operator decision): TypeFilter chips and
+   * dashboard window picker buttons ship with height-only floor; the
+   * test fixture mirrors that decision so a regression that
+   * re-tightens the floor surfaces in CI. Icon-only header controls
+   * (theme toggle, density toggle, propose button, kill-switch pill)
+   * keep both-axes floor because they have no label to lean on for
+   * natural width.
    */
   readonly heightOnlyFloor?: boolean;
 }
