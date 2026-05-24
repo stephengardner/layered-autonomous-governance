@@ -413,6 +413,16 @@ test.describe('pipeline detail abandon control', () => {
     await page.getByTestId('pipeline-detail-abandon-reason').fill(VALID_REASON);
     const submit = page.getByTestId('pipeline-detail-abandon-submit');
     await expect(submit).toBeEnabled();
+    /*
+     * Capture the detail-fetch count BEFORE submit so the post-submit
+     * delta is an honest count of the mutation's invalidate path
+     * (CR feedback PR #472). Initial load + SSE pipeline-state-change
+     * can issue more than one fetch before the click, so a static
+     * `>= 2` threshold could already be satisfied without the refetch
+     * ever happening. Asserting `> preSubmitFetches` exercises the
+     * refetch contract directly.
+     */
+    const preSubmitFetches = detailFetches;
     await submit.click();
 
     await expect.poll(() => abandonCallCount, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
@@ -436,14 +446,12 @@ test.describe('pipeline detail abandon control', () => {
 
     /*
      * Verify the post-submit refetch actually happened (CR PR #402
-     * nitpick). The success handler invalidates the pipeline-detail
-     * query; without a refetch the UI would still show 'running' and
-     * the operator would not see the state flip the substrate just
-     * recorded. Asserts on the wire (detailFetches >= 2) AND the
-     * rendered state pill so a broken invalidate path fails this
-     * test loudly rather than passing on modal-close alone.
+     * nitpick, refined per CR PR #472). The success handler invalidates
+     * the pipeline-detail query; the post-submit fetch count MUST
+     * strictly exceed the pre-submit baseline so we observe the
+     * mutation's refetch, not just initial load fetches.
      */
-    await expect.poll(() => detailFetches, { timeout: 5_000 }).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => detailFetches, { timeout: 5_000 }).toBeGreaterThan(preSubmitFetches);
     const statePill = page.getByTestId('pipeline-detail-state');
     await expect(statePill).toHaveAttribute('data-pipeline-state', 'abandoned', { timeout: 5_000 });
   });
