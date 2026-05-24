@@ -57,7 +57,7 @@
        Apple HIG / Material baseline. Used as min-width / min-height
        on buttons that would otherwise render below the floor at the
        default font scale. */
-    --size-touch-target-min: 2.75rem;  /* 44 */
+    --size-touch-target-min: 44px;  /* literal: 2.75rem rounds sub-pixel short on some surfaces (canon dev-web-mobile-first-required) */
 
     --radius-xs: 0.25rem;
     --radius-sm: 0.5rem;
