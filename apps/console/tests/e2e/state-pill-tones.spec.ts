@@ -2,6 +2,23 @@ import { test, expect, type Page } from '@playwright/test';
 import { PLAN_STATE_TONE, type PlanStateName } from '../../src/features/plan-state/tones';
 import { trueOutcomeTone, type TrueOutcome } from '../../src/features/plan-state/trueOutcome';
 
+/*
+ * Allowed values for the `data-true-outcome` attribute on
+ * state-pill DOM nodes. Mirrors the `TrueOutcome` union in
+ * src/features/plan-state/trueOutcome.ts. Used for enum-validation
+ * of the attribute read: a missing or unknown value fails the
+ * test rather than silently degrading to a fallback (CR feedback
+ * on PR #466).
+ */
+const TRUE_OUTCOME_VALUES: ReadonlyArray<TrueOutcome> = [
+  'succeeded',
+  'noop',
+  'failed',
+  'paused',
+  'in-progress',
+  'unknown',
+];
+
 /**
  * State-pill-tones e2e: every plan_state value the runtime can emit
  * must paint the pill in a deliberate semantic color, not the muted
@@ -168,13 +185,29 @@ test.describe('plan_state pill tones', () => {
       expect(pillCount, `plans view should render at least one pill for state '${state}'`)
         .toBeGreaterThan(0);
 
-      // Read the runtime's TrueOutcome from the data attribute the
-      // render site emits, then resolve the matching tone token. This
-      // mirrors the runtime exactly (planStateTone only when outcome ===
-      // 'unknown', trueOutcomeTone otherwise).
+      /*
+       * Read the runtime's TrueOutcome from the data attribute the
+       * render site emits, then resolve the matching tone token. This
+       * mirrors the runtime exactly (planStateTone only when outcome
+       * === 'unknown', trueOutcomeTone otherwise).
+       *
+       * Fail loudly if the attribute is missing or carries an unknown
+       * value (CR feedback on PR #466): a silent `?? 'unknown'`
+       * default would hide a real render-contract regression. The
+       * presence check + enum-guard surface a missing/invalid
+       * data-true-outcome as the actual failure.
+       */
       const pillLocator = page.locator(pillSelector).first();
-      const renderedOutcome
-        = ((await pillLocator.getAttribute('data-true-outcome')) ?? 'unknown') as TrueOutcome;
+      const rawOutcome = await pillLocator.getAttribute('data-true-outcome');
+      expect(
+        rawOutcome,
+        `state '${state}' pill should expose data-true-outcome`,
+      ).not.toBeNull();
+      expect(
+        TRUE_OUTCOME_VALUES,
+        `state '${state}' pill has invalid data-true-outcome value '${rawOutcome}'`,
+      ).toContain(rawOutcome);
+      const renderedOutcome = rawOutcome as TrueOutcome;
       const tokenName = tokenNameForTrueOutcome(renderedOutcome, state);
       const expectedColor = await resolveToken(page, tokenName);
 
@@ -231,8 +264,16 @@ test.describe('plan_state pill tones', () => {
       }
 
       const pillLocator = page.locator(pillSelector).first();
-      const renderedOutcome
-        = ((await pillLocator.getAttribute('data-true-outcome')) ?? 'unknown') as TrueOutcome;
+      const rawOutcome = await pillLocator.getAttribute('data-true-outcome');
+      expect(
+        rawOutcome,
+        `lifecycle row '${state}' pill should expose data-true-outcome`,
+      ).not.toBeNull();
+      expect(
+        TRUE_OUTCOME_VALUES,
+        `lifecycle row '${state}' has invalid data-true-outcome value '${rawOutcome}'`,
+      ).toContain(rawOutcome);
+      const renderedOutcome = rawOutcome as TrueOutcome;
       const tokenName = tokenNameForTrueOutcome(renderedOutcome, state);
       const expectedColor = await resolveToken(page, tokenName);
 
