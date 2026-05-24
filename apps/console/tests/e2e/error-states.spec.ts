@@ -95,7 +95,15 @@ test.describe('unified error states across queries', () => {
       });
     });
 
-    await page.goto('/');
+    /*
+     * Navigate to the Pulse route explicitly. The default `/` route is
+     * `dashboard`, not `live-ops`; the previous goto('/') landed on the
+     * dashboard view and the live-ops-view testid never appeared,
+     * exhausting the timeout. Per `router.store.ts:DEFAULT`, the
+     * dashboard is the head of the nav set; `/live-ops` is where the
+     * Pulse view actually mounts.
+     */
+    await page.goto('/live-ops');
     /*
      * Wait for the LiveOps shell to mount before asserting the tile.
      * The pulse heartbeat tile is the most reliable mount signal
