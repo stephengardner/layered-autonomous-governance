@@ -46,21 +46,22 @@ test.describe('atom-ref hover card', () => {
 
   test('shows skeleton metadata while loading and never fabricates principal/confidence', async ({ page }) => {
     /*
-     * Hold the canon.list response for ONE specific atom-ref hover
-     * lookup. The page-load canon.list call uses FOCUS_ID as its
-     * search; this filter only holds the request whose `search`
-     * exactly matches HOVER_TARGET_ID, so the page renders normally
-     * and only the hover fetch is gated.
+     * Hold the atoms.get response for ONE specific atom-ref hover
+     * lookup. Per the AtomRef component (2026-05-10 refactor), the
+     * hover fetch now goes through `atoms.get` (a single-atom lookup)
+     * instead of `canon.list` with a `search` field. Match the held
+     * request on the request body's `id` field so the page-load
+     * traffic flows unimpeded.
      */
     let release: () => void = () => {};
     const released = new Promise<void>((resolve) => { release = resolve; });
 
-    await page.route('**/api/canon.list', async (route) => {
+    await page.route('**/api/atoms.get', async (route) => {
       const req = route.request();
       let isHoverLookup = false;
       try {
-        const body = JSON.parse(req.postData() ?? '{}') as { search?: string };
-        if (body.search === HOVER_TARGET_ID) isHoverLookup = true;
+        const body = JSON.parse(req.postData() ?? '{}') as { id?: string };
+        if (body.id === HOVER_TARGET_ID) isHoverLookup = true;
       } catch { /* fall through */ }
       if (isHoverLookup) {
         await released;
@@ -157,15 +158,22 @@ test.describe('atom-ref hover card', () => {
       a.textContent = 'never-existed-test-id-aaaa-bbbb';
       a.setAttribute('data-testid', 'atom-ref');
       a.setAttribute('data-atom-ref-id', 'never-existed-test-id-aaaa-bbbb');
+      /*
+       * Position above the LAG brand logo (which sits at top:0 left:0
+       * inside the sidebar and intercepts pointer events for a synthetic
+       * anchor placed at 40,40). Mid-viewport keeps the hover-target
+       * clear of fixed chrome on every project.
+       */
       a.style.position = 'fixed';
-      a.style.top = '40px';
-      a.style.left = '40px';
+      a.style.top = '300px';
+      a.style.left = '300px';
+      a.style.zIndex = '999999';
       a.id = '__not_found_test_anchor__';
       document.body.appendChild(a);
     });
 
     const fakeChip = page.locator('#__not_found_test_anchor__');
-    await fakeChip.hover();
+    await fakeChip.hover({ force: true });
     /*
      * The injected anchor is a plain DOM element, not an AtomRef
      * React component, so the hover-card wouldn't actually mount from
