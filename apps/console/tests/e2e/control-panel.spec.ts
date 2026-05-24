@@ -101,15 +101,21 @@ function stubControlStatus(
 }
 
 test.describe('operator control panel', () => {
-  test('navigates to /control via sidebar and renders the panel', async ({ page }) => {
+  test('navigates to /control via sidebar and renders the panel', async ({ page, viewport }) => {
     await page.goto('/');
     /*
      * The control link is operator-critical, so we verify both that
      * the sidebar entry exists AND that clicking it routes to the
-     * panel. data-testid="nav-control" is the sidebar item; the
-     * panel itself surfaces via data-testid="control-panel".
+     * panel. On mobile, the desktop `nav-control` anchor is
+     * `display:none` and the visible control affordance is the
+     * `mobile-nav-control` button in the bottom bar; route through
+     * the visible chrome on either viewport so the assertion holds
+     * on both projects.
      */
-    const navControl = page.getByTestId('nav-control');
+    const isMobile = (viewport?.width ?? Number.POSITIVE_INFINITY) <= 768;
+    const navControl = isMobile
+      ? page.getByTestId('mobile-nav-control')
+      : page.getByTestId('nav-control');
     await expect(navControl).toBeVisible();
     await navControl.click();
     await expect(page).toHaveURL(/\/control$/);
