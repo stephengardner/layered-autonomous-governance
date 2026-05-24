@@ -362,7 +362,7 @@ test.describe('pipeline observability - freshness pill', () => {
 });
 
 test.describe('pipeline observability - resume tooltip', () => {
-  test('disabled resume button stays disabled and exposes a tooltip on hover', async ({ page }) => {
+  test('resume button exposes a tooltip on hover (now wired per PR #396)', async ({ page }) => {
     await mockDetail(page);
     await page.goto(`/pipelines/${encodeURIComponent(FIXTURE_PIPELINE_ID)}`);
     await expect(page.getByTestId('pipeline-detail-view')).toBeVisible({ timeout: 10_000 });
@@ -370,26 +370,23 @@ test.describe('pipeline observability - resume tooltip', () => {
     const resume = page.locator('[data-testid="pipeline-stage-resume"][data-stage-name="spec-stage"]');
     await expect(resume).toBeVisible();
     /*
-     * The button stays disabled - this PR only adds the tooltip,
-     * does not wire any handler. Asserting `disabled` directly via
-     * the DOM property is more robust than `:disabled` pseudo on
-     * tooltip-wrapped buttons.
+     * Per PR #396 (HIL resume wired) the button is now enabled when a
+     * stage is paused (the predecessor comment claimed "disabled - this
+     * PR only adds the tooltip" which describes the pre-wire state).
+     * Assert the button is enabled instead.
      */
     const isDisabled = await resume.evaluate((el: Element) => (el as HTMLButtonElement).disabled);
-    expect(isDisabled).toBe(true);
+    expect(isDisabled).toBe(false);
 
     /*
-     * Tooltip surfaces on hover. The Tooltip wraps the disabled
-     * button in a non-disabled <span> that catches mouse + focus
-     * events; a `hover()` on the button bubbles to the wrapper.
-     * Disabled buttons in Chrome suppress click events but not
-     * mouseenter / mouseleave, so the wrapper-based pattern keeps
-     * the tooltip surface working without enabling the button.
+     * Tooltip surfaces on hover. Hovers on the wired button surface the
+     * action-description copy from PipelineDetailView; the tooltip
+     * remains the observability surface even on the now-enabled button.
      */
     await resume.hover();
     const tooltip = page.getByTestId('pipeline-stage-resume-tooltip');
     await expect(tooltip).toBeVisible({ timeout: 2_000 });
-    await expect(tooltip).toContainText('Resume not yet supported');
+    await expect(tooltip).toContainText('Resume this paused stage');
   });
 });
 
