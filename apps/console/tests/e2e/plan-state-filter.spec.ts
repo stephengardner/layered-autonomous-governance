@@ -15,7 +15,7 @@ import {
  *
  * What this test asserts:
  *   1. The four chips render with counts.
- *   2. The Active chip is the default selected state on a fresh load.
+ *   2. The All chip is the default selected state on a fresh load.
  *   3. Clicking Failed swaps the rendered grid to failed-only plans
  *      and persists the choice (the chip stays selected after
  *      reload).
@@ -96,6 +96,7 @@ test.describe('plans bucket filter', () => {
      */
     await expect(allChip).toHaveAttribute('aria-pressed', 'true');
     await expect(activeChip).toHaveAttribute('aria-pressed', 'false');
+    await expect(succeededChip).toHaveAttribute('aria-pressed', 'false');
     await expect(failedChip).toHaveAttribute('aria-pressed', 'false');
 
     /*
