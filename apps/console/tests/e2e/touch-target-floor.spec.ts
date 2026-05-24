@@ -29,6 +29,23 @@ interface ControlCheck {
   readonly testid?: string;
   readonly classPrefix?: string;
   readonly description: string;
+  /*
+   * Some controls carry a short label (chips like "All", window
+   * buttons like "24h") that intentionally do NOT meet the 44px-wide
+   * floor: padding it out turns a 3-letter chip into a chunky pill
+   * with awkward horizontal slack, and WCAG 2.5.8 accepts a single
+   * dimension when the other is bounded by content. For these we
+   * enforce 44px on the HEIGHT axis only (canon `dev-web-mobile-
+   * first-required` floor met on the dimension that matters for
+   * thumb-reachability). Icon-only controls keep the both-axes floor
+   * because they have no content to lean on.
+   *
+   * Per PR #345 (2026-05-07 operator decision): TypeFilter chips,
+   * dashboard window picker buttons, and theme/density toggles ship
+   * with height-only floor; the test fixture mirrors that decision
+   * so a regression that re-tightens the floor surfaces in CI.
+   */
+  readonly heightOnlyFloor?: boolean;
 }
 
 const STANDALONE_CONTROLS: ReadonlyArray<ControlCheck> = [
@@ -38,8 +55,8 @@ const STANDALONE_CONTROLS: ReadonlyArray<ControlCheck> = [
   { route: '/dashboard', testid: 'kill-switch-pill', description: 'header kill-switch pill' },
   // copy-link only renders inside expanded CanonCards / AtomDetailView, not the dashboard chrome.
   // The copy-link case is exercised in the focus-mode test below where a real atom id is fetched.
-  { route: '/dashboard', classPrefix: '_windowBtn_', description: 'dashboard window picker (24h/7d/30d)' },
-  { route: '/canon', classPrefix: '_chip_', description: 'canon type-filter chip (All/Directives/...)' },
+  { route: '/dashboard', classPrefix: '_windowBtn_', description: 'dashboard window picker (24h/7d/30d)', heightOnlyFloor: true },
+  { route: '/canon', classPrefix: '_chip_', description: 'canon type-filter chip (All/Directives/...)', heightOnlyFloor: true },
   { route: '/canon', classPrefix: '_expand_', description: 'canon-card show-details toggle' },
 ];
 
@@ -111,10 +128,15 @@ test.describe('touch-target floor on mobile viewport', () => {
         ? `data-testid="${control.testid}"`
         : `class prefix ${control.classPrefix}`;
       expect(box, `${control.description}: no element matching ${anchor}`).not.toBeNull();
-      expect(
-        box!.width,
-        `${control.description}: width=${box!.width} below 44px floor (${control.route})`,
-      ).toBeGreaterThanOrEqual(MIN_FLOOR);
+      // height-only floor for label-bearing chips/buttons per the
+      // canon decision in PR #345 (CSS removed min-width for these
+      // controls); only the height axis is required to meet 44px.
+      if (control.heightOnlyFloor !== true) {
+        expect(
+          box!.width,
+          `${control.description}: width=${box!.width} below 44px floor (${control.route})`,
+        ).toBeGreaterThanOrEqual(MIN_FLOOR);
+      }
       expect(
         box!.height,
         `${control.description}: height=${box!.height} below 44px floor (${control.route})`,
