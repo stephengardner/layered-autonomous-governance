@@ -260,6 +260,26 @@ test.describe('pipeline detail HIL resume button', () => {
   test('clicking Resume posts to the resume endpoint and refetches detail', async ({ page }) => {
     let resumeCallCount = 0;
     let resumeRequestBody: unknown = null;
+    /*
+     * State flip is keyed on the resume endpoint having been called,
+     * not on a fetch-count threshold. The pipeline detail view fires
+     * multiple `pipelines.detail` requests during initial load (SSE
+     * `pipeline-state-change` events trigger refetches alongside the
+     * initial fetch); the older fetch-count >= 2 = 'running' rule
+     * incorrectly flipped past hil-paused BEFORE the click.
+     */
+    let detailFetches = 0;
+    await page.route('**/api/pipelines.detail', async (route) => {
+      detailFetches += 1;
+      const post = resumeCallCount > 0
+        ? pipelineDetailBody({ state: 'running', resumeCount: 1 })
+        : pipelineDetailBody({ state: 'hil-paused', resumeCount: 0 });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(post),
+      });
+    });
     await page.route('**/api/pipeline.resume', async (route) => {
       resumeCallCount += 1;
       resumeRequestBody = JSON.parse((await route.request().postData()) ?? '{}');
@@ -278,27 +298,16 @@ test.describe('pipeline detail HIL resume button', () => {
         }),
       });
     });
-    /*
-     * After the click, the mutation invalidates the pipeline query;
-     * TanStack Query refetches /api/pipelines.detail and we serve the
-     * post-resume body (state=running, one resume in the list). The
-     * page.route handler is replaced atomically by the second call so
-     * the second fetch gets the new body.
-     */
-    let detailFetches = 0;
-    await page.route('**/api/pipelines.detail', async (route) => {
-      detailFetches += 1;
-      const post = detailFetches === 1
-        ? pipelineDetailBody({ state: 'hil-paused', resumeCount: 0 })
-        : pipelineDetailBody({ state: 'running', resumeCount: 1 });
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify(post),
-      });
-    });
 
     await page.goto(`/pipelines/${PIPELINE_ID}`);
+    /*
+     * Wait for the paused stage state to paint before locating the
+     * resume button. Initial-load can deliver more than one fetch
+     * before the paused state surfaces; gate the resume click on the
+     * stage state being 'paused'.
+     */
+    await expect(page.getByTestId('pipeline-detail-view')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="pipeline-stage-resume"][data-stage-name="spec-stage"]')).toBeVisible({ timeout: 10_000 });
     const resume = page.getByTestId('pipeline-stage-resume');
     await expect(resume).toBeVisible({ timeout: 10_000 });
     await expect(resume).toBeEnabled();
