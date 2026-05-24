@@ -46,7 +46,15 @@ async function fetchActivities(page: Page): Promise<ReadonlyArray<ListAtom>> {
   });
   if (!response.ok()) return [];
   const body = await response.json();
-  return body?.data ?? [];
+  /*
+   * The envelope shape is `{ ok, data: { atoms: ListAtom[] } }`. The
+   * earlier `body?.data ?? []` assumed `data` was the array; it isn't.
+   * `Array.isArray` guards against either shape so a future
+   * server-side flatten doesn't silently break the spec.
+   */
+  if (Array.isArray(body?.data)) return body.data;
+  if (Array.isArray(body?.data?.atoms)) return body.data.atoms;
+  return [];
 }
 
 async function findPipelineStageAtom(page: Page): Promise<ListAtom | null> {
