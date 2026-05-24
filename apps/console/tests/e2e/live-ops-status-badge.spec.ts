@@ -43,12 +43,21 @@ function buildSnapshot({ lastTurnAt }: SnapshotOpts) {
   };
 }
 
+/*
+ * Transport envelope wrap. The backend wire shape is
+ * `{ ok: true, data: T }`; the HttpTransport (post-PR #469 ish) parses
+ * the envelope on every response and throws when neither `ok:true/data`
+ * nor `ok:false/error` is present. Bare `{ pipelines: [] }` payloads
+ * surface to TanStack Query as `malformed envelope` errors and the
+ * badge falls back to its idle path. Wrap stubs so they match the
+ * substrate's documented contract.
+ */
 async function stubPipelines(page: Page) {
   await page.route(PIPELINES_URL, (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ pipelines: [] }),
+      body: JSON.stringify({ ok: true, data: { pipelines: [] } }),
     }),
   );
 }
@@ -58,7 +67,7 @@ async function stubSnapshot(page: Page, opts: SnapshotOpts) {
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(buildSnapshot(opts)),
+      body: JSON.stringify({ ok: true, data: buildSnapshot(opts) }),
     }),
   );
 }
@@ -72,7 +81,14 @@ async function stubSnapshot(page: Page, opts: SnapshotOpts) {
 async function openLiveOpsAndGetBadge(page: Page, lastTurnAt: string | null) {
   await stubPipelines(page);
   await stubSnapshot(page, { lastTurnAt });
-  await page.goto('/');
+  /*
+   * The Pulse view (LiveOpsView) mounts at `/live-ops`, not at `/`.
+   * The router DEFAULT is `dashboard`, so a bare `/` lands on the
+   * dashboard view where `live-ops-status-badge` does not render.
+   * Navigate explicitly so the snapshot stub feeds the badge as
+   * intended.
+   */
+  await page.goto('/live-ops');
   const badge = page.getByTestId('live-ops-status-badge');
   await expect(badge).toBeVisible();
   return badge;
