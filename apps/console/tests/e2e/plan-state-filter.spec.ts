@@ -15,7 +15,7 @@ import {
  *
  * What this test asserts:
  *   1. The four chips render with counts.
- *   2. The Active chip is the default selected state on a fresh load.
+ *   2. The All chip is the default selected state on a fresh load.
  *   3. Clicking Failed swaps the rendered grid to failed-only plans
  *      and persists the choice (the chip stays selected after
  *      reload).
@@ -47,7 +47,7 @@ interface PlanRow {
 const STORAGE_KEY = `lag-console.${PLAN_FILTER_STORAGE_KEY}`;
 
 test.describe('plans bucket filter', () => {
-  test('default Active hides failed/succeeded; switching chips re-renders + persists', async ({
+  test('default All shows everything; switching chips re-renders + persists', async ({
     page,
     request,
   }) => {
@@ -87,8 +87,16 @@ test.describe('plans bucket filter', () => {
     await expect(failedChip).toContainText(String(counts.failed));
     await expect(allChip).toContainText(String(counts.all));
 
-    // Active is the default selected chip on a fresh load.
-    await expect(activeChip).toHaveAttribute('aria-pressed', 'true');
+    /*
+     * Default is `all` per `DEFAULT_PLAN_FILTER` in planStateFilter.ts
+     * (the prior `active` default hid the succeeded/failed buckets and
+     * operators read that as "plans show as approved, not completed").
+     * Assert the new default; the per-chip persistence + re-render
+     * behavior is unchanged.
+     */
+    await expect(allChip).toHaveAttribute('aria-pressed', 'true');
+    await expect(activeChip).toHaveAttribute('aria-pressed', 'false');
+    await expect(succeededChip).toHaveAttribute('aria-pressed', 'false');
     await expect(failedChip).toHaveAttribute('aria-pressed', 'false');
 
     /*
@@ -99,8 +107,8 @@ test.describe('plans bucket filter', () => {
      * plans (otherwise we land on the EmptyState branch instead of
      * the grid, and getByTestId('plan-card') returns 0 by design).
      */
-    if (counts.active > 0) {
-      await expect(page.getByTestId('plan-card')).toHaveCount(counts.active);
+    if (counts.all > 0) {
+      await expect(page.getByTestId('plan-card')).toHaveCount(counts.all);
     }
 
     /*
