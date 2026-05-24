@@ -42,16 +42,39 @@ export class HttpTransport implements Transport {
       body: JSON.stringify(params ?? {}),
       ...(options?.signal ? { signal: options.signal } : {}),
     });
+    /*
+     * The backend emits HTTP 404 alongside the standard
+     * `{ ok: false, error: { code, message } }` envelope for cases
+     * like `atom-not-found`. Earlier this branch fired on every
+     * non-2xx response (404 included) and threw a generic
+     * `http-404:` error, which downstream catchers (e.g.
+     * `isAtomNotFoundError`) could not classify as the substrate's
+     * documented not-found shape. Now we attempt to parse the
+     * envelope on EVERY response and throw a code-named Error when
+     * `env.ok === false`, falling back to the generic http-status
+     * path only when the body is not a valid envelope. This keeps
+     * the substrate's error semantics intact across status codes
+     * without weakening the "no envelope = throw" branch.
+     */
+    const rawBody = await response.text().catch(() => '');
+    let env: Envelope<T> | null = null;
+    try {
+      env = JSON.parse(rawBody) as Envelope<T>;
+    } catch {
+      env = null;
+    }
+    if (env && typeof env === 'object' && 'ok' in env) {
+      if (!env.ok) {
+        const err = new Error(`${env.error.code}: ${env.error.message}`);
+        err.name = env.error.code;
+        throw err;
+      }
+      return env.data;
+    }
     if (!response.ok) {
-      throw new Error(`http-${response.status}: ${await response.text().catch(() => '')}`);
+      throw new Error(`http-${response.status}: ${rawBody}`);
     }
-    const env = (await response.json()) as Envelope<T>;
-    if (!env.ok) {
-      const err = new Error(`${env.error.code}: ${env.error.message}`);
-      err.name = env.error.code;
-      throw err;
-    }
-    return env.data;
+    throw new Error(`http-${response.status}: malformed envelope`);
   }
 
   /*
