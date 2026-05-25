@@ -32,3 +32,4 @@ The package-hygiene CI job verifies no emdashes (U+2014), no AI-attribution mark
 - `CLAUDE.md` at repo root: the rendered L3 view future agents read first.
 - `.lag/atoms/`: every atom, including superseded ones, with full provenance chains.
 - `DECISIONS.md`: human-readable companion log of architectural choices.
+<!-- substrate-validated-pass-4: 2026-05-24 -->
