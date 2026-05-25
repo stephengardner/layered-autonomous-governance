@@ -210,3 +210,4 @@ Running list with status at `../design/open-questions.md`.
 ## Simulation
 
 Test harness design at `../design/simulation-harness.md`. The simulation IS the spec.
+<!-- substrate-validated-pass-2: 2026-05-24 -->
