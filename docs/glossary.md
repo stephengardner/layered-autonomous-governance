@@ -22,3 +22,4 @@ One-glance terminology reference. Keep in sync with framework.md.
 | **Autonomy dial** | Operator controls `requireHumanApproval` in `LayerThresholds` and `l3HumanGateTimeoutMs` in LoopRunner. Same architecture across levels; only the threshold changes. |
 | **Embedder** | Pluggable retrieval backend. Three ship: TrigramEmbedder (default, zero deps), OnnxMiniLmEmbedder (local `all-MiniLM-L6-v2`, 384-dim), CachingEmbedder (decorator, disk-persistent cache). See `docs/framework.md` Retrieval. |
 | **Host** | The boundary between LAG logic and any concrete store. Eight interfaces (AtomStore, CanonStore, LLM, Notifier, Scheduler, Auditor, PrincipalStore, Clock) composed by `createMemoryHost` / `createFileHost` / `createBridgeHost`. LAG never reaches around the Host. |
+<!-- substrate-validated-pass-3: 2026-05-24 -->
