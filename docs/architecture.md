@@ -49,3 +49,4 @@ Actor messages are atoms. They inherit arbitration, taint propagation, decay, an
 - [`docs/canon.md`](canon.md): the L3 atom catalogue.
 - `design/target-architecture.md`: north-star and gap analysis.
 - `DECISIONS.md`: living architectural log.
+<!-- substrate-validated-pass-6: 2026-05-24 -->
