@@ -32,7 +32,14 @@ export interface ExecutorFactoryOptions {
   readonly baseBranch?: string;
   /** Remote name passed to git-ops. Defaults to `origin`. */
   readonly remote?: string;
-  /** Draft PRs when unset (safer default). */
+  /**
+   * Open the PR as a GitHub draft. Forwarded to
+   * `buildDiffBasedCodeAuthorExecutor` only when set; when unset, the
+   * executor's own default (`false`, ready-for-review) applies so
+   * pipeline-dispatched PRs are immediately eligible for CodeRabbit
+   * without an out-of-band `gh pr ready` + `cr-trigger` round-trip.
+   * Pass `draft: true` to hold the PR in draft for human pre-review.
+   */
   readonly draft?: boolean;
 }
 
