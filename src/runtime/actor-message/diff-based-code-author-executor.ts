@@ -78,13 +78,10 @@ export interface DiffBasedExecutorConfig {
   readonly baseBranch?: string;
   readonly remote?: string;
   /**
-   * Open the PR as a GitHub draft. Defaults to `false` (ready-for-review)
-   * so pipeline-dispatched PRs are immediately eligible for CodeRabbit
-   * without an out-of-band `gh pr ready` + `cr-trigger` round-trip on the
-   * operator side. Mirrors the default flip in `createDraftPr` so the
-   * executor config + the underlying primitive agree at the same layer.
-   * Deployments that want to hold a PR in draft pass `draft: true`
-   * explicitly.
+   * Open the PR as a GitHub draft. Defaults to `false` (ready-for-review).
+   * Mirrors the default in `createDraftPr` so the executor config and the
+   * underlying primitive agree at the same layer. Callers that need draft
+   * behavior pass `draft: true` explicitly.
    */
   readonly draft?: boolean;
   /** Passed through to drafter as LlmOptions.disallowedTools. */
@@ -215,11 +212,8 @@ export function buildDiffBasedCodeAuthorExecutor(
   const branchPrefix = config.branchPrefix ?? 'code-author/';
   const baseBranch = config.baseBranch ?? 'main';
   const remote = config.remote ?? 'origin';
-  // Default to ready-for-review (draft=false): a pipeline-dispatched PR
-  // is operator-intended for merge, and opening it as a draft forces a
-  // manual `gh pr ready` + `cr-trigger` round-trip before CodeRabbit
-  // engages. Substrate-level default change documented on
-  // `DiffBasedExecutorConfig.draft`.
+  // Default to ready-for-review (draft=false) so PRs open with status
+  // checks engaged. Documented on `DiffBasedExecutorConfig.draft`.
   const draft = config.draft ?? false;
   const nonce = config.nonce ?? (() => randomBytes(3).toString('hex'));
   // Fail-fast on a malformed maxDraftAttempts so a non-positive or

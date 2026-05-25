@@ -122,12 +122,9 @@ export interface AgenticExecutorConfig {
   readonly baseRef: string;
   readonly model: string;
   /**
-   * Open the PR as a GitHub draft. Defaults to `false` (ready-for-review)
-   * so pipeline-dispatched PRs are immediately eligible for CodeRabbit
-   * without an out-of-band `gh pr ready` + `cr-trigger` round-trip on the
-   * operator side. Mirrors the default flip in `createDraftPr` and
-   * `DiffBasedExecutorConfig.draft` so the agentic + diff-based paths
-   * agree. Deployments that want to hold a PR in draft pass
+   * Open the PR as a GitHub draft. Defaults to `false` (ready-for-review).
+   * Mirrors the default in `createDraftPr` and `DiffBasedExecutorConfig.draft`
+   * so both executor paths agree. Callers that need draft behavior pass
    * `draft: true` explicitly.
    */
   readonly draft?: boolean;
@@ -151,10 +148,8 @@ export interface AgenticExecutorConfig {
 export function buildAgenticCodeAuthorExecutor(
   config: AgenticExecutorConfig,
 ): CodeAuthorExecutor {
-  // Default to ready-for-review (draft=false): a pipeline-dispatched PR
-  // is operator-intended for merge, and opening it as a draft forces a
-  // manual `gh pr ready` + `cr-trigger` round-trip before CodeRabbit
-  // engages. Mirrors the diff-based executor default.
+  // Default to ready-for-review (draft=false) so PRs open with status
+  // checks engaged. Mirrors the diff-based executor default.
   const draft = config.draft ?? false;
 
   return {

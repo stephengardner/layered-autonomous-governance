@@ -35,10 +35,8 @@ export interface ExecutorFactoryOptions {
   /**
    * Open the PR as a GitHub draft. Forwarded to
    * `buildDiffBasedCodeAuthorExecutor` only when set; when unset, the
-   * executor's own default (`false`, ready-for-review) applies so
-   * pipeline-dispatched PRs are immediately eligible for CodeRabbit
-   * without an out-of-band `gh pr ready` + `cr-trigger` round-trip.
-   * Pass `draft: true` to hold the PR in draft for human pre-review.
+   * executor's own default (`false`, ready-for-review) applies. Pass
+   * `draft: true` to hold the PR in draft.
    */
   readonly draft?: boolean;
 }

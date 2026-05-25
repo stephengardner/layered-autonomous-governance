@@ -52,16 +52,13 @@ export interface CreatePrInputs {
   /** Target branch; defaults to `main`. */
   readonly base?: string;
   /**
-   * Open the PR as a GitHub draft. Defaults to `false` (ready-for-review)
-   * so pipeline-dispatched PRs are immediately eligible for CodeRabbit
-   * without an out-of-band `gh pr ready` + `cr-trigger` round-trip on the
-   * operator side. The previous default (`true`) forced every autonomous
-   * PR through a manual ready-for-review transition that also reset CR's
-   * required status to pending and required a re-trigger to wake CR;
-   * the substrate now eliminates both manual touches for the common
-   * "pipeline opens a PR it intends to merge" case. Deployments that
-   * want to hold a PR in draft for human pre-review pass `draft: true`
-   * explicitly; the primitive no longer inverts the default.
+   * Open the PR as a GitHub draft. Defaults to `false` (ready-for-review).
+   * When `true`, the PR opens in draft state and must be explicitly marked
+   * ready before required status checks run and merge gates engage; the
+   * draft-to-ready transition also resets any status check that gated on
+   * the PR being non-draft. When `false` (the default), the PR opens
+   * ready-for-review and status checks run immediately. Callers that need
+   * draft behavior pass `draft: true` explicitly.
    */
   readonly draft?: boolean;
 }
@@ -95,12 +92,9 @@ export async function createDraftPr(
   }
 
   const base = inputs.base ?? 'main';
-  // Default to ready-for-review (draft=false). Pipeline-dispatched PRs
-  // are operator-intended for merge; opening them as drafts forces an
-  // out-of-band `gh pr ready` flip and resets CodeRabbit's required
-  // status to pending, requiring an additional `cr-trigger` round-trip.
-  // The substrate eliminates that friction by defaulting to ready;
-  // callers that want a draft pass `draft: true` explicitly.
+  // Default to ready-for-review (draft=false) so PRs open with status
+  // checks engaged. Callers that need draft behavior pass `draft: true`
+  // explicitly.
   const draft = inputs.draft ?? false;
 
   let resp;
