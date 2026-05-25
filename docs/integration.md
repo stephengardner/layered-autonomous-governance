@@ -43,3 +43,4 @@ Pick PAT for solo dev, App-per-role for an autonomous org. Same Actor code; the 
 - Multi-tenant scope bleed (deferred until single-tenant works).
 - Cross-machine sync (V0 is single-machine).
 - Hosted embedders (local ONNX is architecturally dominant for now).
+<!-- substrate-validated-pass-5: 2026-05-24 -->
