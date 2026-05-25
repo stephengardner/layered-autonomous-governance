@@ -51,7 +51,15 @@ export interface CreatePrInputs {
   readonly head: string;
   /** Target branch; defaults to `main`. */
   readonly base?: string;
-  /** Open as a draft PR by default so operator review is required. */
+  /**
+   * Open the PR as a GitHub draft. Defaults to `false` (ready-for-review).
+   * When `true`, the PR opens in draft state and must be explicitly marked
+   * ready before required status checks run and merge gates engage; the
+   * draft-to-ready transition also resets any status check that gated on
+   * the PR being non-draft. When `false` (the default), the PR opens
+   * ready-for-review and status checks run immediately. Callers that need
+   * draft behavior pass `draft: true` explicitly.
+   */
   readonly draft?: boolean;
 }
 
@@ -84,7 +92,10 @@ export async function createDraftPr(
   }
 
   const base = inputs.base ?? 'main';
-  const draft = inputs.draft ?? true;
+  // Default to ready-for-review (draft=false) so PRs open with status
+  // checks engaged. Callers that need draft behavior pass `draft: true`
+  // explicitly.
+  const draft = inputs.draft ?? false;
 
   let resp;
   try {

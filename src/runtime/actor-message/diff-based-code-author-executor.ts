@@ -77,7 +77,12 @@ export interface DiffBasedExecutorConfig {
   readonly branchPrefix?: string;
   readonly baseBranch?: string;
   readonly remote?: string;
-  /** Draft PR by default; operator can flip this per deployment. */
+  /**
+   * Open the PR as a GitHub draft. Defaults to `false` (ready-for-review).
+   * Mirrors the default in `createDraftPr` so the executor config and the
+   * underlying primitive agree at the same layer. Callers that need draft
+   * behavior pass `draft: true` explicitly.
+   */
   readonly draft?: boolean;
   /** Passed through to drafter as LlmOptions.disallowedTools. */
   readonly disallowedTools?: ReadonlyArray<string>;
@@ -207,7 +212,9 @@ export function buildDiffBasedCodeAuthorExecutor(
   const branchPrefix = config.branchPrefix ?? 'code-author/';
   const baseBranch = config.baseBranch ?? 'main';
   const remote = config.remote ?? 'origin';
-  const draft = config.draft ?? true;
+  // Default to ready-for-review (draft=false) so PRs open with status
+  // checks engaged. Documented on `DiffBasedExecutorConfig.draft`.
+  const draft = config.draft ?? false;
   const nonce = config.nonce ?? (() => randomBytes(3).toString('hex'));
   // Fail-fast on a malformed maxDraftAttempts so a non-positive or
   // non-integer value cannot silently land in the unreachable-branch

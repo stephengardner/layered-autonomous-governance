@@ -125,7 +125,7 @@ describe('createDraftPr', () => {
     })).rejects.toMatchObject({ name: 'PrCreationError', reason: 'invalid-response' });
   });
 
-  it('body is passed through fields to the REST call', async () => {
+  it('body is passed through fields to the REST call (default draft=false ready-for-review)', async () => {
     let capturedArgs: Record<string, unknown> | null = null;
     const client = stubClient((async (args: Record<string, unknown>) => {
       capturedArgs = args;
@@ -145,6 +145,34 @@ describe('createDraftPr', () => {
     expect(fields['body']).toBe('The body');
     expect(fields['head']).toBe('feat/x');
     expect(fields['base']).toBe('main');
+    // Substrate default: pipeline-dispatched PRs open ready-for-review,
+    // not draft, so CodeRabbit can engage immediately without an out-of-
+    // band `gh pr ready` + `cr-trigger` round-trip on the operator side.
+    // Callers that need a draft pass `draft: true` explicitly (regression
+    // guard below).
+    expect(fields['draft']).toBe(false);
+  });
+
+  it('passes draft=true through when caller asks for it explicitly', async () => {
+    // Regression guard: the substrate default flip from draft=true to
+    // draft=false MUST NOT swallow an explicit `draft: true` from a
+    // caller that genuinely wants a draft (e.g. a deployment that gates
+    // on human pre-review before CR engages). The primitive only inverts
+    // the default; the pass-through path is preserved.
+    let capturedArgs: Record<string, unknown> | null = null;
+    const client = stubClient((async (args: Record<string, unknown>) => {
+      capturedArgs = args;
+      return {
+        number: 1, html_url: 'x', url: 'y', node_id: 'z', state: 'open',
+      };
+    }) as GhClient['rest']);
+    await createDraftPr({
+      client, owner: 'o', repo: 'r',
+      title: 'My PR', body: 'The body', head: 'feat/x',
+      draft: true,
+    });
+    const fields = (capturedArgs as unknown as { fields: Record<string, unknown> })
+      .fields;
     expect(fields['draft']).toBe(true);
   });
 });

@@ -121,7 +121,12 @@ export interface AgenticExecutorConfig {
   /** Base ref the workspace is created off (e.g. 'main'). */
   readonly baseRef: string;
   readonly model: string;
-  /** Draft PR by default; operator can flip per deployment. */
+  /**
+   * Open the PR as a GitHub draft. Defaults to `false` (ready-for-review).
+   * Mirrors the default in `createDraftPr` and `DiffBasedExecutorConfig.draft`
+   * so both executor paths agree. Callers that need draft behavior pass
+   * `draft: true` explicitly.
+   */
   readonly draft?: boolean;
   /**
    * Optional override for the commit-existence verifier. Resolution
@@ -143,7 +148,9 @@ export interface AgenticExecutorConfig {
 export function buildAgenticCodeAuthorExecutor(
   config: AgenticExecutorConfig,
 ): CodeAuthorExecutor {
-  const draft = config.draft ?? true;
+  // Default to ready-for-review (draft=false) so PRs open with status
+  // checks engaged. Mirrors the diff-based executor default.
+  const draft = config.draft ?? false;
 
   return {
     async execute(inputs): Promise<CodeAuthorExecutorResult> {

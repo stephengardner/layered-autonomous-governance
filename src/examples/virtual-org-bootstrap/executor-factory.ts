@@ -32,7 +32,12 @@ export interface ExecutorFactoryOptions {
   readonly baseBranch?: string;
   /** Remote name passed to git-ops. Defaults to `origin`. */
   readonly remote?: string;
-  /** Draft PRs when unset (safer default). */
+  /**
+   * Open the PR as a GitHub draft. Forwarded to
+   * `buildDiffBasedCodeAuthorExecutor` only when set; when unset, the
+   * executor's own default (`false`, ready-for-review) applies. Pass
+   * `draft: true` to hold the PR in draft.
+   */
   readonly draft?: boolean;
 }
 
