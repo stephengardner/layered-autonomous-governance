@@ -697,6 +697,31 @@ describe('assembleConversationForPipeline', () => {
       expect(prompts).toHaveLength(0);
     });
 
+    it('pins the operator-intent at row 0 even when its timestamp is later than peer events', () => {
+      // Skewed-timestamp scenario: the operator-intent atom was
+      // backfilled or replayed with a timestamp that sorts AFTER some
+      // peer events. The cap must still pin the actual intent event,
+      // not whatever happens to sort to index 0.
+      const sid = 'agent-session-skewed';
+      const lateIntent = intent({ created_at: '2026-05-28T10:30:00.000Z' });
+      const earlyTurn = agentTurn({
+        id: 'turn-early',
+        created_at: '2026-05-28T10:05:00.000Z',
+        session_atom_id: sid,
+        turn_index: 0,
+        llm_input: 'early prompt',
+        llm_output: 'early response',
+      });
+      const atoms = [
+        lateIntent,
+        pipeline(),
+        agentSession({ id: sid, created_at: '2026-05-28T10:08:00.000Z' }),
+        earlyTurn,
+      ];
+      const result = assembleConversationForPipeline(atoms, PIPELINE_ID, NOW);
+      expect(result!.events[0].kind).toBe('operator-intent');
+    });
+
     it('caps event count at MAX_CONVERSATION_EVENTS and preserves the most-recent tail', () => {
       const sid = 'agent-session-big';
       const events: ConversationSourceAtom[] = [

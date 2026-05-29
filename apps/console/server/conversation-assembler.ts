@@ -618,17 +618,25 @@ export function assembleConversationForPipeline(
     for (const ev of projectAtom(atom, { pipelineIds })) collected.push(ev);
   }
   const sorted = sortEvents(collected);
-  // Pin the operator-intent row (sorts first) and keep the most-recent
-  // tail of activity. For an active or long-running pipeline, the
-  // latest turns / audit findings / dispatch result are what an
-  // operator cares about most; truncating the head would drop the
-  // seed-intent context, truncating the tail would drop the answer.
-  const capped = sorted.length > MAX_CONVERSATION_EVENTS
-    ? [
-        ...sorted.slice(0, 1),
-        ...sorted.slice(sorted.length - (MAX_CONVERSATION_EVENTS - 1)),
-      ]
+  // Pin the operator-intent row and keep the most-recent tail of
+  // activity. Two reasons we find the intent event explicitly instead
+  // of trusting `sorted[0]`: (a) the intent's timestamp could be
+  // skewed (clock drift, replay scenario) so it does not always sort
+  // to position 0, and (b) shipping a non-intent event as the pinned
+  // header would silently drop the seed context the operator most
+  // needs. For an active or long-running pipeline, the latest turns /
+  // audit findings / dispatch result are what an operator cares about
+  // most; truncating the head would drop the seed-intent context,
+  // truncating the tail would drop the answer.
+  const intentEvent = sorted.find((event) => event.kind === 'operator-intent') ?? null;
+  const chronological = intentEvent
+    ? sorted.filter((event) => event !== intentEvent)
     : sorted;
+  const tailBudget = MAX_CONVERSATION_EVENTS - (intentEvent ? 1 : 0);
+  const cappedTail = chronological.length > tailBudget
+    ? chronological.slice(-tailBudget)
+    : chronological;
+  const capped = intentEvent ? [intentEvent, ...cappedTail] : cappedTail;
   return {
     pipeline_id: pipelineId,
     intent_id: intentId,
