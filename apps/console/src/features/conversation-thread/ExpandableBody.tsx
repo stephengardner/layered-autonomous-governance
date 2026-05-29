@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import styles from './ConversationThreadView.module.css';
 
@@ -52,13 +52,42 @@ export function ExpandableBody({
   const charsOverflow = content.length > collapseAfterChars;
   const needsCollapse = linesOverflow || charsOverflow;
 
-  const [open, setOpen] = useState(!needsCollapse);
+  // Track open + the content identity together so the default state
+  // re-derives whenever the body grows or shrinks across re-renders
+  // (the conversation surface polls every 10s; a short body that
+  // later grows past the threshold must re-collapse to the canonical
+  // default, not stay expanded). The state-during-render guard is the
+  // React-recommended idiom for "state derived from props" without
+  // an extra useEffect, per react.dev/learn/you-might-not-need-an-effect
+  // section "Adjusting some state when a prop changes".
+  const [openContent, setOpenContent] = useState({
+    content,
+    open: !needsCollapse,
+  });
+  if (openContent.content !== content) {
+    setOpenContent({ content, open: !needsCollapse });
+  }
+  const open = openContent.content === content ? openContent.open : !needsCollapse;
+  const setOpen = (nextOpenOrUpdater: boolean | ((prev: boolean) => boolean)) => {
+    setOpenContent((prev) => ({
+      content: prev.content,
+      open: typeof nextOpenOrUpdater === 'function'
+        ? nextOpenOrUpdater(prev.open)
+        : nextOpenOrUpdater,
+    }));
+  };
 
   const collapsed = needsCollapse && !open;
+  // Stable id for the body region so the toggle's aria-controls
+  // wires to the right node when assistive tech walks the
+  // relationship. useId keeps it unique across multiple
+  // ExpandableBody instances on the same page.
+  const bodyId = useId();
 
   return (
     <div className={styles.bodyBlock} data-testid={testId}>
       <pre
+        id={bodyId}
         className={styles.bodyContent}
         data-collapsed={collapsed ? 'true' : 'false'}
         data-testid={testId ? `${testId}-content` : undefined}
@@ -71,6 +100,7 @@ export function ExpandableBody({
           className={styles.expandButton}
           onClick={() => setOpen((prev) => !prev)}
           aria-expanded={open}
+          aria-controls={bodyId}
           data-testid={testId ? `${testId}-toggle` : undefined}
         >
           {open ? (

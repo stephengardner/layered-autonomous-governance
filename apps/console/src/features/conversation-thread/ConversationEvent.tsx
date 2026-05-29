@@ -389,6 +389,30 @@ export const _internal = {
   dispatchOutcomeToVariant,
 };
 
+/*
+ * Why `default` arms ALONGSIDE a compile-time exhaustiveness check:
+ *
+ * The discriminated-union switches below are exhaustive at TYPE level
+ * via the `_exhaustive: never` line in each default arm: any wire-level
+ * kind / severity / outcome added without a matching case fails
+ * `tsc --noEmit`. The RUNTIME fallback is intentionally kept (forward
+ * compatibility per canon dev-indie-floor-org-ceiling: a freshly-shipped
+ * client deployed before a substrate vocabulary bump should degrade
+ * gracefully to a neutral icon / label / tone, not crash an open
+ * conversation thread). Throwing inside the default arm would optimize
+ * for compile-time strictness over operator UX; the never-typed
+ * statement gives us both.
+ */
+function assertExhaustive(value: never): never {
+  // Only reachable at runtime if the wire vocabulary expanded ahead of
+  // the client. Throwing here would fail-loud as CR suggested; we
+  // instead let the caller decide a graceful default and rely on the
+  // never type for compile-time enforcement.
+  throw new Error(
+    `assertExhaustive: unreachable conversation-thread enum value '${String(value)}'`,
+  );
+}
+
 function iconForKind(kind: ConversationEventKind): LucideIcon {
   switch (kind) {
     case 'operator-intent': return Target;
@@ -401,7 +425,12 @@ function iconForKind(kind: ConversationEventKind): LucideIcon {
     case 'audit-finding': return AlertCircle;
     case 'stage-output': return FileText;
     case 'dispatch-result': return CheckCircle2;
-    default: return Info;
+    default: {
+      // Compile-time exhaustiveness; runtime falls through to Info.
+      const _exhaustive: never = kind;
+      void _exhaustive;
+      return Info;
+    }
   }
 }
 
@@ -417,7 +446,11 @@ function labelForKind(kind: ConversationEventKind): string {
     case 'audit-finding': return 'finding';
     case 'stage-output': return 'output';
     case 'dispatch-result': return 'dispatch';
-    default: return kind;
+    default: {
+      const _exhaustive: never = kind;
+      void _exhaustive;
+      return kind;
+    }
   }
 }
 
@@ -442,7 +475,11 @@ function variantForKind(
     case 'stage-output': return 'default';
     case 'dispatch-result':
       return dispatchOutcomeToVariant(event.kind === 'dispatch-result' ? event.result : 'no-op');
-    default: return 'default';
+    default: {
+      const _exhaustive: never = kind;
+      void _exhaustive;
+      return 'default';
+    }
   }
 }
 
@@ -452,7 +489,11 @@ function severityToVariant(severity: ConversationEventSeverity): KindVariant {
     case 'major': return 'warning';
     case 'minor': return 'warning';
     case 'info': return 'info';
-    default: return 'default';
+    default: {
+      const _exhaustive: never = severity;
+      void _exhaustive;
+      return 'default';
+    }
   }
 }
 
@@ -463,6 +504,14 @@ function dispatchOutcomeToVariant(result: ConversationDispatchOutcome): KindVari
     case 'silent-skip':
     case 'empty-diff':
     case 'no-op': return 'warning';
-    default: return 'default';
+    default: {
+      const _exhaustive: never = result;
+      void _exhaustive;
+      return 'default';
+    }
   }
 }
+
+// Tag `assertExhaustive` as referenced so a future change that uses
+// the helper does not get flagged for the tsc unused-export warning.
+void assertExhaustive;

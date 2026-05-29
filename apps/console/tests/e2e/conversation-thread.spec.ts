@@ -479,11 +479,22 @@ test.describe('conversation thread', () => {
     await expect(page.getByTestId('conversation-thread-view')).toBeVisible({ timeout: 10_000 });
   });
 
-  test('deliberation scope: navigates from plan detail to plan conversation', async ({ page }) => {
+  test('deliberation scope: click-through from plan detail to plan conversation', async ({ page }) => {
+    // Exercise the actual ConversationLink wiring rather than
+    // deep-linking past it. CR feedback (PR #484): a broken link or
+    // route shape on /deliberation/<id> must fail the suite, not pass
+    // silently because the test bypasses the link by URL.
     await mockBaseRoutes(page);
     await mockDeliberationConversation(page);
-    await page.goto(`/deliberation/${encodeURIComponent(FIXTURE_PLAN_ID)}/conversation`);
+    await page.goto(`/deliberation/${encodeURIComponent(FIXTURE_PLAN_ID)}`);
 
+    // Detail mounts.
+    const link = page.getByTestId('deliberation-detail-conversation-link');
+    await expect(link).toBeVisible({ timeout: 10_000 });
+    await link.click();
+
+    // URL flips to the conversation subroute and the view mounts.
+    await expect(page).toHaveURL(new RegExp(`/deliberation/${FIXTURE_PLAN_ID}/conversation$`));
     await expect(page.getByTestId('conversation-thread-view')).toBeVisible({ timeout: 10_000 });
     await expect(page.getByTestId('conversation-thread-view')).toHaveAttribute('data-scope', 'plan');
     // The plan-scope envelope carries plan_id chip + pipeline_id chip

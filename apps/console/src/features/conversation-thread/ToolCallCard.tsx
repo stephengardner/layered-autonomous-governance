@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { ChevronDown, ChevronRight, Wrench } from 'lucide-react';
 import styles from './ConversationThreadView.module.css';
 import type { ConversationToolCallEvent } from '@/services/conversation.service';
@@ -76,6 +76,11 @@ function ToolCallPayloadBlock({
   testId,
 }: PayloadBlockProps) {
   const [open, setOpen] = useState(false);
+  // Unique stable id for the payload region so the toggle's
+  // aria-controls points at the right node when screen readers
+  // walk the relationship. Multiple ToolCallCards on a page each
+  // get their own id pair via useId; idempotent across re-renders.
+  const payloadId = useId();
   // Empty payload: substrate did not record this side of the call.
   // Render a label only so the operator sees the row exists; no toggle.
   if (payload === '' && !truncated) {
@@ -93,6 +98,7 @@ function ToolCallPayloadBlock({
         className={styles.toolCallToggle}
         onClick={() => setOpen((prev) => !prev)}
         aria-expanded={open}
+        aria-controls={payloadId}
         data-testid={`${testId}-toggle`}
       >
         {open ? (
@@ -107,6 +113,7 @@ function ToolCallPayloadBlock({
       </button>
       {open && (
         <pre
+          id={payloadId}
           className={styles.toolCallPayload}
           data-testid={`${testId}-payload`}
         >

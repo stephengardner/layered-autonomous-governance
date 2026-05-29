@@ -112,13 +112,47 @@ export function ConversationThreadView(props: ConversationThreadViewProps) {
         />
       )}
 
-      {query.isError && (
-        <ErrorState
-          title="Could not load conversation"
-          message={toErrorMessage(query.error)}
-          testId="conversation-thread-error"
-        />
-      )}
+      {query.isError && (() => {
+        // pipeline-not-found is informative, not a failure: the
+        // substrate may not have minted the pipeline yet, or the
+        // operator landed on a deliberation whose plan has no linked
+        // pipeline. Surface the empty-state so the page reads as
+        // "no conversation captured yet" instead of a hard error.
+        const msg = query.error instanceof Error
+          ? query.error.message
+          : String(query.error);
+        if (msg.includes('pipeline-not-found')) {
+          return (
+            <EmptyState
+              title="No conversation captured yet"
+              detail={
+                <>
+                  The substrate has not minted a conversation for{' '}
+                  <code>{focusId}</code> yet. Events appear here as the
+                  pipeline runs.
+                </>
+              }
+              action={
+                <button
+                  type="button"
+                  className={styles.linkButton}
+                  onClick={() => setRoute(backRoute, focusId)}
+                >
+                  Back to detail
+                </button>
+              }
+              testId="conversation-thread-empty"
+            />
+          );
+        }
+        return (
+          <ErrorState
+            title="Could not load conversation"
+            message={toErrorMessage(query.error)}
+            testId="conversation-thread-error"
+          />
+        );
+      })()}
 
       {query.data && (
         <ConversationBody
