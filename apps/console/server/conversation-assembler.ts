@@ -180,8 +180,34 @@ function stringifyToolValue(value: unknown): string {
  * Mirrors the firstLine helper in pipelines.ts: strip leading markdown
  * heading marker, return the first non-empty line, cap at 240 chars
  * so the conversation row stays scannable.
+ *
+ * Stage-output atoms in practice often carry a JSON-stringified body
+ * (e.g. brainstorm-output stores a JSON blob whose first non-empty
+ * line is literally "{"). When the content parses as a JSON object,
+ * prefer a human-readable string field (summary, title, message,
+ * decision, intent_summary) over the bare "{" first line. Falls back
+ * to the markdown-style firstLine extraction when the content is
+ * either non-JSON or lacks a recognized summary field.
  */
 function firstLine(text: string): string {
+  if (text.length === 0) return '';
+  const trimmedHead = text.trimStart();
+  if (trimmedHead.startsWith('{') || trimmedHead.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmedHead) as unknown;
+      const summary = extractJsonSummary(parsed);
+      if (summary) {
+        return summary.length > 240 ? `${summary.slice(0, 239)}…` : summary;
+      }
+      // JSON parsed but no recognized summary field. Emit a key-list
+      // hint so the conversation row says something useful instead of
+      // the bare "{" the markdown-style fallback would otherwise pick.
+      const hint = summarizeJsonKeys(parsed);
+      if (hint) return hint;
+    } catch {
+      // fall through to markdown-style extraction
+    }
+  }
   const lines = text.split('\n');
   for (const line of lines) {
     const trimmed = line.replace(/^#{1,6}\s+/, '').trim();
@@ -190,6 +216,52 @@ function firstLine(text: string): string {
     }
   }
   return text.slice(0, 240);
+}
+
+/**
+ * Try to extract a one-line human-readable summary from a JSON-shaped
+ * stage-output payload. Walks a small ordered preference list of
+ * common summary-bearing field names; returns null when none resolve
+ * to a non-empty string. Arrays + nested objects are not flattened on
+ * purpose: a verbose nested payload should fall back to firstLine's
+ * markdown extraction rather than risk a misleading deep value.
+ */
+function extractJsonSummary(parsed: unknown): string | null {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  const candidateFields = [
+    'summary',
+    'title',
+    'decision',
+    'intent_summary',
+    'one_line_summary',
+    'message',
+    'description',
+  ];
+  for (const field of candidateFields) {
+    const v = obj[field];
+    if (typeof v === 'string' && v.trim().length > 0) return v.trim();
+  }
+  return null;
+}
+
+/**
+ * Render a JSON payload as a "{ key1, key2, key3 }" hint when no
+ * recognized summary field surfaces. Caps at 3 keys + ellipsis when
+ * the object has more, so the row stays scannable while still telling
+ * the operator what shape the payload has. Returns null for an empty
+ * object so the caller falls back to firstLine's markdown path.
+ */
+function summarizeJsonKeys(parsed: unknown): string | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  if (Array.isArray(parsed)) {
+    return parsed.length > 0 ? `[array of ${parsed.length}]` : null;
+  }
+  const keys = Object.keys(parsed as Record<string, unknown>);
+  if (keys.length === 0) return null;
+  const head = keys.slice(0, 3).join(', ');
+  const suffix = keys.length > 3 ? `, +${keys.length - 3} more` : '';
+  return `{ ${head}${suffix} }`;
 }
 
 /**

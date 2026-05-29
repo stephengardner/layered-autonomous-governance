@@ -485,6 +485,50 @@ describe('assembleConversationForPipeline', () => {
       }
     });
 
+    it('extracts a meaningful summary from JSON-content stage outputs', () => {
+      const atoms = [
+        pipeline(),
+        stageOutput({
+          id: 'out-json',
+          created_at: '2026-05-28T10:10:00.000Z',
+          output_type: 'spec-output',
+          stage: 'spec-stage',
+          content: JSON.stringify({
+            summary: 'Add a README pointer to docs/framework.md',
+            alternatives_surveyed: [],
+            decision_points: [],
+          }),
+        }),
+      ];
+      const result = assembleConversationForPipeline(atoms, PIPELINE_ID, NOW);
+      const outputs = result!.events.filter((e) => e.kind === 'stage-output');
+      expect(outputs).toHaveLength(1);
+      if (outputs[0].kind === 'stage-output') {
+        expect(outputs[0].summary).toBe('Add a README pointer to docs/framework.md');
+      }
+    });
+
+    it('falls back to first non-empty line when JSON has no recognized summary field', () => {
+      const atoms = [
+        pipeline(),
+        stageOutput({
+          id: 'out-noname',
+          created_at: '2026-05-28T10:10:00.000Z',
+          output_type: 'brainstorm-output',
+          stage: 'brainstorm-stage',
+          content: JSON.stringify({ open_questions: ['q1'], alternatives_surveyed: [] }),
+        }),
+      ];
+      const result = assembleConversationForPipeline(atoms, PIPELINE_ID, NOW);
+      const outputs = result!.events.filter((e) => e.kind === 'stage-output');
+      expect(outputs).toHaveLength(1);
+      if (outputs[0].kind === 'stage-output') {
+        // No 'summary' / 'title' field, so we get the first non-empty line of the JSON string.
+        expect(outputs[0].summary.length).toBeGreaterThan(0);
+        expect(outputs[0].summary).not.toBe('{');
+      }
+    });
+
     it('emits inter-agent-message for actor-message atoms tied to the pipeline', () => {
       const atoms = [
         pipeline(),
