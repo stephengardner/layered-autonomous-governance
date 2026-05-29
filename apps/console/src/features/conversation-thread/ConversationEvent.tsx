@@ -22,7 +22,7 @@ import type {
   ConversationEventSeverity,
   ConversationDispatchOutcome,
 } from '@/services/conversation.service';
-import { formatRelative } from '@/features/pipelines-viewer/PipelinesView';
+import { formatRelative } from './time';
 import { ExpandableBody } from './ExpandableBody';
 import { ToolCallCard } from './ToolCallCard';
 import styles from './ConversationThreadView.module.css';
