@@ -99,6 +99,15 @@ import type {
   PipelineDeliberationResult,
   PipelineDeliberationSourceAtom,
 } from './pipeline-deliberation-types';
+import {
+  assembleConversationForPipeline,
+  assembleConversationForPlan,
+} from './conversation-assembler';
+import type {
+  ConversationDeliberationResult,
+  ConversationPipelineResult,
+  ConversationSourceAtom,
+} from './conversation-types';
 import { buildIntentOutcome, readPrObservationStalenessMs } from './intent-outcome';
 import type { IntentOutcome, IntentOutcomeSourceAtom } from './intent-outcome-types';
 import { buildPipelineErrorState } from './pipeline-error-state';
@@ -2656,6 +2665,43 @@ async function handlePipelineDeliberation(
 }
 
 /**
+ * /api/pipelines.conversation handler. Returns the full chronological
+ * conversation thread for one pipeline (literal prompts, responses,
+ * tool calls, handoffs, stage outputs, audit findings, dispatch
+ * results) as a discriminated-union event array. Closes the
+ * operator-stated 2026-05-27 gap: "we can't really see the actual
+ * context of a deliberation trail. How could I view literally what
+ * one agent said to another?".
+ *
+ * Returns null when the pipeline atom does not exist; the route layer
+ * mirrors the 404 contract of /api/pipelines.detail so the client
+ * renders the same empty state.
+ */
+async function handlePipelineConversation(
+  pipelineId: string,
+): Promise<ConversationPipelineResult | null> {
+  const all = await readAllAtoms();
+  const sourceAtoms = all as unknown as ReadonlyArray<ConversationSourceAtom>;
+  return assembleConversationForPipeline(sourceAtoms, pipelineId, Date.now());
+}
+
+/**
+ * /api/deliberations.conversation handler. Same shape as the pipeline
+ * variant, scoped to a single plan_id. Resolves the linked pipeline
+ * via plan.metadata.pipeline_id or plan.provenance.derived_from so
+ * the renderer subscribes to that pipeline's SSE stream.
+ *
+ * Returns null when the plan atom does not exist.
+ */
+async function handleDeliberationConversation(
+  planId: string,
+): Promise<ConversationDeliberationResult | null> {
+  const all = await readAllAtoms();
+  const sourceAtoms = all as unknown as ReadonlyArray<ConversationSourceAtom>;
+  return assembleConversationForPlan(sourceAtoms, planId, Date.now());
+}
+
+/**
  * /api/pipeline.intent-outcome handler. Synthesizes the pipeline +
  * post-dispatch chain into a single intent-outcome state-pill +
  * summary so the operator can read "did this intent ship?" at the
@@ -4428,6 +4474,46 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'pipeline-deliberation-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/pipelines.conversation' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const pipelineId = typeof body['pipeline_id'] === 'string' ? (body['pipeline_id'] as string) : '';
+    if (!pipelineId) {
+      sendErr(req, res, 400, 'missing-pipeline-id', 'pipelines.conversation requires { pipeline_id: string }');
+      return;
+    }
+    try {
+      const data = await handlePipelineConversation(pipelineId);
+      if (data === null) {
+        sendErr(req, res, 404, 'pipeline-not-found', `no pipeline atom with id ${pipelineId}`);
+        return;
+      }
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'pipelines-conversation-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/deliberations.conversation' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const planId = typeof body['plan_id'] === 'string' ? (body['plan_id'] as string) : '';
+    if (!planId) {
+      sendErr(req, res, 400, 'missing-plan-id', 'deliberations.conversation requires { plan_id: string }');
+      return;
+    }
+    try {
+      const data = await handleDeliberationConversation(planId);
+      if (data === null) {
+        sendErr(req, res, 404, 'plan-not-found', `no plan atom with id ${planId}`);
+        return;
+      }
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'deliberations-conversation-failed', (err as Error).message);
     }
     return;
   }
