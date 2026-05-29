@@ -69,6 +69,14 @@ export interface Location {
   readonly route: Route;
   /** The second path segment (atom / plan / principal id) if present. */
   readonly id: string | null;
+  /**
+   * The third path segment when present (e.g. `/pipelines/<id>/conversation`
+   * yields subroute `conversation`). Optional: most routes are two-segment.
+   * Used by feature views that compose multiple per-id sub-surfaces on top
+   * of a shared focus id (e.g. pipeline detail + pipeline conversation
+   * thread; deliberation detail + deliberation conversation thread).
+   */
+  readonly subroute: string | null;
   readonly query: URLSearchParams;
 }
 
@@ -78,8 +86,10 @@ function parseLocation(pathname: string, search: string): Location {
   const route: Route = (VALID as ReadonlyArray<string>).includes(first) ? (first as Route) : DEFAULT;
   const rawId = segs[1]?.trim();
   const id = rawId ? decodeURIComponent(rawId) : null;
+  const rawSub = segs[2]?.trim();
+  const subroute = rawSub ? decodeURIComponent(rawSub) : null;
   const query = new URLSearchParams(search);
-  return { route, id, query };
+  return { route, id, subroute, query };
 }
 
 function subscribe(onChange: () => void): () => void {
@@ -91,7 +101,7 @@ function subscribe(onChange: () => void): () => void {
   };
 }
 
-const DEFAULT_LOCATION: Location = { route: DEFAULT, id: null, query: new URLSearchParams() };
+const DEFAULT_LOCATION: Location = { route: DEFAULT, id: null, subroute: null, query: new URLSearchParams() };
 let _cached: Location | undefined;
 
 function getSnapshot(): Location {
@@ -101,6 +111,7 @@ function getSnapshot(): Location {
     _cached
     && _cached.route === loc.route
     && _cached.id === loc.id
+    && _cached.subroute === loc.subroute
     && _cached.query.toString() === loc.query.toString()
   ) {
     return _cached;
@@ -119,6 +130,15 @@ export function useRoute(): Route {
 
 export function useRouteId(): string | null {
   return useLocation().id;
+}
+
+/**
+ * The third path segment when the URL is `/<route>/<id>/<sub>`. Returns null
+ * for the common two-segment shape. Feature views compose per-id sub-surfaces
+ * (e.g. /pipelines/<id>/conversation) by gating on this value.
+ */
+export function useRouteSubroute(): string | null {
+  return useLocation().subroute;
 }
 
 export function useRouteQuery(): URLSearchParams {
@@ -154,8 +174,12 @@ export function setRouteQuery(updates: Record<string, string | null>): void {
   }
 }
 
-export function setRoute(next: Route, id?: string): void {
-  const target = id ? `/${next}/${encodeURIComponent(id)}` : `/${next}`;
+export function setRoute(next: Route, id?: string, subroute?: string): void {
+  const target = id
+    ? subroute
+      ? `/${next}/${encodeURIComponent(id)}/${encodeURIComponent(subroute)}`
+      : `/${next}/${encodeURIComponent(id)}`
+    : `/${next}`;
   if (window.location.pathname !== target) {
     window.history.pushState({}, '', target);
     window.dispatchEvent(new Event(NAV_EVENT));
@@ -178,8 +202,10 @@ export function setRoute(next: Route, id?: string): void {
   }
 }
 
-export function routeHref(r: Route, id?: string): string {
-  return id ? `/${r}/${encodeURIComponent(id)}` : `/${r}`;
+export function routeHref(r: Route, id?: string, subroute?: string): string {
+  if (!id) return `/${r}`;
+  if (!subroute) return `/${r}/${encodeURIComponent(id)}`;
+  return `/${r}/${encodeURIComponent(id)}/${encodeURIComponent(subroute)}`;
 }
 
 /*

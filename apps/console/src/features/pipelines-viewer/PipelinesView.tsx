@@ -8,8 +8,9 @@ import { LoadingState, ErrorState, EmptyState } from '@/components/state-display
 import { listPipelines, type PipelineSummary } from '@/services/pipelines.service';
 import { toErrorMessage } from '@/services/errors';
 import { storage } from '@/services/storage.service';
-import { setRoute, setRouteQuery, useRouteId, useRouteQuery, routeHref } from '@/state/router.store';
+import { setRoute, setRouteQuery, useRouteId, useRouteQuery, useRouteSubroute, routeHref } from '@/state/router.store';
 import { PipelineDetailView } from './PipelineDetailView';
+import { ConversationThreadView } from '@/features/conversation-thread/ConversationThreadView';
 import { pipelineStateTone } from './tones';
 import {
   deriveTrueOutcome,
@@ -46,6 +47,10 @@ import styles from './PipelinesView.module.css';
  */
 export function PipelinesView() {
   const focusId = useRouteId();
+  const subroute = useRouteSubroute();
+  if (focusId && subroute === 'conversation') {
+    return <ConversationThreadView pipeline_id={focusId} />;
+  }
   if (focusId) return <PipelineDetailView pipelineId={focusId} />;
   return <PipelinesList />;
 }
