@@ -124,6 +124,8 @@ import {
   buildPushEnv,
   buildPushSpawnArgs,
   buildReadOnlyEnv,
+  detectGithubHttpsRemoteUrl,
+  extractRepoContextFlags,
   extractSetUpstreamPlan,
   findReadOnlyRemoteArg,
   findRemoteArg,
@@ -141,10 +143,21 @@ const STATE_DIR = resolveStateDir(REPO_ROOT);
  * Resolve a remote's URL by shelling out to `git remote get-url`.
  * Returns the trimmed URL or null if git reports no such remote.
  * This is a local read from .git/config; no network.
+ *
+ * `repoContextFlags` is the prefix returned by extractRepoContextFlags
+ * (e.g. `['-C', '/other/repo']`). Forwarding the flags lets a
+ * `git-as <role> -C /other/repo fetch origin` invocation resolve the
+ * URL from the correct repository instead of falling back to the
+ * wrapper's own process.cwd(). Pass an empty array when no context
+ * flags are present.
  */
-async function resolveRemoteUrl(remoteName) {
+async function resolveRemoteUrl(remoteName, repoContextFlags = []) {
   try {
-    const r = await execa('git', ['remote', 'get-url', remoteName], { reject: false });
+    const r = await execa(
+      'git',
+      [...repoContextFlags, 'remote', 'get-url', remoteName],
+      { reject: false },
+    );
     if (r.exitCode !== 0) return null;
     const out = (r.stdout ?? '').trim();
     return out.length > 0 ? out : null;
@@ -219,10 +232,23 @@ async function main() {
   // `branch.<name>.remote` of `.git/config`  --  see extractSetUpstreamPlan
   // JSDoc for the leak mechanism.
   let postPushUpstream = null;
+  // Repo-context flags (`-C <dir>`, `--git-dir <path>`,
+  // `--work-tree <path>`) extracted ONCE up front so every subsidiary
+  // `git remote get-url` invocation targets the same repo the
+  // primary spawn does. Without this, `git-as <role> -C /other fetch
+  // origin` would resolve the remote URL from process.cwd() and
+  // either fall back to the wrong remote or produce null and skip
+  // the retry path entirely.
+  const repoContextFlags = extractRepoContextFlags(gitArgs);
   if (isPushCommand(gitArgs)) {
     const remoteInfo = findRemoteArg(gitArgs);
     const remoteName = remoteInfo?.remote ?? 'origin';
-    const remoteUrl = await resolveRemoteUrl(remoteName);
+    // Short-circuit when the remote positional is already a URL
+    // (e.g. `git push https://github.com/o/r main` in dispatch
+    // flows) so we do not waste a `git remote get-url` call on a
+    // string git would treat as a remote NAME.
+    const remoteUrl = detectGithubHttpsRemoteUrl(remoteName)
+      ?? await resolveRemoteUrl(remoteName, repoContextFlags);
     const rewritten = buildPushSpawnArgs(gitArgs, remoteUrl, token.token);
     if (rewritten !== null) {
       // Push routes through URL-auth. If `-u` was present, strip it
@@ -357,7 +383,19 @@ async function main() {
     // shift in the helper).
     const remoteInfo = findReadOnlyRemoteArg(gitArgs);
     const remoteName = remoteInfo?.remote ?? 'origin';
-    const remoteUrl = await resolveRemoteUrl(remoteName);
+    // Two paths to the URL the retry needs:
+    //   - The remote positional is already an https://github.com/...
+    //     URL (e.g. `git fetch https://github.com/o/r main` in a
+    //     dispatch flow). Short-circuit so we don't ask `git remote
+    //     get-url` to look up a literal URL as a remote NAME (which
+    //     fails and skips the retry path).
+    //   - The remote positional is a configured remote name
+    //     (`origin`, `upstream`, etc.). Run `git remote get-url`
+    //     with the same `-C` / `--git-dir` / `--work-tree` context
+    //     the primary spawn used, so the lookup hits the correct
+    //     repo's .git/config (not the wrapper's process.cwd()).
+    const remoteUrl = detectGithubHttpsRemoteUrl(remoteName)
+      ?? await resolveRemoteUrl(remoteName, repoContextFlags);
     const urlAuthArgs = buildFetchUrlAuthArgs(gitArgs, remoteUrl, token.token);
     if (urlAuthArgs !== null) {
       console.error(

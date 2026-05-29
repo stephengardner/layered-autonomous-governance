@@ -28,7 +28,10 @@ import {
   buildPushSpawnArgs,
   buildReadOnlyEnv,
   buildTransientPushUrl,
+  detectGithubHttpsRemoteUrl,
+  extractRepoContextFlags,
   extractSetUpstreamPlan,
+  findReadOnlyRemoteArg,
   findRemoteArg,
   isBearerRejection401,
   isPushCommand,
@@ -634,6 +637,81 @@ describe('buildFetchUrlAuthArgs', () => {
     expect(next![2]).toBe('fetch');
     expect(next![3]).toMatch(/^https:\/\/x-access-token:/);
   });
+
+  it('skips separate-arg value flag --depth so origin is correctly identified (CR finding #2)', () => {
+    // Without value-flag skipping the helper would treat `1` as the
+    // remote and `origin` as the refspec, producing an invalid
+    // rewrite.
+    const next = buildFetchUrlAuthArgs(
+      ['fetch', '--depth', '1', 'origin'],
+      origin,
+      FAKE_TOKEN,
+    );
+    expect(next).not.toBe(null);
+    expect(next![0]).toBe('fetch');
+    expect(next![1]).toBe('--depth');
+    expect(next![2]).toBe('1');
+    expect(next![3]).toMatch(/^https:\/\/x-access-token:/);
+  });
+
+  it('skips separate-arg value flag --upload-pack so origin is correctly identified', () => {
+    const next = buildFetchUrlAuthArgs(
+      ['fetch', '--upload-pack', '/usr/bin/git-upload-pack', 'origin'],
+      origin,
+      FAKE_TOKEN,
+    );
+    expect(next).not.toBe(null);
+    expect(next![3]).toMatch(/^https:\/\/x-access-token:/);
+  });
+
+  it('skips multiple separate-arg value flags before the remote', () => {
+    const next = buildFetchUrlAuthArgs(
+      ['fetch', '--depth', '5', '-j', '4', '--filter', 'blob:none', 'origin', 'main'],
+      origin,
+      FAKE_TOKEN,
+    );
+    expect(next).not.toBe(null);
+    // The remote slot is index 7 (after fetch + 3 pairs of flag+value).
+    expect(next![7]).toMatch(/^https:\/\/x-access-token:/);
+    expect(next![8]).toBe('main');
+  });
+
+  it('inline value form --depth=1 is a single token and does not trip the skipper', () => {
+    const next = buildFetchUrlAuthArgs(
+      ['fetch', '--depth=1', 'origin'],
+      origin,
+      FAKE_TOKEN,
+    );
+    expect(next).not.toBe(null);
+    expect(next![2]).toMatch(/^https:\/\/x-access-token:/);
+  });
+
+  it('honours `--` end-of-options before a remote that would otherwise look like a flag', () => {
+    // Defensive: even though a remote name starting with `-` is
+    // exotic, git's grammar supports `--` to disambiguate.
+    const next = buildFetchUrlAuthArgs(
+      ['fetch', '--', 'origin'],
+      origin,
+      FAKE_TOKEN,
+    );
+    expect(next).not.toBe(null);
+    // After --, the remote slot is at index 2.
+    expect(next![2]).toMatch(/^https:\/\/x-access-token:/);
+  });
+
+  it('skips clone -b <branch> separate-arg value flag (clone still returns null but slot finder must be correct)', () => {
+    // clone is excluded from the URL-auth retry path (the leak
+    // invariant), but the slot finder must still parse the grammar
+    // correctly so the wrapper does not treat a value token as the
+    // remote in any downstream usage.
+    const next = buildFetchUrlAuthArgs(
+      ['clone', '-b', 'main', 'https://github.com/o/r'],
+      origin,
+      FAKE_TOKEN,
+    );
+    // Still null because clone is leak-excluded inside the helper.
+    expect(next).toBe(null);
+  });
 });
 
 describe('isBearerRejection401', () => {
@@ -749,6 +827,146 @@ describe('isBearerRejection401', () => {
     expect(isBearerRejection401(
       "fatal: Authentication failed for 'https://gitlab.example.com/o/r.git/'",
     )).toBe(false);
+  });
+});
+
+describe('extractRepoContextFlags', () => {
+  it('extracts a single -C <dir> pair', () => {
+    expect(extractRepoContextFlags(['-C', '/tmp/repo', 'fetch', 'origin']))
+      .toEqual(['-C', '/tmp/repo']);
+  });
+
+  it('extracts --git-dir <path> separate-arg form', () => {
+    expect(extractRepoContextFlags(['--git-dir', '/tmp/.git', 'fetch']))
+      .toEqual(['--git-dir', '/tmp/.git']);
+  });
+
+  it('extracts --work-tree <path> separate-arg form', () => {
+    expect(extractRepoContextFlags(['--work-tree', '/tmp/wt', 'fetch']))
+      .toEqual(['--work-tree', '/tmp/wt']);
+  });
+
+  it('extracts inline --git-dir=<path> form', () => {
+    expect(extractRepoContextFlags(['--git-dir=/tmp/.git', 'fetch']))
+      .toEqual(['--git-dir=/tmp/.git']);
+  });
+
+  it('extracts inline --work-tree=<path> form', () => {
+    expect(extractRepoContextFlags(['--work-tree=/tmp/wt', 'fetch']))
+      .toEqual(['--work-tree=/tmp/wt']);
+  });
+
+  it('preserves order across multiple flags', () => {
+    expect(
+      extractRepoContextFlags(['-C', '/repo', '--git-dir', '/repo/.git', 'fetch']),
+    ).toEqual(['-C', '/repo', '--git-dir', '/repo/.git']);
+  });
+
+  it('ignores other git-level flags', () => {
+    expect(extractRepoContextFlags(['-c', 'http.proxy=x', 'fetch', 'origin']))
+      .toEqual([]);
+  });
+
+  it('returns empty for argv with no repo-context flags', () => {
+    expect(extractRepoContextFlags(['fetch', 'origin', 'main'])).toEqual([]);
+  });
+
+  it('non-array input returns empty', () => {
+    // @ts-expect-error -- exercising the runtime guard
+    expect(extractRepoContextFlags(null)).toEqual([]);
+    // @ts-expect-error
+    expect(extractRepoContextFlags(undefined)).toEqual([]);
+  });
+
+  it('handles -C without a following value defensively (returns nothing)', () => {
+    // The wrapper would never produce this shape but the helper must
+    // not throw or read past argv.
+    expect(extractRepoContextFlags(['-C'])).toEqual([]);
+  });
+});
+
+describe('detectGithubHttpsRemoteUrl', () => {
+  it('returns canonical URL for https://github.com/o/r', () => {
+    expect(detectGithubHttpsRemoteUrl('https://github.com/o/r'))
+      .toBe('https://github.com/o/r.git');
+  });
+
+  it('returns canonical URL for https://github.com/o/r.git', () => {
+    expect(detectGithubHttpsRemoteUrl('https://github.com/o/r.git'))
+      .toBe('https://github.com/o/r.git');
+  });
+
+  it('returns canonical URL for https://github.com/o/r.git/ (trailing slash)', () => {
+    expect(detectGithubHttpsRemoteUrl('https://github.com/o/r.git/'))
+      .toBe('https://github.com/o/r.git');
+  });
+
+  it('returns null for a remote name like "origin"', () => {
+    expect(detectGithubHttpsRemoteUrl('origin')).toBe(null);
+  });
+
+  it('returns null for SSH remote', () => {
+    expect(detectGithubHttpsRemoteUrl('git@github.com:o/r.git')).toBe(null);
+  });
+
+  it('returns null for enterprise host', () => {
+    expect(detectGithubHttpsRemoteUrl('https://git.corp.example.com/o/r.git'))
+      .toBe(null);
+  });
+
+  it('returns null for protocol-less shortcut', () => {
+    expect(detectGithubHttpsRemoteUrl('o/r')).toBe(null);
+  });
+
+  it('returns null for empty / non-string', () => {
+    expect(detectGithubHttpsRemoteUrl('')).toBe(null);
+    // @ts-expect-error
+    expect(detectGithubHttpsRemoteUrl(null)).toBe(null);
+    // @ts-expect-error
+    expect(detectGithubHttpsRemoteUrl(undefined)).toBe(null);
+  });
+});
+
+describe('buildFetchUrlAuthArgs accepts URL-form remote directly (CR finding #1)', () => {
+  // The wrapper paths a URL through to buildFetchUrlAuthArgs by
+  // calling detectGithubHttpsRemoteUrl first; if the candidate is
+  // already a URL, the wrapper skips `git remote get-url` and passes
+  // the URL straight in. Verify the helper round-trips correctly
+  // when the resolvedRemoteUrl arg IS the same URL that appears in
+  // the argv positional.
+  it('rewrites fetch <github-url> main correctly', () => {
+    const next = buildFetchUrlAuthArgs(
+      ['fetch', 'https://github.com/o/r.git', 'main'],
+      'https://github.com/o/r.git',
+      'tk',
+    );
+    expect(next).not.toBe(null);
+    expect(next![1]).toBe('https://x-access-token:tk@github.com/o/r.git');
+    expect(next![2]).toBe('main');
+  });
+
+  it('rewrites pull <github-url> main correctly', () => {
+    const next = buildFetchUrlAuthArgs(
+      ['pull', 'https://github.com/o/r', 'main'],
+      'https://github.com/o/r.git',
+      'tk',
+    );
+    expect(next).not.toBe(null);
+    expect(next![1]).toBe('https://x-access-token:tk@github.com/o/r.git');
+  });
+});
+
+describe('findReadOnlyRemoteArg returns the URL when the positional IS a URL', () => {
+  it('returns the URL string for fetch <github-url>', () => {
+    const r = findReadOnlyRemoteArg(['fetch', 'https://github.com/o/r.git', 'main']);
+    expect(r).not.toBe(null);
+    expect(r!.remote).toBe('https://github.com/o/r.git');
+  });
+
+  it('returns the remote name for fetch origin main', () => {
+    const r = findReadOnlyRemoteArg(['fetch', 'origin', 'main']);
+    expect(r).not.toBe(null);
+    expect(r!.remote).toBe('origin');
   });
 });
 

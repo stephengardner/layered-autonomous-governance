@@ -317,6 +317,55 @@ export function isReadOnlyRemoteVerb(gitArgs) {
 }
 
 /**
+ * Subcommand-level options for the read-only verbs that consume the
+ * NEXT argv token as their value. Without explicit skipping the
+ * remote-arg locator would mistake the value token (e.g. the `1` in
+ * `git fetch --depth 1 origin`) for the remote positional.
+ *
+ * Sourced from `git fetch --help`, `git pull --help`, `git ls-remote
+ * --help`, `git clone --help`. Inline forms (`--depth=1`,
+ * `--upload-pack=/path`) are a single argv token and pass through
+ * the `.startsWith('-')` branch already; only the separate-arg form
+ * needs explicit skip handling.
+ *
+ * Short aliases (-b for --branch, -o for --origin, etc.) are
+ * intentionally included because callers like `git clone -b main
+ * origin` rely on them.
+ */
+const READ_ONLY_VERB_VALUE_OPTIONS = new Set([
+  // fetch / pull
+  '--depth',
+  '--deepen',
+  '--shallow-since',
+  '--shallow-exclude',
+  '--negotiation-tip',
+  '--negotiator',
+  '--server-option',
+  '-o',
+  '--upload-pack',
+  '--refmap',
+  '-j',
+  '--jobs',
+  '--filter',
+  // pull-only extras (merge options)
+  '--strategy',
+  '-s',
+  '--strategy-option',
+  '-X',
+  // clone extras
+  '--origin',
+  '--branch',
+  '-b',
+  '--template',
+  '--config',
+  '-c',
+  '--reference',
+  '--reference-if-able',
+  // ls-remote extras
+  '--sort',
+]);
+
+/**
  * Find the read-only verb's index plus the index of the first
  * positional after it (the remote arg slot, when present). Returns
  * null when no read-only verb is present or no remote arg follows.
@@ -327,6 +376,18 @@ export function isReadOnlyRemoteVerb(gitArgs) {
  * Public form for the wrapper to look up the remote name without
  * re-implementing the verb-skipping grammar is findReadOnlyRemoteArg
  * below.
+ *
+ * Grammar quirks handled:
+ *   - Git-level options before the verb (handled in the first loop):
+ *     `-C <dir>`, `-c k=v`, `--git-dir <path>`, etc.
+ *   - Subcommand-level value-taking flags after the verb (handled in
+ *     the second loop via READ_ONLY_VERB_VALUE_OPTIONS): `--depth N`,
+ *     `--upload-pack <path>`, `-b <branch>`, etc. Without this the
+ *     value token would be mistaken for the remote.
+ *   - Inline forms (`--depth=N`, `-j=4`) are single argv tokens and
+ *     pass through the `.startsWith('-')` branch unchanged.
+ *   - `--` end-of-options marker: the next token is the remote
+ *     positional regardless of whether it begins with `-`.
  */
 function findReadOnlyRemoteSlot(gitArgs) {
   if (!Array.isArray(gitArgs)) return null;
@@ -353,12 +414,32 @@ function findReadOnlyRemoteSlot(gitArgs) {
   }
   if (verbIndex < 0) return null;
   // First positional after the verb is the remote slot. Skip any
-  // verb-level flags  --  fetch/pull take many (--prune, --tags,
-  // --depth=N, etc.) and the remote is the first non-flag token.
-  for (let j = verbIndex + 1; j < gitArgs.length; j++) {
+  // verb-level flags AND skip the value of known value-taking flags
+  // (e.g. `--depth 1`, `--upload-pack /path`) so we do not mistake
+  // the value token for the remote.
+  let j = verbIndex + 1;
+  while (j < gitArgs.length) {
     const a = gitArgs[j];
-    if (typeof a !== 'string') continue;
-    if (a.startsWith('-')) continue;
+    if (typeof a !== 'string') {
+      j += 1;
+      continue;
+    }
+    if (a === '--') {
+      // End-of-options. The next token is the remote regardless of
+      // its leading character.
+      if (j + 1 < gitArgs.length && typeof gitArgs[j + 1] === 'string') {
+        return { verbIndex, verb, remoteIndex: j + 1 };
+      }
+      return null;
+    }
+    if (a.startsWith('-')) {
+      if (READ_ONLY_VERB_VALUE_OPTIONS.has(a)) {
+        j += 2;
+        continue;
+      }
+      j += 1;
+      continue;
+    }
     return { verbIndex, verb, remoteIndex: j };
   }
   return null;
@@ -380,6 +461,90 @@ export function findReadOnlyRemoteArg(gitArgs) {
   const remote = gitArgs[slot.remoteIndex];
   if (typeof remote !== 'string') return null;
   return { remoteIndex: slot.remoteIndex, remote };
+}
+
+/**
+ * Extract the git-level context flags (`-C <dir>`, `--git-dir <path>`,
+ * `--work-tree <path>`, and their inline `--flag=value` forms) from
+ * an argv so they can be propagated to subsidiary `git` invocations
+ * (e.g. `git remote get-url`) that need to target the same working
+ * tree as the primary spawn.
+ *
+ * Why this matters
+ * ----------------
+ * `git-as <role> -C /other/repo fetch origin` resolves the remote
+ * URL via `git remote get-url origin` -- if that lookup runs without
+ * the same `-C` it reads from the wrong .git/config and returns the
+ * wrong URL (or null). The same shape applies to `--git-dir` and
+ * `--work-tree`. Returns a fresh argv prefix in the same order the
+ * flags appeared so callers can compose it with the rest of their
+ * argv unchanged.
+ *
+ * Both inline (`--git-dir=/path`) and separate (`--git-dir /path`)
+ * forms are recognised. Unrecognised git-level flags are ignored
+ * because they have no impact on `git remote get-url`'s repo
+ * resolution.
+ */
+const REPO_CONTEXT_VALUE_FLAGS = new Set([
+  '-C',
+  '--git-dir',
+  '--work-tree',
+]);
+
+const REPO_CONTEXT_INLINE_PREFIXES = [
+  '--git-dir=',
+  '--work-tree=',
+];
+
+export function extractRepoContextFlags(gitArgs) {
+  if (!Array.isArray(gitArgs)) return [];
+  const out = [];
+  for (let i = 0; i < gitArgs.length; i++) {
+    const a = gitArgs[i];
+    if (typeof a !== 'string') continue;
+    if (REPO_CONTEXT_VALUE_FLAGS.has(a)) {
+      const v = gitArgs[i + 1];
+      if (typeof v === 'string') {
+        out.push(a, v);
+        i += 1;
+      }
+      continue;
+    }
+    for (const prefix of REPO_CONTEXT_INLINE_PREFIXES) {
+      if (a.startsWith(prefix)) {
+        out.push(a);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Detect when a "remote" positional in a `git fetch` / `git pull` /
+ * `git ls-remote` / `git clone` invocation is already an HTTPS URL
+ * pointing at github.com, rather than a configured remote NAME (like
+ * `origin`). Returns the canonical URL form (with .git suffix
+ * normalised) when it is, or null otherwise.
+ *
+ * Used by the wrapper's retry path so that
+ * `git-as lag-ceo fetch https://github.com/o/r.git main` can build
+ * the x-access-token retry URL directly instead of trying to look
+ * up "https://github.com/o/r.git" as a remote name (which `git
+ * remote get-url` would treat as a literal name and fail to
+ * resolve).
+ *
+ * Scope: github.com HTTPS only. SSH (`git@github.com:...`),
+ * enterprise hosts, and protocol-less shortcuts (`o/r`) all return
+ * null so the caller falls through to `git remote get-url`.
+ */
+export function detectGithubHttpsRemoteUrl(remoteCandidate) {
+  if (typeof remoteCandidate !== 'string') return null;
+  const parsed = parseGithubHttps(remoteCandidate);
+  if (parsed === null) return null;
+  // Re-emit in the canonical .git form so downstream URL builders
+  // get a uniform shape.
+  return `https://github.com/${parsed.owner}/${parsed.repo}.git`;
 }
 
 /**
@@ -480,8 +645,6 @@ const BEARER_401_HINTS = [
   /www-authenticate:\s*Basic/i,
 ];
 
-const AUTH_KEYWORD_RE = /\b(?:Authentication|Authorization|www-authenticate)\b/i;
-
 // Indirect helper-disabled signature: git falls through to the
 // credential helper after a 401, the helper is disabled, askpass is
 // neutralized, and git surfaces the failure as "could not read
@@ -507,13 +670,21 @@ export function isBearerRejection401(stderrText) {
   if (NON_GITHUB_HOST_RE.test(stderrText)) return false;
   // www-authenticate: Basic is itself the smoking gun  --  it means
   // a server returned a Basic challenge in response to our Bearer.
-  // No need for a separate auth-keyword check there.
   if (/www-authenticate:\s*Basic/i.test(stderrText)) return true;
-  // Otherwise require a 401 marker. Some shapes carry the explicit
-  // "Authentication failed" / "Authorization" keyword and don't need
-  // the marker; both paths must be true to avoid false positives on
-  // generic "got 401 from somewhere" logs.
-  const hasAny401 = BEARER_401_HINTS.some((re) => re.test(stderrText));
-  if (!hasAny401) return false;
-  return AUTH_KEYWORD_RE.test(stderrText) || hasAny401;
+  // Otherwise require an explicit 401 marker. The non-github host
+  // filter above already scoped us to github.com URLs (or a 401
+  // with no URL context, which on this code path is also a github
+  // call because the wrapper only auths against github.com). A
+  // github-scoped 401 alone is sufficient signal to attempt the
+  // x-access-token retry  --  the retry is safe (it tries a different
+  // auth scheme against the same host) and the AUTH_KEYWORD_RE
+  // check that previously sat here was a no-op next to hasAny401.
+  if (BEARER_401_HINTS.some((re) => re.test(stderrText))) return true;
+  // Tertiary signal: explicit "Authorization" / "Authentication"
+  // keyword without a 401 marker is too generic to act on (covers
+  // permission errors, scope rejections, etc. that x-access-token
+  // would not fix). Require either the explicit 401 or the helper-
+  // disabled fallback shape captured above.
+  return false;
 }
+
