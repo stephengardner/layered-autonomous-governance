@@ -12,9 +12,8 @@ import {
   Send,
   Target,
   Workflow,
-  XCircle,
+  type LucideIcon,
 } from 'lucide-react';
-import type { ComponentType, SVGProps } from 'react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { PrincipalLink } from '@/components/principal-link/PrincipalLink';
 import type {
@@ -159,9 +158,6 @@ function ConversationEventBody({ event }: { event: ConversationEventType }) {
             data-testid="conversation-agent-prompt-meta"
           >
             Turn <code>#{event.turn_index}</code>
-            {event.latency_ms !== undefined && event.latency_ms !== null && (
-              <> &middot; latency <code>{event.latency_ms}ms</code></>
-            )}
           </p>
           <ExpandableBody
             content={event.body.content}
@@ -379,9 +375,21 @@ function ConversationEventBody({ event }: { event: ConversationEventType }) {
 
 // ===== Lookup tables =====
 
-type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number; strokeWidth?: number }>;
+/**
+ * Visible export for unit tests. The actual component closes over
+ * these helpers; exposing them lets the test exercise every kind in
+ * one declarative table without rendering DOM (the vitest environment
+ * is node-only per apps/console/vitest.config.ts).
+ */
+export const _internal = {
+  iconForKind,
+  labelForKind,
+  variantForKind,
+  severityToVariant,
+  dispatchOutcomeToVariant,
+};
 
-function iconForKind(kind: ConversationEventKind): IconComponent {
+function iconForKind(kind: ConversationEventKind): LucideIcon {
   switch (kind) {
     case 'operator-intent': return Target;
     case 'stage-started': return Workflow;

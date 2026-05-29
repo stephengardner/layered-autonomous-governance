@@ -1,0 +1,35 @@
+/*
+ * ConversationLink: pill-shaped navigation link rendered next to the
+ * FocusBanner on pipeline + deliberation detail views.
+ *
+ * Tokens-only per canon dev-web-no-hardcoded-px. 44px touch-target
+ * floor on the click surface for mobile per dev-web-mobile-first-required.
+ */
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--radius-pill);
+  padding: var(--space-2) var(--space-4);
+  min-height: var(--size-touch-target-min);
+  text-decoration: none;
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard);
+}
+
+.link:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+.link:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-hairline);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}

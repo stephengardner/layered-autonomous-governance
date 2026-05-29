@@ -28,7 +28,10 @@ import {
   routeHref,
   setRoute,
   useRouteId,
+  useRouteSubroute,
 } from '@/state/router.store';
+import { ConversationThreadView } from '@/features/conversation-thread/ConversationThreadView';
+import { ConversationLink } from '@/features/conversation-thread/ConversationLink';
 import styles from './DeliberationView.module.css';
 
 /**
@@ -62,6 +65,10 @@ import styles from './DeliberationView.module.css';
  */
 export function DeliberationView() {
   const focusId = useRouteId();
+  const subroute = useRouteSubroute();
+  if (focusId && subroute === 'conversation') {
+    return <ConversationThreadView plan_id={focusId} />;
+  }
   if (focusId) return <DeliberationDetailView planId={focusId} />;
   return <DeliberationList />;
 }
@@ -258,6 +265,8 @@ function DeliberationTrail({ data }: { data: DeliberationDetail }) {
         id={plan.id}
         onClear={() => setRoute('deliberation')}
       />
+
+      <ConversationLink scope="deliberation" id={plan.id} testId="deliberation-detail-conversation-link" />
 
       <header className={styles.detailHead}>
         {plan.plan_state && (

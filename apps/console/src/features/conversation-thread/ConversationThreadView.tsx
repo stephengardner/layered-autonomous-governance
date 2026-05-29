@@ -139,8 +139,6 @@ interface ConversationBodyProps {
 
 function ConversationBody({ data, backRoute, focusId }: ConversationBodyProps) {
   const events = data.events;
-  const planIdFromData = 'plan_id' in data ? data.plan_id : null;
-  const pipelineIdFromData = 'pipeline_id' in data ? data.pipeline_id : null;
 
   // Pipeline-state hint comes from the events themselves: a
   // 'dispatch-result' carries the substrate outcome we can map to the

@@ -39,6 +39,7 @@ import { InlineStageOutput } from './InlineStageOutput';
 import { readStageExpanded, writeStageExpanded } from './stageExpansion';
 import { usePipelineStream } from './usePipelineStream';
 import { PipelineErrorBlock } from './PipelineErrorBlock';
+import { ConversationLink } from '@/features/conversation-thread/ConversationLink';
 import styles from './PipelineDetailView.module.css';
 
 /*
@@ -241,6 +242,8 @@ function PipelineDetailBody({
         id={pipeline.id}
         onClear={() => setRoute('pipelines')}
       />
+
+      <ConversationLink scope="pipelines" id={pipeline.id} testId="pipeline-detail-conversation-link" />
 
       <PipelineErrorBlock pipelineId={pipeline.id} />
 
