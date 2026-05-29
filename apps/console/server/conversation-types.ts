@@ -159,6 +159,8 @@ export interface ConversationToolCallEvent extends ConversationEventBase {
   readonly tool_name: string;
   /** JSON-stringified args; '' when the substrate did not record any. */
   readonly args: string;
+  /** True when the substrate args exceeded the inline cap; the args field is truncated. */
+  readonly args_truncated: boolean;
   /** JSON-stringified or text result; '' when missing. */
   readonly result: string;
   readonly result_truncated: boolean;

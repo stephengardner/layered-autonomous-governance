@@ -416,10 +416,38 @@ describe('assembleConversationForPipeline', () => {
         parent_turn_index: 0,
         session_atom_id: sid,
         tool_name: 'Read',
+        args_truncated: false,
+        result_truncated: false,
       });
       if (toolCalls[0].kind === 'tool-call') {
         expect(toolCalls[0].args).toContain('"path"');
         expect(toolCalls[0].result).toBe('file contents');
+      }
+    });
+
+    it('truncates tool-call args + flips args_truncated when payload exceeds the inline cap', () => {
+      const sid = 'agent-session-big-args';
+      const bigArgs = { content: 'x'.repeat(MAX_INLINE_CONTENT_CHARS + 200) };
+      const atoms = [
+        pipeline(),
+        agentSession({ id: sid, created_at: '2026-05-28T10:08:00.000Z' }),
+        agentTurn({
+          id: 'turn-1',
+          created_at: '2026-05-28T10:09:00.000Z',
+          session_atom_id: sid,
+          turn_index: 0,
+          llm_input: 'do',
+          llm_output: 'ok',
+          tool_calls: [{ name: 'Write', args: bigArgs, result: 'ok' }],
+        }),
+      ];
+      const result = assembleConversationForPipeline(atoms, PIPELINE_ID, NOW);
+      const toolCalls = result!.events.filter((e) => e.kind === 'tool-call');
+      expect(toolCalls).toHaveLength(1);
+      if (toolCalls[0].kind === 'tool-call') {
+        expect(toolCalls[0].args.length).toBeLessThanOrEqual(MAX_INLINE_CONTENT_CHARS);
+        expect(toolCalls[0].args_truncated).toBe(true);
+        expect(toolCalls[0].result_truncated).toBe(false);
       }
     });
 
@@ -669,9 +697,13 @@ describe('assembleConversationForPipeline', () => {
       expect(prompts).toHaveLength(0);
     });
 
-    it('caps event count at MAX_CONVERSATION_EVENTS', () => {
+    it('caps event count at MAX_CONVERSATION_EVENTS and preserves the most-recent tail', () => {
       const sid = 'agent-session-big';
-      const events: ConversationSourceAtom[] = [pipeline(), agentSession({ id: sid, created_at: '2026-05-28T10:08:00.000Z' })];
+      const events: ConversationSourceAtom[] = [
+        intent(),
+        pipeline(),
+        agentSession({ id: sid, created_at: '2026-05-28T10:08:00.000Z' }),
+      ];
       for (let i = 0; i < MAX_CONVERSATION_EVENTS + 50; i += 1) {
         events.push(
           agentTurn({
@@ -686,6 +718,18 @@ describe('assembleConversationForPipeline', () => {
       }
       const result = assembleConversationForPipeline(events, PIPELINE_ID, NOW);
       expect(result!.events.length).toBeLessThanOrEqual(MAX_CONVERSATION_EVENTS);
+      // First row remains the operator-intent (pinned by the cap policy).
+      expect(result!.events[0].kind).toBe('operator-intent');
+      // The MOST-RECENT activity is preserved: the final agent-response in
+      // the result should reference a high turn_index (close to the
+      // generated max), not turn_index=0 which would indicate the head was
+      // kept and the tail dropped.
+      const lastResponse = [...result!.events]
+        .reverse()
+        .find((e) => e.kind === 'agent-response');
+      if (lastResponse && lastResponse.kind === 'agent-response') {
+        expect(lastResponse.turn_index).toBeGreaterThan(MAX_CONVERSATION_EVENTS / 2);
+      }
     });
   });
 });
@@ -715,6 +759,24 @@ describe('assembleConversationForPlan', () => {
       provenance: { derived_from: [] },
     });
     const result = assembleConversationForPlan([orphan], PLAN_ID, NOW);
+    expect(result!.pipeline_id).toBeNull();
+    expect(result!.events).toHaveLength(0);
+  });
+
+  it('returns pipeline_id null when the plan cites a pipeline that no longer exists (reaped)', () => {
+    // Plan references a pipeline id via metadata, but no pipeline atom
+    // with that id is in the live set. Without this guard, the envelope
+    // would ship a dangling id that the renderer could try to deep-link.
+    const reapedPipelineId = 'pipeline-cto-reaped-xxxxx';
+    const orphanPlan = atom({
+      id: PLAN_ID,
+      type: 'plan',
+      created_at: '2026-05-28T10:30:00.000Z',
+      content: '# Plan title\nbody',
+      metadata: { pipeline_id: reapedPipelineId },
+      provenance: { derived_from: [reapedPipelineId] },
+    });
+    const result = assembleConversationForPlan([orphanPlan], PLAN_ID, NOW);
     expect(result!.pipeline_id).toBeNull();
     expect(result!.events).toHaveLength(0);
   });

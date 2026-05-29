@@ -375,7 +375,14 @@ function projectAtom(
           if (!name) return;
           const argsRaw = e['args'] ?? e['arguments'] ?? null;
           const resultRaw = e['result'] ?? e['output'] ?? null;
-          const argsStr = stringifyToolValue(argsRaw);
+          // Both args and result share the inline-content cap. A
+          // tool-call with a large args blob (e.g. a Write tool's
+          // content field) would otherwise defeat the cap that the
+          // rest of the module enforces.
+          const argsStrFull = stringifyToolValue(argsRaw);
+          const argsStr = argsStrFull.length > MAX_INLINE_CONTENT_CHARS
+            ? argsStrFull.slice(0, MAX_INLINE_CONTENT_CHARS)
+            : argsStrFull;
           const resultStrFull = stringifyToolValue(resultRaw);
           const resultStr = resultStrFull.length > MAX_INLINE_CONTENT_CHARS
             ? resultStrFull.slice(0, MAX_INLINE_CONTENT_CHARS)
@@ -390,6 +397,7 @@ function projectAtom(
             session_atom_id: sessionAtomId,
             tool_name: name,
             args: argsStr,
+            args_truncated: argsStrFull.length > MAX_INLINE_CONTENT_CHARS,
             result: resultStr,
             result_truncated: resultStrFull.length > MAX_INLINE_CONTENT_CHARS,
           });
@@ -610,8 +618,16 @@ export function assembleConversationForPipeline(
     for (const ev of projectAtom(atom, { pipelineIds })) collected.push(ev);
   }
   const sorted = sortEvents(collected);
+  // Pin the operator-intent row (sorts first) and keep the most-recent
+  // tail of activity. For an active or long-running pipeline, the
+  // latest turns / audit findings / dispatch result are what an
+  // operator cares about most; truncating the head would drop the
+  // seed-intent context, truncating the tail would drop the answer.
   const capped = sorted.length > MAX_CONVERSATION_EVENTS
-    ? sorted.slice(0, MAX_CONVERSATION_EVENTS)
+    ? [
+        ...sorted.slice(0, 1),
+        ...sorted.slice(sorted.length - (MAX_CONVERSATION_EVENTS - 1)),
+      ]
     : sorted;
   return {
     pipeline_id: pipelineId,
@@ -691,19 +707,25 @@ export function assembleConversationForPlan(
   for (const a of liveAtoms) {
     byId.set(a.id, a);
   }
-  const pipelineId = resolvePipelineIdForPlan(planAtom, byId);
-  const intentId = resolveIntentIdForPlan(planAtom, pipelineId, byId);
+  const pipelineIdCandidate = resolvePipelineIdForPlan(planAtom, byId);
+  const intentId = resolveIntentIdForPlan(planAtom, pipelineIdCandidate, byId);
   let events: ReadonlyArray<ConversationEvent> = [];
-  if (pipelineId) {
-    const pipelineResult = assembleConversationForPipeline(liveAtoms, pipelineId, now);
+  // Only report a pipeline_id when the pipeline atom actually exists in
+  // the live set; the prefix-match fallback in resolvePipelineIdForPlan
+  // can return a dangling 'pipeline-' id (e.g. a reaped pipeline) and
+  // shipping that to the renderer would let it deep-link to a 404.
+  let resolvedPipelineId: string | null = null;
+  if (pipelineIdCandidate) {
+    const pipelineResult = assembleConversationForPipeline(liveAtoms, pipelineIdCandidate, now);
     if (pipelineResult) {
       events = pipelineResult.events;
+      resolvedPipelineId = pipelineIdCandidate;
     }
   }
   return {
     plan_id: planId,
     intent_id: intentId,
-    pipeline_id: pipelineId,
+    pipeline_id: resolvedPipelineId,
     events,
     computed_at: new Date(now).toISOString(),
   };
