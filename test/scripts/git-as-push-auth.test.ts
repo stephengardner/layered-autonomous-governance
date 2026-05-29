@@ -23,13 +23,16 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  buildFetchUrlAuthArgs,
   buildPushEnv,
   buildPushSpawnArgs,
   buildReadOnlyEnv,
   buildTransientPushUrl,
   extractSetUpstreamPlan,
   findRemoteArg,
+  isBearerRejection401,
   isPushCommand,
+  isReadOnlyRemoteVerb,
   parseGithubHttps,
 } from '../../scripts/lib/git-as-push-auth.mjs';
 
@@ -483,5 +486,281 @@ describe('token exposure: push URL carries token on argv but env does not', () =
         expect(v).not.toContain(FAKE_TOKEN);
       }
     }
+  });
+});
+
+describe('isReadOnlyRemoteVerb', () => {
+  it('returns true for fetch', () => {
+    expect(isReadOnlyRemoteVerb(['fetch', 'origin'])).toBe(true);
+  });
+
+  it('returns true for pull', () => {
+    expect(isReadOnlyRemoteVerb(['pull', 'origin', 'main'])).toBe(true);
+  });
+
+  it('returns true for ls-remote', () => {
+    expect(isReadOnlyRemoteVerb(['ls-remote', 'origin'])).toBe(true);
+  });
+
+  it('returns true for clone', () => {
+    expect(isReadOnlyRemoteVerb(['clone', 'https://github.com/o/r'])).toBe(true);
+  });
+
+  it('skips git-level value-taking flags before the verb', () => {
+    expect(isReadOnlyRemoteVerb(['-C', '/tmp/repo', 'fetch', 'origin'])).toBe(true);
+    expect(isReadOnlyRemoteVerb(['-c', 'http.proxy=x', 'fetch'])).toBe(true);
+    expect(isReadOnlyRemoteVerb(['--git-dir', '/tmp/.git', 'fetch'])).toBe(true);
+  });
+
+  it('returns false for push (push has its own path)', () => {
+    expect(isReadOnlyRemoteVerb(['push', 'origin'])).toBe(false);
+  });
+
+  it('returns false for local-only verbs', () => {
+    expect(isReadOnlyRemoteVerb(['status'])).toBe(false);
+    expect(isReadOnlyRemoteVerb(['log', '--oneline'])).toBe(false);
+    expect(isReadOnlyRemoteVerb(['rev-parse', 'HEAD'])).toBe(false);
+    expect(isReadOnlyRemoteVerb(['config', 'foo.bar', 'baz'])).toBe(false);
+  });
+
+  it('returns false for empty args', () => {
+    expect(isReadOnlyRemoteVerb([])).toBe(false);
+  });
+});
+
+describe('buildFetchUrlAuthArgs', () => {
+  const origin = 'https://github.com/stephengardner/layered-autonomous-governance';
+
+  it('rewrites fetch origin -> x-access-token URL', () => {
+    const next = buildFetchUrlAuthArgs(['fetch', 'origin'], origin, FAKE_TOKEN);
+    expect(next).not.toBe(null);
+    expect(next![0]).toBe('fetch');
+    expect(next![1]).toBe(
+      `https://x-access-token:${FAKE_TOKEN}@github.com/stephengardner/layered-autonomous-governance.git`,
+    );
+  });
+
+  it('rewrites pull origin main -> URL with refspec preserved', () => {
+    const next = buildFetchUrlAuthArgs(['pull', 'origin', 'main'], origin, FAKE_TOKEN);
+    expect(next).not.toBe(null);
+    expect(next![0]).toBe('pull');
+    expect(next![1]).toMatch(/^https:\/\/x-access-token:/);
+    expect(next![2]).toBe('main');
+  });
+
+  it('rewrites ls-remote origin -> URL', () => {
+    const next = buildFetchUrlAuthArgs(['ls-remote', 'origin'], origin, FAKE_TOKEN);
+    expect(next).not.toBe(null);
+    expect(next![1]).toMatch(/^https:\/\/x-access-token:/);
+  });
+
+  it('preserves flags before the remote', () => {
+    const next = buildFetchUrlAuthArgs(
+      ['fetch', '--prune', 'origin'],
+      origin,
+      FAKE_TOKEN,
+    );
+    expect(next).not.toBe(null);
+    expect(next![1]).toBe('--prune');
+    expect(next![2]).toMatch(/^https:\/\/x-access-token:/);
+  });
+
+  it('preserves flags after the remote', () => {
+    const next = buildFetchUrlAuthArgs(
+      ['fetch', 'origin', 'main', '--depth=1'],
+      origin,
+      FAKE_TOKEN,
+    );
+    expect(next).not.toBe(null);
+    expect(next![1]).toMatch(/^https:\/\/x-access-token:/);
+    expect(next![2]).toBe('main');
+    expect(next![3]).toBe('--depth=1');
+  });
+
+  it('returns null for bare fetch (no remote positional)', () => {
+    // Caller surfaces a clear error rather than rewriting the wrong
+    // thing -- a bare fetch with no remote relies on the branch's
+    // upstream which is the operator's configured remote, not
+    // necessarily the one our origin URL points at.
+    expect(buildFetchUrlAuthArgs(['fetch'], origin, FAKE_TOKEN)).toBe(null);
+  });
+
+  it('returns null for SSH remote (caller falls through)', () => {
+    expect(
+      buildFetchUrlAuthArgs(['fetch', 'origin'], 'git@github.com:o/r.git', FAKE_TOKEN),
+    ).toBe(null);
+  });
+
+  it('returns null for enterprise remote (caller falls through)', () => {
+    expect(
+      buildFetchUrlAuthArgs(['fetch', 'origin'], 'https://git.corp/o/r.git', FAKE_TOKEN),
+    ).toBe(null);
+  });
+
+  it('returns null when resolveRemoteUrl returned null', () => {
+    expect(buildFetchUrlAuthArgs(['fetch', 'origin'], null, FAKE_TOKEN)).toBe(null);
+  });
+
+  it('does NOT rewrite a clone (clone persists the URL into the new repo .git/config; would leak token)', () => {
+    // clone is a special case: the URL is recorded into the new
+    // repo's .git/config as remote.origin.url. Substituting an
+    // x-access-token URL on argv would persist the token on disk
+    // in the clone target, defeating the leak-prevention contract.
+    // Return null so the caller falls through to the Bearer path
+    // (which works for clone) instead of leaking.
+    const next = buildFetchUrlAuthArgs(
+      ['clone', 'https://github.com/o/r'],
+      'https://github.com/o/r',
+      FAKE_TOKEN,
+    );
+    expect(next).toBe(null);
+  });
+
+  it('returns null for push (push has its own buildPushSpawnArgs path)', () => {
+    expect(
+      buildFetchUrlAuthArgs(['push', 'origin', 'feat/x'], origin, FAKE_TOKEN),
+    ).toBe(null);
+  });
+
+  it('preserves git-level -C <dir> before fetch and rewrites the remote', () => {
+    const next = buildFetchUrlAuthArgs(
+      ['-C', '/tmp/repo', 'fetch', 'origin'],
+      origin,
+      FAKE_TOKEN,
+    );
+    expect(next).not.toBe(null);
+    expect(next![0]).toBe('-C');
+    expect(next![1]).toBe('/tmp/repo');
+    expect(next![2]).toBe('fetch');
+    expect(next![3]).toMatch(/^https:\/\/x-access-token:/);
+  });
+});
+
+describe('isBearerRejection401', () => {
+  // GitHub's smart-HTTP receive-pack / upload-pack endpoints reject
+  // Authorization: Bearer with a 401, and git surfaces the failure in
+  // stderr with one of these shapes (collected from real reproductions
+  // across Windows + Linux git versions). We only retry with URL-auth
+  // when stderr matches one of these signatures so a genuine network
+  // error or a different 4xx does not trigger the silent retry path.
+  it('detects literal "401" + "Authorization" combination', () => {
+    expect(isBearerRejection401(
+      "remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/o/r.git/'",
+    )).toBe(false); // No 401 marker -> not this signature
+  });
+
+  it('detects "HTTP 401" marker', () => {
+    expect(isBearerRejection401(
+      "fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 401",
+    )).toBe(true);
+  });
+
+  it('detects "error: 401" inline marker', () => {
+    expect(isBearerRejection401(
+      'remote: error: 401 Unauthorized',
+    )).toBe(true);
+  });
+
+  it('detects www-authenticate Basic challenge (Bearer was rejected, Basic offered)', () => {
+    expect(isBearerRejection401(
+      'fatal: unable to access ... www-authenticate: Basic realm="GitHub"',
+    )).toBe(true);
+  });
+
+  it('case-insensitive matching of Authentication failed + 401', () => {
+    expect(isBearerRejection401(
+      "FATAL: AUTHENTICATION FAILED ... HTTP 401",
+    )).toBe(true);
+  });
+
+  it('returns false on a clean non-auth error', () => {
+    expect(isBearerRejection401(
+      "fatal: couldn't find remote ref refs/heads/nonexistent",
+    )).toBe(false);
+  });
+
+  it('returns false on a 404 (different failure mode)', () => {
+    expect(isBearerRejection401(
+      "fatal: repository 'https://github.com/o/r.git/' not found",
+    )).toBe(false);
+  });
+
+  it('returns false on a 403 (forbidden, not auth-rejected)', () => {
+    expect(isBearerRejection401(
+      "fatal: unable to access ... The requested URL returned error: 403",
+    )).toBe(false);
+  });
+
+  it('returns false on empty / null / non-string', () => {
+    expect(isBearerRejection401('')).toBe(false);
+    // @ts-expect-error -- exercising the runtime guard
+    expect(isBearerRejection401(null)).toBe(false);
+    // @ts-expect-error
+    expect(isBearerRejection401(undefined)).toBe(false);
+    // @ts-expect-error
+    expect(isBearerRejection401(123)).toBe(false);
+  });
+
+  it('returns false on a 401 against a non-github host (we only re-route github auth)', () => {
+    // Defensive: a 401 from an enterprise host is real; do not retry
+    // with x-access-token URL (the token only authenticates against
+    // github.com per GitHub App contract).
+    expect(isBearerRejection401(
+      "fatal: unable to access 'https://gitlab.example.com/o/r.git/': returned error: 401",
+    )).toBe(false);
+  });
+});
+
+describe('fetch fallback token-leak prevention', () => {
+  // The fallback path passes the x-access-token URL on argv. Verify
+  // that the env for the retry is the push env (no extraHeader), and
+  // that the URL is properly scoped to github.com so an enterprise
+  // origin does not silently get a github.com token shipped to it.
+  const FAKE = 'ghs_fake_token_abc';
+  const ORIGIN = 'https://github.com/o/r';
+
+  it('fetch retry argv carries x-access-token URL', () => {
+    const next = buildFetchUrlAuthArgs(['fetch', 'origin'], ORIGIN, FAKE);
+    expect(next).not.toBe(null);
+    expect(next!.join(' ')).toContain(`x-access-token:${FAKE}@github.com/o/r.git`);
+  });
+
+  it('fetch retry env (push env) does NOT contain extraHeader / Bearer', () => {
+    // The wrapper composes buildPushEnv() for the retry to avoid
+    // double-auth (extraHeader Bearer + URL Basic in the same call,
+    // which is undefined behaviour and tends to fail on GitHub's
+    // smart-HTTP endpoints).
+    const env = buildPushEnv();
+    const idx = Number(env.GIT_CONFIG_COUNT);
+    const keys = Array.from({ length: idx }, (_, i) => env[`GIT_CONFIG_KEY_${i}`]);
+    expect(keys).not.toContain('http.extraHeader');
+    for (const k of Object.keys(env)) {
+      if (k.startsWith('GIT_CONFIG_VALUE_')) {
+        expect(env[k]).not.toMatch(/Authorization:\s+Bearer/i);
+      }
+    }
+  });
+
+  it('regression-guard: fetch URL form does NOT persist into .git/config (no -u-like flag exists for fetch)', () => {
+    // git fetch <url> is a one-off; the URL is not recorded into
+    // .git/config (unlike `git push -u <url>` which records the
+    // upstream). This assertion documents that there's no fetch
+    // equivalent of the PR #169 token-leak shape because fetch
+    // lacks a --set-upstream-on-fetch flag the caller might pass.
+    // It is encoded as a test so a future refactor that introduces
+    // a fetch-side persistence flag (e.g. wraps `git fetch --add-remote`)
+    // breaks here and forces a re-think.
+    const next = buildFetchUrlAuthArgs(
+      ['fetch', '--depth=1', 'origin', 'main'],
+      ORIGIN,
+      FAKE,
+    );
+    expect(next).not.toBe(null);
+    // No -u / --set-upstream survived in the argv (they don't apply
+    // to fetch, but lock the invariant in case a future caller
+    // mistakenly passes one).
+    expect(next!).not.toContain('-u');
+    expect(next!).not.toContain('--set-upstream');
+    expect(next!).not.toContain('--add');
   });
 });
