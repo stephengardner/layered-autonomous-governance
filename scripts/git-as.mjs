@@ -275,29 +275,41 @@ async function main() {
   let exitCode = 0;
   let capturedStderr = '';
   try {
-    const result = await execa('git', spawnArgs, {
+    // When the retry path is eligible, pipe stderr so we can inspect
+    // for the 401 / Bearer-rejection signature, AND tee to the
+    // operator's terminal in real time so the primary attempt's
+    // diagnostics still appear without batching. stdout stays on
+    // inherit because callers (CI, dispatch, operator) rely on git's
+    // stdout going to their stdout verbatim. When the retry path is
+    // not eligible (push or local-only) keep the original inherit
+    // stdio shape to avoid changing observed behaviour for those
+    // call sites.
+    const subprocess = execa('git', spawnArgs, {
       env: { ...process.env, ...spawnEnv },
-      // Pipe stderr so we can inspect for the 401 / Bearer-rejection
-      // signature, then tee to the operator's terminal so the
-      // primary attempt's diagnostics still surface. stdout stays on
-      // inherit because callers (CI, dispatch, operator) rely on
-      // git's stdout going to their stdout verbatim.
       stdio: fetchRetryEligible ? ['inherit', 'inherit', 'pipe'] : 'inherit',
       reject: false,
     });
-    if (fetchRetryEligible && typeof result.stderr === 'string') {
-      capturedStderr = result.stderr;
-      // Tee to the parent's stderr so the primary attempt's git
-      // output is visible to the operator / CI log just as it would
-      // be with stdio: 'inherit'.
-      if (capturedStderr.length > 0) process.stderr.write(capturedStderr);
+    if (fetchRetryEligible && subprocess.stderr) {
+      subprocess.stderr.on('data', (chunk) => {
+        process.stderr.write(chunk);
+        capturedStderr += chunk.toString('utf8');
+      });
     }
+    const result = await subprocess;
     if (result.signal !== undefined && result.signal !== null) {
       const label = result.signalDescription ?? result.signal;
       console.error(`[git-as] git child terminated by signal ${label}`);
       exitCode = 1;
     } else {
       exitCode = typeof result.exitCode === 'number' ? result.exitCode : 0;
+    }
+    // Defensive fallback: if for some reason the 'data' listener never
+    // fired (e.g. execa buffered stderr internally) but result.stderr
+    // is populated, use that. The detection branch downstream is
+    // happy with either source.
+    if (fetchRetryEligible && capturedStderr.length === 0
+        && typeof result.stderr === 'string' && result.stderr.length > 0) {
+      capturedStderr = result.stderr;
     }
   } catch (err) {
     console.error(`[git-as] failed to spawn git: ${err?.message ?? err}`);
