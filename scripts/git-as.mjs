@@ -29,10 +29,22 @@
  * ---------
  * Two auth paths, selected by git subcommand:
  *
- *   - READ-ONLY (fetch, pull, clone, ls-remote, ...): pass the
- *     installation token to git via `http.extraHeader: Authorization:
- *     Bearer <token>`. Bearer works on the API-style smart-HTTP
- *     endpoints git uses for negotiation + fetch.
+ *   - READ-ONLY (fetch, pull, clone, ls-remote, ...): primary path
+ *     passes the installation token to git via `http.extraHeader:
+ *     Authorization: Bearer <token>`. Bearer works on most GitHub
+ *     smart-HTTP endpoints. When GitHub rejects Bearer for
+ *     upload-pack with `HTTP 401, www-authenticate: Basic realm=
+ *     "GitHub"` (a failure mode observed in production: dispatcher
+ *     fetches against fresh installation tokens occasionally come
+ *     back 401 even though the same token authenticates the API),
+ *     the wrapper retries ONCE with the same x-access-token URL
+ *     form push uses. The retry stays scoped to fetch / pull /
+ *     ls-remote against `https://github.com/...` remotes; `clone`
+ *     stays on the Bearer path because the URL is persisted into
+ *     the new repo's `.git/config` and the token would leak on
+ *     disk (PR #169 leak invariant). SSH, enterprise, and non-
+ *     github 401s do NOT trigger the retry (the token only
+ *     authenticates against github.com per GitHub App contract).
  *
  *   - PUSH (git-receive-pack): GitHub's receive-pack endpoint rejects
  *     Bearer with `HTTP/2 401, www-authenticate: Basic realm="GitHub"`
@@ -103,12 +115,16 @@ import {
   fetchInstallationToken,
 } from '../dist/external/github-app/index.js';
 import {
+  buildFetchUrlAuthArgs,
   buildPushEnv,
   buildPushSpawnArgs,
-  extractSetUpstreamPlan,
   buildReadOnlyEnv,
+  extractSetUpstreamPlan,
+  findReadOnlyRemoteArg,
   findRemoteArg,
+  isBearerRejection401,
   isPushCommand,
+  isReadOnlyRemoteVerb,
 } from './lib/git-as-push-auth.mjs';
 import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 import { resolveBotCredsStateDir } from './lib/resolve-bot-creds-state-dir.mjs';
@@ -243,13 +259,34 @@ async function main() {
     spawnEnv = buildReadOnlyEnv(token.token);
   }
 
+  // Whether this invocation is eligible for the 401-fallback retry.
+  // Push has its own URL-auth path baked into the primary spawn, so
+  // only the read-only verbs (fetch / pull / ls-remote; clone is
+  // explicitly excluded inside buildFetchUrlAuthArgs to prevent the
+  // PR #169 token-leak shape on the clone URL persisted into the
+  // new repo's .git/config) enter the retry branch.
+  const fetchRetryEligible = !isPushCommand(gitArgs)
+    && isReadOnlyRemoteVerb(gitArgs);
   let exitCode = 0;
+  let capturedStderr = '';
   try {
     const result = await execa('git', spawnArgs, {
       env: { ...process.env, ...spawnEnv },
-      stdio: 'inherit',
+      // Pipe stderr so we can inspect for the 401 / Bearer-rejection
+      // signature, then tee to the operator's terminal so the
+      // primary attempt's diagnostics still surface. stdout stays on
+      // inherit because callers (CI, dispatch, operator) rely on
+      // git's stdout going to their stdout verbatim.
+      stdio: fetchRetryEligible ? ['inherit', 'inherit', 'pipe'] : 'inherit',
       reject: false,
     });
+    if (fetchRetryEligible && typeof result.stderr === 'string') {
+      capturedStderr = result.stderr;
+      // Tee to the parent's stderr so the primary attempt's git
+      // output is visible to the operator / CI log just as it would
+      // be with stdio: 'inherit'.
+      if (capturedStderr.length > 0) process.stderr.write(capturedStderr);
+    }
     if (result.signal !== undefined && result.signal !== null) {
       const label = result.signalDescription ?? result.signal;
       console.error(`[git-as] git child terminated by signal ${label}`);
@@ -260,6 +297,98 @@ async function main() {
   } catch (err) {
     console.error(`[git-as] failed to spawn git: ${err?.message ?? err}`);
     exitCode = 1;
+  }
+
+  // 401 / Bearer-rejection fallback for fetch / pull / ls-remote.
+  // GitHub occasionally rejects `Authorization: Bearer <installation-token>`
+  // on upload-pack (the read-only smart-HTTP endpoint) even though
+  // the same token authenticates the REST API. When this happens,
+  // git's stderr carries an `HTTP 401` / `www-authenticate: Basic`
+  // marker; the fix is the documented installation-token form GitHub
+  // uses for push: `https://x-access-token:<token>@github.com/...`.
+  //
+  // Retry contract:
+  //   - Triggered ONLY when the primary attempt exited non-zero AND
+  //     stderr matches the isBearerRejection401 signature AND we can
+  //     build an x-access-token URL for the remote (github.com HTTPS
+  //     only; SSH / enterprise / clone fall through and exit with
+  //     the original error).
+  //   - The retry runs with buildPushEnv() (no extraHeader Bearer)
+  //     and the x-access-token URL on argv  --  same shape as push.
+  //     Mixing Bearer + Basic in one request is undefined behaviour
+  //     and tends to fail on GitHub smart-HTTP endpoints.
+  //   - On retry success the wrapper exits 0; the operator sees
+  //     `[git-as] retry succeeded via x-access-token URL`.
+  //   - On retry failure the wrapper exits with the retry's code
+  //     and surfaces both auth paths tried so the operator sees
+  //     this was not a single-path silent failure.
+  //   - The URL is passed ONCE on argv; it is NOT recorded in
+  //     `.git/config` (fetch / pull / ls-remote do not persist the
+  //     transient URL; clone is excluded above).
+  if (
+    exitCode !== 0
+    && fetchRetryEligible
+    && isBearerRejection401(capturedStderr)
+  ) {
+    // findReadOnlyRemoteArg understands the fetch/pull/ls-remote
+    // grammar; findRemoteArg is push-specific and would mis-parse
+    // here (it starts the scan at `indexOf('push') + 1 = 0` and
+    // returns the verb itself as the "remote"). Fall back to
+    // `origin` when there is no explicit positional (bare `git
+    // fetch` is filtered out earlier by buildFetchUrlAuthArgs but
+    // this guard keeps the wrapper resilient to a future grammar
+    // shift in the helper).
+    const remoteInfo = findReadOnlyRemoteArg(gitArgs);
+    const remoteName = remoteInfo?.remote ?? 'origin';
+    const remoteUrl = await resolveRemoteUrl(remoteName);
+    const urlAuthArgs = buildFetchUrlAuthArgs(gitArgs, remoteUrl, token.token);
+    if (urlAuthArgs !== null) {
+      console.error(
+        '[git-as] primary fetch path hit HTTP 401 (Bearer rejected by '
+        + 'github.com upload-pack); retrying once with x-access-token URL '
+        + '(token is in-memory only, never persisted to .git/config)',
+      );
+      try {
+        const retry = await execa('git', urlAuthArgs, {
+          env: { ...process.env, ...buildPushEnv() },
+          stdio: 'inherit',
+          reject: false,
+        });
+        if (retry.signal !== undefined && retry.signal !== null) {
+          const label = retry.signalDescription ?? retry.signal;
+          console.error(`[git-as] retry git child terminated by signal ${label}`);
+          exitCode = 1;
+        } else {
+          exitCode = typeof retry.exitCode === 'number' ? retry.exitCode : 0;
+        }
+        if (exitCode === 0) {
+          console.error('[git-as] retry succeeded via x-access-token URL');
+        } else {
+          console.error(
+            '[git-as] both auth paths failed for this fetch: '
+            + 'primary `Authorization: Bearer` returned HTTP 401, '
+            + 'retry `https://x-access-token:<token>@github.com/...` '
+            + `exited ${exitCode}. Verify the installation token has access `
+            + `to the resolved remote and that the remote URL points at github.com.`,
+          );
+        }
+      } catch (err) {
+        console.error(`[git-as] retry failed to spawn git: ${err?.message ?? err}`);
+        exitCode = 1;
+      }
+    } else {
+      // Eligible verb + 401 signature, but we cannot build a URL-form
+      // retry (clone is excluded to prevent token leak; non-github
+      // remotes are excluded because the installation token does not
+      // authenticate against them). Surface the gap so the operator
+      // sees this was an unrecoverable 401, not a wrapper bug.
+      console.error(
+        '[git-as] primary fetch path hit HTTP 401 but x-access-token URL '
+        + 'retry is not available for this invocation (clone persists the '
+        + 'URL on disk, or the remote is not https://github.com/...). '
+        + 'Exiting with the primary failure.',
+      );
+    }
   }
 
   // Post-push upstream setup. When the user passed `-u` and we routed

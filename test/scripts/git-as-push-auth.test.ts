@@ -643,10 +643,14 @@ describe('isBearerRejection401', () => {
   // across Windows + Linux git versions). We only retry with URL-auth
   // when stderr matches one of these signatures so a genuine network
   // error or a different 4xx does not trigger the silent retry path.
-  it('detects literal "401" + "Authorization" combination', () => {
+  it('detects "Authentication failed for github.com" without explicit 401 marker (helper-fallback exhausted)', () => {
+    // This is the canonical helper-disabled fallback shape: git
+    // received 401, exhausted credential.helper (disabled) and
+    // askpass (disabled), surfaced as Authentication failed for
+    // the github.com URL. Recognised via HELPER_DISABLED_GITHUB_RE.
     expect(isBearerRejection401(
       "remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/o/r.git/'",
-    )).toBe(false); // No 401 marker -> not this signature
+    )).toBe(true);
   });
 
   it('detects "HTTP 401" marker', () => {
@@ -707,6 +711,43 @@ describe('isBearerRejection401', () => {
     // github.com per GitHub App contract).
     expect(isBearerRejection401(
       "fatal: unable to access 'https://gitlab.example.com/o/r.git/': returned error: 401",
+    )).toBe(false);
+  });
+
+  it('detects indirect "could not read Username for https://github.com" (helper-disabled fallback)', () => {
+    // This is the production-visible shape: git received 401, fell
+    // through to credential.helper (we disabled it), fell through to
+    // askpass (we neutralized it), then exits with this message.
+    // Without this detection arm the wrapper sees the 401 as a
+    // generic-failure and never retries.
+    expect(isBearerRejection401(
+      "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+    )).toBe(true);
+  });
+
+  it('detects indirect "could not read Username" with embedded user portion', () => {
+    expect(isBearerRejection401(
+      "fatal: could not read Username for 'https://x-access-token@github.com': terminal prompts disabled",
+    )).toBe(true);
+  });
+
+  it('detects indirect "Authentication failed for https://github.com/..." (helper-fallback exhausted)', () => {
+    expect(isBearerRejection401(
+      "fatal: Authentication failed for 'https://github.com/o/r.git/'",
+    )).toBe(true);
+  });
+
+  it('does NOT match "could not read Username" for an enterprise host', () => {
+    // Enterprise hosts are out of scope; the github.com installation
+    // token does not authenticate against them.
+    expect(isBearerRejection401(
+      "fatal: could not read Username for 'https://git.corp.example.com': terminal prompts disabled",
+    )).toBe(false);
+  });
+
+  it('does NOT match "Authentication failed" for a non-github URL', () => {
+    expect(isBearerRejection401(
+      "fatal: Authentication failed for 'https://gitlab.example.com/o/r.git/'",
     )).toBe(false);
   });
 });

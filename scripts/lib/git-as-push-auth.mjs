@@ -323,6 +323,10 @@ export function isReadOnlyRemoteVerb(gitArgs) {
  *
  * Internal helper for buildFetchUrlAuthArgs; matches the verb
  * recognition in isReadOnlyRemoteVerb so the two stay in sync.
+ *
+ * Public form for the wrapper to look up the remote name without
+ * re-implementing the verb-skipping grammar is findReadOnlyRemoteArg
+ * below.
  */
 function findReadOnlyRemoteSlot(gitArgs) {
   if (!Array.isArray(gitArgs)) return null;
@@ -358,6 +362,24 @@ function findReadOnlyRemoteSlot(gitArgs) {
     return { verbIndex, verb, remoteIndex: j };
   }
   return null;
+}
+
+/**
+ * Public companion to findRemoteArg, scoped to the read-only remote
+ * verbs (fetch / pull / ls-remote / clone). Returns the same shape
+ * findRemoteArg returns (`{ remoteIndex, remote }`) or null when no
+ * read-only verb is present or there is no remote positional.
+ *
+ * The wrapper (scripts/git-as.mjs) uses this to look up the remote
+ * NAME so it can resolve the URL via `git remote get-url` before
+ * calling buildFetchUrlAuthArgs.
+ */
+export function findReadOnlyRemoteArg(gitArgs) {
+  const slot = findReadOnlyRemoteSlot(gitArgs);
+  if (slot === null) return null;
+  const remote = gitArgs[slot.remoteIndex];
+  if (typeof remote !== 'string') return null;
+  return { remoteIndex: slot.remoteIndex, remote };
 }
 
 /**
@@ -405,34 +427,50 @@ export function buildFetchUrlAuthArgs(gitArgs, resolvedRemoteUrl, token) {
 }
 
 /**
- * Detect git's 401 / Bearer-rejection stderr signature so the
- * wrapper knows whether to retry with x-access-token URL auth.
+ * Detect git's stderr signature for "Bearer auth was rejected by
+ * github.com" so the wrapper knows whether to retry with x-access-
+ * token URL auth.
  *
  * Why this is a separate helper
  * -----------------------------
  * GitHub's smart-HTTP receive-pack and upload-pack endpoints
  * reject `Authorization: Bearer <token>` with HTTP 401 plus a
  * `www-authenticate: Basic realm="GitHub"` challenge. Git surfaces
- * this to stderr in one of several shapes depending on git version
- * and platform:
+ * this to stderr in one of several shapes depending on whether
+ * GIT_TRACE / GIT_CURL_VERBOSE are set and which fallback path
+ * git tried after the 401:
  *
- *   - `fatal: unable to access ...: The requested URL returned error: 401`
- *   - `remote: error: 401 ...`
- *   - `fatal: unable to access ... www-authenticate: Basic realm="GitHub"`
+ *   Direct 401 shapes (visible without GIT_TRACE on some git
+ *   versions, always visible with GIT_CURL_VERBOSE=1):
+ *     - `fatal: unable to access ...: The requested URL returned error: 401`
+ *     - `remote: error: 401 ...`
+ *     - `fatal: unable to access ... www-authenticate: Basic realm="GitHub"`
  *
- * We only retry on a confirmed 401 against a github.com URL. A 403,
- * 404, network timeout, or 401 against an enterprise host are NOT
- * Bearer-rejections  --  retrying them with the x-access-token form
- * would just fail again with a different (or identical) error, and
- * for enterprise hosts could leak our github.com installation token
- * to a host that should never see it.
+ *   Indirect shapes (silent 401, git falls through to credential
+ *   helper which we've disabled, then to askpass which we've
+ *   neutralized, and finally surfaces as the helper-fallback
+ *   failure):
+ *     - `fatal: could not read Username for 'https://github.com':
+ *        terminal prompts disabled`
+ *     - `fatal: Authentication failed for 'https://github.com/...'`
  *
- * The detector is intentionally narrow:
- *   - matches "401" only when combined with a github.com URL or an
- *     "Authorization" / "Authentication" / www-authenticate marker.
- *   - case-insensitive on the auth-keyword (real reproductions
+ * The indirect shape is what production usually sees: the wrapper
+ * already disables credential.helper and askpass to prevent the
+ * 30s helper-stall on Cursor-managed Windows hosts, which means a
+ * 401 that would otherwise prompt the operator surfaces as the
+ * helper-disabled error instead. Either shape is the same signal
+ * "the primary Bearer path failed against github.com auth".
+ *
+ * Scope
+ * -----
+ *   - Only matches signals scoped to github.com. A 401 against an
+ *     enterprise host is real; retrying with our github.com
+ *     installation token would (a) fail anyway and (b) ship the
+ *     token to a host outside its grant scope.
+ *   - A 403, 404, or network timeout is NOT a Bearer rejection;
+ *     the retry would fail identically and waste a request budget.
+ *   - Case-insensitive on the auth-keyword (real reproductions
  *     have mixed cases depending on git's transport layer).
- *   - explicit reject on non-github 401s.
  */
 const BEARER_401_HINTS = [
   /\bHTTP\s*\/?\d*\.?\d*\s+401\b/i,
@@ -444,10 +482,24 @@ const BEARER_401_HINTS = [
 
 const AUTH_KEYWORD_RE = /\b(?:Authentication|Authorization|www-authenticate)\b/i;
 
+// Indirect helper-disabled signature: git falls through to the
+// credential helper after a 401, the helper is disabled, askpass is
+// neutralized, and git surfaces the failure as "could not read
+// Username" or "Authentication failed". Scoped to a github.com URL
+// in the message so an enterprise-host equivalent does not trigger
+// the github.com retry path.
+const HELPER_DISABLED_GITHUB_RE = /(?:could\s+not\s+read\s+(?:Username|Password)\s+for\s+'https?:\/\/(?:[^'@]+@)?github\.com|Authentication\s+failed\s+for\s+'https?:\/\/(?:[^'@]+@)?github\.com)/i;
+
 const NON_GITHUB_HOST_RE = /\bhttps?:\/\/(?!github\.com\b)[A-Za-z0-9.-]+/i;
 
 export function isBearerRejection401(stderrText) {
   if (typeof stderrText !== 'string' || stderrText.length === 0) return false;
+  // Indirect helper-disabled signature is unambiguous on its own
+  // because the URL pattern in the regex is anchored to github.com.
+  // Check it BEFORE the non-github reject so an unrelated mention
+  // of an enterprise URL elsewhere in the stderr does not gate the
+  // genuine github.com auth failure out.
+  if (HELPER_DISABLED_GITHUB_RE.test(stderrText)) return true;
   // Reject 401s from non-github hosts. The token is a GitHub App
   // installation token; retrying an enterprise-host fetch with the
   // x-access-token form would (a) fail anyway and (b) ship the
