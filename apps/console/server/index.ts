@@ -105,7 +105,6 @@ import {
 } from './conversation-assembler';
 import type {
   ConversationDeliberationResult,
-  ConversationExpandBlobResult,
   ConversationPipelineResult,
   ConversationSourceAtom,
 } from './conversation-types';
@@ -2703,22 +2702,6 @@ async function handleDeliberationConversation(
 }
 
 /**
- * /api/conversation.expand-blob handler. v1 returns 404 for every
- * BlobRef because no agent-turn atom on disk carries one today; the
- * endpoint exists so a future BlobStore implementation drops in
- * without a wire-shape change. The Console renderer shows the
- * truncated inline preview + a disabled "Show more" until this
- * endpoint resolves.
- */
-async function handleConversationExpandBlob(
-  blobRef: string,
-): Promise<ConversationExpandBlobResult | null> {
-  // Reference the import so a future BlobStore impl drops in cleanly.
-  void blobRef;
-  return null;
-}
-
-/**
  * /api/pipeline.intent-outcome handler. Synthesizes the pipeline +
  * post-dispatch chain into a single intent-outcome state-pill +
  * summary so the operator can read "did this intent ship?" at the
@@ -4531,26 +4514,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'deliberations-conversation-failed', (err as Error).message);
-    }
-    return;
-  }
-
-  if (path === '/api/conversation.expand-blob' && req.method === 'POST') {
-    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
-    const blobRef = typeof body['blob_ref'] === 'string' ? (body['blob_ref'] as string) : '';
-    if (!blobRef) {
-      sendErr(req, res, 400, 'missing-blob-ref', 'conversation.expand-blob requires { blob_ref: string }');
-      return;
-    }
-    try {
-      const data = await handleConversationExpandBlob(blobRef);
-      if (data === null) {
-        sendErr(req, res, 404, 'blob-not-found', `no blob with ref ${blobRef}`);
-        return;
-      }
-      sendOk(req, res, data);
-    } catch (err) {
-      sendErr(req, res, 500, 'conversation-expand-blob-failed', (err as Error).message);
     }
     return;
   }

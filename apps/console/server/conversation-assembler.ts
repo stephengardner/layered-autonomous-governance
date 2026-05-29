@@ -37,10 +37,9 @@ import { readObject, readString } from './projection-helpers.js';
  * Hard cap on the size of an inline-content body sent over the wire.
  * Long llm_input prompts or large stage-output payloads are truncated
  * to this length and the `content_truncated` flag is set; the renderer
- * surfaces a "Show more" affordance that calls
- * /api/conversation.expand-blob for the full payload (BlobStore seam;
- * v1 has no atoms with a BlobRef on disk, so the endpoint returns 404
- * for now).
+ * surfaces a "Show more" affordance that opens the full atom in the
+ * existing detail viewer (no separate blob-expansion endpoint in v1
+ * per canon `arch-atomstore-source-of-truth`).
  *
  * 4000 chars covers >95% of llm_input previews observed in the wild
  * without ballooning the response on a long-running pipeline with
@@ -105,13 +104,11 @@ function bodyFromInline(raw: string): ConversationContentBody {
     return {
       content: raw,
       content_truncated: false,
-      blob_ref: null,
     };
   }
   return {
     content: raw.slice(0, MAX_INLINE_CONTENT_CHARS),
     content_truncated: true,
-    blob_ref: null,
   };
 }
 

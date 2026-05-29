@@ -67,24 +67,17 @@ export type ConversationDispatchOutcome =
 /**
  * Body-payload truncation envelope. The assembler caps inline bodies
  * at MAX_INLINE_CONTENT_CHARS so the wire response stays bounded; when
- * truncation fires, `content_truncated` is true and the client may
- * call /api/conversation.expand-blob to fetch the full body. v1 does
- * not exercise a BlobStore implementation; the seam is preserved per
- * canon `arch-host-interface-boundary` so a future host can drop in a
- * BlobRef-backed expander without a new endpoint.
+ * truncation fires, `content_truncated` is true and the renderer
+ * surfaces a "Show more" affordance that opens the full atom in the
+ * existing detail viewer (no separate blob-expansion endpoint in v1
+ * per canon `arch-atomstore-source-of-truth`: the atoms ARE the
+ * source of truth; the detail viewer already renders the full body).
  */
 export interface ConversationContentBody {
   /** The truncated-or-full inline content, ready to render. */
   readonly content: string;
   /** True when the substrate inline content exceeded the cap. */
   readonly content_truncated: boolean;
-  /**
-   * Substrate-side BlobRef for the full payload when it exists.
-   * v1 will be null for every atom because no agent-turn on disk
-   * carries a BlobRef today; the field is reserved so a future
-   * BlobStore impl populates it without a wire-shape change.
-   */
-  readonly blob_ref: string | null;
 }
 
 /**
@@ -297,12 +290,3 @@ export interface ConversationDeliberationResult {
   readonly computed_at: string;
 }
 
-/**
- * Result envelope for POST /api/conversation.expand-blob. v1 ships a
- * null-implementation: every call returns 404 because no agent-turn
- * atom in the store carries a BlobRef today. The endpoint exists so a
- * future BlobStore impl drops in without a wire-shape change.
- */
-export interface ConversationExpandBlobResult {
-  readonly content: string;
-}
