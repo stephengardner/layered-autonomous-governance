@@ -64,14 +64,19 @@
  *
  * Token exposure trade-off
  * ------------------------
- * The READ-ONLY path keeps the token in env (GIT_CONFIG_VALUE_0);
- * argv never carries it. The PUSH path, per the x-access-token
- * contract, embeds the token in a URL that IS passed on argv to the
- * git child - visible in `ps` for same-user processes during the
- * seconds the push runs. The exposure is scoped narrowly: only the
- * push spawn sees it, the outer shell's argv still does not, the
- * transient URL is never written to disk or to the persistent remote
- * config. Alternatives considered and rejected:
+ * The READ-ONLY primary path keeps the token in env (GIT_CONFIG_VALUE_0);
+ * argv never carries it. The PUSH path AND the read-only 401-fallback
+ * retry, per the x-access-token contract, embed the token in a URL
+ * that IS passed on argv to the git child - visible in `ps` for
+ * same-user processes during the seconds the push / retry runs. The
+ * exposure is scoped narrowly: only the URL-form spawn sees it, the
+ * outer shell's argv still does not, the transient URL is never
+ * written to disk or to the persistent remote config (push strips
+ * `-u` to avoid the branch.<name>.remote leak shape; fetch / pull /
+ * ls-remote do not persist URL-form invocations, and clone is
+ * intentionally excluded from the retry because it would persist
+ * the URL into the cloned repo's .git/config). Alternatives
+ * considered and rejected:
  *
  *   - Persistently rewrite the origin URL, push, then restore: widens
  *     the on-disk exposure window and breaks `git remote -v`
