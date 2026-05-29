@@ -76,7 +76,22 @@ export function ConversationThreadView(props: ConversationThreadViewProps) {
       ? ['conversation', 'pipeline', scope.pipeline_id]
       : ['conversation', 'plan', scope.plan_id],
     queryFn: ({ signal }) => getConversation(scope, signal),
-    refetchInterval: 10_000,
+    // Stop polling once the conversation reaches a terminal state.
+    // A 'dispatch-result' event is the canonical terminal marker per
+    // canon `dec-true-outcome-bucket`: the dispatcher has shipped its
+    // outcome (pr-opened / failed / silent-skip / no-op / empty-diff)
+    // and no new conversation events will land. Keeping the 10s poll
+    // forever on a pinned terminal view (a long-running operator
+    // session with several tabs open) wastes backend cycles and
+    // sustains needless re-render churn. The pipeline detail surface
+    // already uses the same pattern (SSE_FALLBACK_POLL_MS gated by
+    // pipeline_state). Pre-terminal conversations stay on the 10s
+    // cadence so an active stage transition lights up within seconds.
+    refetchInterval: (queryState) => {
+      const events = queryState.state.data?.events ?? [];
+      const settled = events.some((event) => event.kind === 'dispatch-result');
+      return settled ? false : 10_000;
+    },
     refetchOnWindowFocus: true,
     retry: (failureCount, error) => {
       // 404 pipeline-not-found is informative: the substrate may not

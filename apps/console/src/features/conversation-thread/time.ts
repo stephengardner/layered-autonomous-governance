@@ -24,7 +24,15 @@ export function formatRelative(iso: string): string {
   if (!Number.isFinite(ts)) return iso;
   const ageSec = Math.max(0, Math.round((Date.now() - ts) / 1000));
   if (ageSec < 60) return `${ageSec}s ago`;
-  if (ageSec < 3600) return `${Math.round(ageSec / 60)}m ago`;
-  if (ageSec < 86_400) return `${(ageSec / 3600).toFixed(1)}h ago`;
+  // Floor within each bucket so a boundary-adjacent value cannot
+  // overflow into the next bucket's range (e.g. ageSec = 3599 with
+  // Math.round would render '60m ago' instead of crossing into the
+  // 1.0h-ago bucket). The bucket-cap check (`< 3600`) already gates
+  // the input; floor keeps the rendered label within the bucket.
+  if (ageSec < 3600) return `${Math.floor(ageSec / 60)}m ago`;
+  if (ageSec < 86_400) {
+    const hours = Math.floor((ageSec / 3600) * 10) / 10;
+    return `${hours.toFixed(1)}h ago`;
+  }
   return new Date(ts).toLocaleString();
 }
