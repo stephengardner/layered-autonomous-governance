@@ -625,7 +625,6 @@ test.describe('conversation thread', () => {
   test('SSE atom-change event invalidates the conversation query', async ({ page }) => {
     await mockBaseRoutes(page);
     let conversationFetchCount = 0;
-    let resolveStreamRoute: (() => void) | null = null;
     await page.route('**/api/pipelines.conversation', async (route) => {
       conversationFetchCount += 1;
       await route.fulfill({
@@ -636,10 +635,13 @@ test.describe('conversation thread', () => {
     });
     /*
      * Override the SSE stub from mockBaseRoutes with a real
-     * text/event-stream body that emits an atom-change event AFTER a
-     * short delay so the initial conversation fetch lands first. The
-     * route handler holds the connection open until the test calls
-     * `resolveStreamRoute()`, mirroring real SSE semantics.
+     * text/event-stream body that carries an atom-change event. The
+     * response is a finite buffer fulfilled on connect, not a long-
+     * lived stream: route.fulfill writes the body and closes the
+     * underlying socket. EventSource on the page side reconnects on
+     * close, so each connect re-delivers the atom-change frame, which
+     * is sufficient for this assertion (any single delivered event
+     * fires the invalidate path the test counts).
      */
     await page.unroute('**/api/events/pipeline.*');
     await page.route('**/api/events/pipeline.*', async (route) => {
@@ -655,7 +657,6 @@ test.describe('conversation thread', () => {
           + 'event: atom-change\n'
           + `data: ${JSON.stringify({ pipeline_id: FIXTURE_PIPELINE_ID, atom_id: 'agent-turn-fresh', kind: 'atom.created', at: '2026-05-21T10:00:30.000Z' })}\n\n`,
       });
-      void resolveStreamRoute;
     });
     await page.goto(`/pipelines/${encodeURIComponent(FIXTURE_PIPELINE_ID)}/conversation`);
     await expect(page.getByTestId('conversation-thread-view')).toBeVisible({ timeout: 10_000 });
