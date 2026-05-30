@@ -569,10 +569,15 @@ function projectAtom(
     }
   }
 
-  // Suppress the unused-context warning by referencing it; later
-  // additions (e.g. pipeline_id reconciliation per atom) reach for
-  // ctx.pipelineIds.
-  void ctx;
+  /*
+   * ctx.pipelineIds is reserved for future per-atom pipeline_id
+   * reconciliation (no consumer yet). stageOutputTypes +
+   * dispatchObservationKinds are read from ctx inside the switch
+   * branches above; the parameter no longer needs a void-suppression.
+   * Closes the PR #486 nitpick: the void ctx workaround was stale
+   * once stageOutputTypes + dispatchObservationKinds replaced the
+   * hardcoded constants.
+   */
   return events;
 }
 
