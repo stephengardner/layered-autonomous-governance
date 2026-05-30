@@ -134,23 +134,36 @@ Each route has at least one passing e2e spec (verified by spec name list in test
 - New since PR #484: multi-tool-call key-uniqueness check, SSE atom-change invalidation
 - Mobile no-horizontal-scroll verified at iPhone 13 viewport (390x844)
 
-## Console e2e: known infrastructure gap
+## Console e2e: infrastructure gap (Phase 1 shipped 2026-05-30)
 
-The Playwright e2e suite is NOT in CI per `console-ci.yml`:
+Prior state: CI ran unit tests + typecheck + build + lint only; Playwright e2e was local-only. The operator-stated "everything green at all phases" north-star required closing this gap.
 
-```yaml
-# Playwright e2e deferred to follow-up: the tests depend on a .lag/
-# atoms directory populated with fixture JSON. Running e2e in CI
-# requires committing a stable test fixture and pointing
-# LAG_CONSOLE_LAG_DIR at it. Tracked separately so this workflow
-# can land and start providing typecheck+build signal immediately.
-```
+### Phase 1 ship (2026-05-30 follow-up)
 
-CI runs unit tests + typecheck + build + lint only. Playwright e2e tests are local-only. This is a substantial gap for the operator-stated "everything green at all phases" north-star and is the single highest-leverage follow-up. Recommended next ship:
+A first cut lands the e2e infrastructure in CI with a curated 13-spec set that is deterministic against an empty atom store. The new `e2e-stubbed` job in `console-ci.yml`:
 
-1. Commit a stable e2e atom fixture under `tests/e2e/fixtures/.lag/atoms/*.json` with at least one atom of each canonical type (pipeline, plan, intent, agent-turn, agent-session, stage-event, audit-finding, observation, actor-message).
-2. Point `LAG_CONSOLE_LAG_DIR` at that fixture dir in `console-ci.yml`.
-3. Add a CI job that runs `npm run e2e` (or just the chromium project to keep CI runtime bounded).
-4. Migrate the 5-10 seed-file-race specs (activities-reaped-toggle, canon-suggestions, end-to-end-intent-to-merge) to read from the committed fixture instead of writing fresh seed files.
+1. Boots the dev server against an empty `$RUNNER_TEMP/lag-ci/` directory.
+2. Installs Playwright chromium only (no firefox/webkit, no mobile project) to keep CI runtime under three minutes.
+3. Runs the 13 specs whose backend calls are fully stubbed via `page.route` AND whose navigation entry does not require pre-existing atoms:
+   - conversation-thread, pipeline-resume, pipeline-observability, pipeline-abandon
+   - live-ops-status-badge, control-panel, resume-audit, file-intent
+   - system-health, pipeline-deliberation-thread, pipeline-error-state
+   - deliberation-surface, audit-chain
+4. Uploads the Playwright HTML report + test-results traces on failure for one-click triage.
 
-This is out of scope for the conversation-thread-focused work in this audit but is the single biggest leverage move for raising e2e reliability.
+Verified locally 2026-05-30: 78 tests passed, 15 properly `test.skip`-ped (empty-store gates), 0 failures across the 13 specs against an empty LAG dir on ports 9094 + 9095.
+
+### Phase 2 follow-up (not yet shipped)
+
+Specs intentionally excluded from Phase 1 because they require real atom or principal data:
+
+| Spec | Blocker |
+|---|---|
+| hover-card-loading | requires canon-card on /canon (real L3 atoms) |
+| error-states | navigates to /principals/cto-actor before stubbing |
+| inline-error-sub-blocks | same /principals dependency |
+| Other 44 specs | various: live-ops, plans, principals, pipelines listing endpoints |
+
+The follow-up commits a canonical fixture set under `apps/console/tests/e2e/fixtures/.lag/atoms/*.json` with at least one atom of each canonical type, points `LAG_CONSOLE_LAG_DIR` at it in CI, and expands the run set. The 5-10 seed-file-race specs (activities-reaped-toggle, canon-suggestions, end-to-end-intent-to-merge) read from the committed fixture instead of writing fresh seed files.
+
+This is out of scope for the conversation-thread-focused work in this audit but is the next leverage move after Phase 1 stabilizes.
