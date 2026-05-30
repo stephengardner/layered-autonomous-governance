@@ -173,15 +173,17 @@
 .select {
   width: 100%;
   /*
-   * Pad the floor by 1px on top of the canon 44px tap-target minimum.
-   * WebKit/iPhone 13 emulation occasionally sub-pixel-rounds a `<select>`
-   * rendered at exactly the touch-target-min down to 43.99993...px under
-   * test contention (observed in the 2026-05-30 e2e baseline). The 1px
-   * cushion absorbs the rounding without violating the canon floor;
-   * users see a 45px-tall control on the affected sub-pixel devices and
-   * a 45px-tall control elsewhere, both at-or-above the 44px floor.
+   * Pad the floor by --space-px (2px) on top of the canon 44px tap-target
+   * minimum. WebKit/iPhone 13 emulation occasionally sub-pixel-rounds a
+   * `<select>` rendered at exactly the touch-target-min down to
+   * 43.99993...px under test contention (observed in the 2026-05-30 e2e
+   * baseline). The cushion absorbs the rounding without violating the
+   * canon floor; users see a 46px-tall control on the affected sub-
+   * pixel devices and the same height elsewhere, both at-or-above
+   * the 44px floor. Tokenized per apps/console CLAUDE.md rule "No
+   * hardcoded px or hex outside src/tokens/tokens.css".
    */
-  min-height: calc(var(--size-touch-target-min) + 1px);
+  min-height: calc(var(--size-touch-target-min) + var(--space-px));
   padding: var(--space-2) var(--space-3);
   /*
    * Reserve space on the right for the custom chevron so the native
