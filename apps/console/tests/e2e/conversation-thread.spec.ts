@@ -231,6 +231,20 @@ function buildPipelineDetailFixture() {
 
 
 async function mockBaseRoutes(page: Page): Promise<void> {
+  /*
+   * The new useConversationStream hook subscribes to the substrate's
+   * pipeline SSE stream at /api/events/pipeline.<id>. Stub this with
+   * an empty 200 so existing specs that focus on the static-data
+   * rendering paths do not produce stray network noise. SSE-specific
+   * specs override this route with a real text/event-stream body.
+   */
+  await page.route('**/api/events/pipeline.*', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: 'event: open\ndata: {}\n\n',
+    });
+  });
   await page.route('**/api/pipelines.detail', async (route) => {
     await route.fulfill({
       status: 200,
@@ -598,6 +612,62 @@ test.describe('conversation thread', () => {
     // when a pipeline was resolved.
     await expect(page.getByTestId('conversation-thread-plan-id')).toBeVisible();
     await expect(page.getByTestId('conversation-thread-pipeline-id')).toBeVisible();
+  });
+
+  /*
+   * Live updates via SSE. The useConversationStream hook subscribes
+   * to the substrate's pipeline SSE channel and invalidates the
+   * conversation query on each atom-change event. This spec mocks
+   * both endpoints, lets the initial fetch land, fires a synthetic
+   * atom-change event, and verifies the conversation endpoint is
+   * called a SECOND time (proving the invalidation path is wired).
+   */
+  test('SSE atom-change event invalidates the conversation query', async ({ page }) => {
+    await mockBaseRoutes(page);
+    let conversationFetchCount = 0;
+    let resolveStreamRoute: (() => void) | null = null;
+    await page.route('**/api/pipelines.conversation', async (route) => {
+      conversationFetchCount += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, data: buildPipelineConversationFixture() }),
+      });
+    });
+    /*
+     * Override the SSE stub from mockBaseRoutes with a real
+     * text/event-stream body that emits an atom-change event AFTER a
+     * short delay so the initial conversation fetch lands first. The
+     * route handler holds the connection open until the test calls
+     * `resolveStreamRoute()`, mirroring real SSE semantics.
+     */
+    await page.unroute('**/api/events/pipeline.*');
+    await page.route('**/api/events/pipeline.*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        headers: {
+          'cache-control': 'no-cache',
+          connection: 'keep-alive',
+        },
+        body:
+          'event: open\ndata: {}\n\n'
+          + 'event: atom-change\n'
+          + `data: ${JSON.stringify({ pipeline_id: FIXTURE_PIPELINE_ID, atom_id: 'agent-turn-fresh', kind: 'atom.created', at: '2026-05-21T10:00:30.000Z' })}\n\n`,
+      });
+      void resolveStreamRoute;
+    });
+    await page.goto(`/pipelines/${encodeURIComponent(FIXTURE_PIPELINE_ID)}/conversation`);
+    await expect(page.getByTestId('conversation-thread-view')).toBeVisible({ timeout: 10_000 });
+
+    // Wait long enough for the SSE event to land + the invalidate to
+    // fire its re-fetch. The 10s polling fallback also fires every
+    // 10s; we constrain to <8s so the assertion measures the SSE
+    // path, not the poll fallback.
+    await expect.poll(
+      () => conversationFetchCount,
+      { timeout: 8_000, intervals: [200, 500, 1000] },
+    ).toBeGreaterThanOrEqual(2);
   });
 
   test('no horizontal scroll at the running viewport', async ({ page, viewport }) => {
