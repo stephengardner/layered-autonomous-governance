@@ -23,6 +23,7 @@
  * atom types. The view is a projection.
  */
 import type {
+  ConversationAssembleOptions,
   ConversationContentBody,
   ConversationDeliberationResult,
   ConversationDispatchOutcome,
@@ -59,12 +60,15 @@ export const MAX_INLINE_CONTENT_CHARS = 4000;
 export const MAX_CONVERSATION_EVENTS = 500;
 
 /**
- * Stage-output atom types this projection knows about. The order
- * mirrors the substrate-deep default 5-stage composition per canon
- * `dev-deep-planning-pipeline`. Add a new stage by appending here
- * AND by registering the stage in canon `dev-default-pipeline-stages`.
+ * Default stage-output atom types this projection knows about. The
+ * order mirrors the substrate-deep default 5-stage composition per
+ * canon `dev-deep-planning-pipeline`. Exported so a deployment with a
+ * different pipeline shape can copy + extend rather than re-derive.
+ * Inject an alternative set via `ConversationAssembleOptions` rather
+ * than patching this constant. Mutating this Set would be a foot-gun;
+ * the wrapper exposes it as a ReadonlySet.
  */
-const STAGE_OUTPUT_TYPES: ReadonlySet<string> = new Set([
+export const DEFAULT_STAGE_OUTPUT_TYPES: ReadonlySet<string> = new Set([
   'brainstorm-output',
   'spec-output',
   'plan-output',
@@ -73,15 +77,31 @@ const STAGE_OUTPUT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Atom types that resolve to dispatch-result events. The substrate
- * writes `code-author-invoked` observation atoms (type='observation',
- * metadata.kind='code-author-invoked'); this projection also accepts
- * the direct 'code-author-invoked' type if a future substrate revision
- * narrows the schema.
+ * Default observation-kind values that resolve to dispatch-result
+ * events. The substrate writes `code-author-invoked` observation atoms
+ * (type='observation', metadata.kind='code-author-invoked'). Per CR
+ * feedback on PR #483, this is injectable via
+ * `ConversationAssembleOptions` so an org with a different dispatcher
+ * vocabulary can decode without patching the projection.
  */
-const DISPATCH_OBSERVATION_KINDS: ReadonlySet<string> = new Set([
+export const DEFAULT_DISPATCH_OBSERVATION_KINDS: ReadonlySet<string> = new Set([
   'code-author-invoked',
 ]);
+
+/**
+ * Resolve the assembler's effective options by merging caller-supplied
+ * sets with the canonical defaults. Returns a plain object with the
+ * defaulted sets so the projection switch can read them directly.
+ */
+function resolveOptions(
+  options: ConversationAssembleOptions | undefined,
+): { stageOutputTypes: ReadonlySet<string>; dispatchObservationKinds: ReadonlySet<string> } {
+  return {
+    stageOutputTypes: options?.stageOutputTypes ?? DEFAULT_STAGE_OUTPUT_TYPES,
+    dispatchObservationKinds:
+      options?.dispatchObservationKinds ?? DEFAULT_DISPATCH_OBSERVATION_KINDS,
+  };
+}
 
 /**
  * Live-atom filter mirroring sibling projections. A tainted or
@@ -291,7 +311,11 @@ function mapDispatchResult(
  */
 function projectAtom(
   atom: ConversationSourceAtom,
-  ctx: { pipelineIds: ReadonlySet<string> },
+  ctx: {
+    pipelineIds: ReadonlySet<string>;
+    stageOutputTypes: ReadonlySet<string>;
+    dispatchObservationKinds: ReadonlySet<string>;
+  },
 ): ReadonlyArray<ConversationEvent> {
   const meta = (atom.metadata ?? {}) as Record<string, unknown>;
   const events: ConversationEvent[] = [];
@@ -387,9 +411,20 @@ function projectAtom(
           const resultStr = resultStrFull.length > MAX_INLINE_CONTENT_CHARS
             ? resultStrFull.slice(0, MAX_INLINE_CONTENT_CHARS)
             : resultStrFull;
+          /*
+           * atom_id stays bound to the source atom so the renderer's
+           * truncation contract holds: a "Show more" click can deep-
+           * link to /atom/<atom_id> and see the full unbounded body.
+           * Per-row uniqueness (one agent-turn fans out into N
+           * tool-call events sharing the same atom) is carried by the
+           * separate `tool_call_index` field. CR feedback on PR #483
+           * called this out as a Major; the symptom was a 404 when
+           * the operator clicked through on a truncated tool result.
+           */
           events.push({
             kind: 'tool-call',
-            atom_id: `${atom.id}:tool-${callIndex}`,
+            atom_id: atom.id,
+            tool_call_index: callIndex,
             ts: atom.created_at,
             principal_id: atom.principal_id,
             ...(stage ? { stage } : {}),
@@ -490,9 +525,12 @@ function projectAtom(
     }
 
     case 'observation': {
-      // Dispatch result via metadata.kind='code-author-invoked'.
+      // Dispatch result via metadata.kind='code-author-invoked' (the
+      // substrate default). The set is injectable via
+      // ConversationAssembleOptions so an org with a different
+      // dispatcher kind decodes the projection identically.
       const kind = readString(meta, 'kind');
-      if (!kind || !DISPATCH_OBSERVATION_KINDS.has(kind)) break;
+      if (!kind || !ctx.dispatchObservationKinds.has(kind)) break;
       const executorResult = readObject(meta, 'executor_result');
       const prUrl = executorResult ? readString(executorResult, 'pr_url') : null;
       const outcome = mapDispatchResult(executorResult, prUrl);
@@ -510,9 +548,11 @@ function projectAtom(
 
     default: {
       // Stage outputs share a common shape: type matches a known
-      // STAGE_OUTPUT_TYPES entry, metadata carries stage_name +
-      // pipeline_id, content carries the full payload.
-      if (STAGE_OUTPUT_TYPES.has(atom.type)) {
+      // stage-output entry, metadata carries stage_name + pipeline_id,
+      // content carries the full payload. The set is injectable via
+      // ConversationAssembleOptions for org-ceiling deployments per
+      // canon dev-substrate-not-prescription.
+      if (ctx.stageOutputTypes.has(atom.type)) {
         const stage = readString(meta, 'stage_name');
         if (!stage) break;
         events.push({
@@ -529,10 +569,15 @@ function projectAtom(
     }
   }
 
-  // Suppress the unused-context warning by referencing it; later
-  // additions (e.g. pipeline_id reconciliation per atom) reach for
-  // ctx.pipelineIds.
-  void ctx;
+  /*
+   * ctx.pipelineIds is reserved for future per-atom pipeline_id
+   * reconciliation (no consumer yet). stageOutputTypes +
+   * dispatchObservationKinds are read from ctx inside the switch
+   * branches above; the parameter no longer needs a void-suppression.
+   * Closes the PR #486 nitpick: the void ctx workaround was stale
+   * once stageOutputTypes + dispatchObservationKinds replaced the
+   * hardcoded constants.
+   */
   return events;
 }
 
@@ -590,6 +635,7 @@ export function assembleConversationForPipeline(
   atoms: ReadonlyArray<ConversationSourceAtom>,
   pipelineId: string,
   now: number,
+  options?: ConversationAssembleOptions,
 ): ConversationPipelineResult | null {
   const liveAtoms = atoms.filter(isCleanLive);
   const pipelineAtom = liveAtoms.find(
@@ -602,20 +648,26 @@ export function assembleConversationForPipeline(
   }
   const intentId = resolveIntentIdForPipeline(pipelineAtom, byId);
   const pipelineIds = new Set<string>([pipelineId]);
+  const opts = resolveOptions(options);
+  const ctx = {
+    pipelineIds,
+    stageOutputTypes: opts.stageOutputTypes,
+    dispatchObservationKinds: opts.dispatchObservationKinds,
+  } as const;
   // operator-intent for the pipeline is "tied" by the pipeline itself
   // pointing at it via derived_from; include the intent in the
   // selection so it shows as the first row.
   const intentAtom = intentId ? byId.get(intentId) : null;
   const collected: ConversationEvent[] = [];
   if (intentAtom) {
-    for (const ev of projectAtom(intentAtom, { pipelineIds })) collected.push(ev);
+    for (const ev of projectAtom(intentAtom, ctx)) collected.push(ev);
   }
   for (const atom of liveAtoms) {
     if (atom === pipelineAtom) continue;
     if (intentAtom && atom === intentAtom) continue;
     const tiedPipelineId = resolvePipelineId(atom, pipelineIds);
     if (!tiedPipelineId) continue;
-    for (const ev of projectAtom(atom, { pipelineIds })) collected.push(ev);
+    for (const ev of projectAtom(atom, ctx)) collected.push(ev);
   }
   const sorted = sortEvents(collected);
   // Pin the operator-intent row and keep the most-recent tail of
@@ -705,6 +757,7 @@ export function assembleConversationForPlan(
   atoms: ReadonlyArray<ConversationSourceAtom>,
   planId: string,
   now: number,
+  options?: ConversationAssembleOptions,
 ): ConversationDeliberationResult | null {
   const liveAtoms = atoms.filter(isCleanLive);
   const planAtom = liveAtoms.find(
@@ -724,7 +777,7 @@ export function assembleConversationForPlan(
   // shipping that to the renderer would let it deep-link to a 404.
   let resolvedPipelineId: string | null = null;
   if (pipelineIdCandidate) {
-    const pipelineResult = assembleConversationForPipeline(liveAtoms, pipelineIdCandidate, now);
+    const pipelineResult = assembleConversationForPipeline(liveAtoms, pipelineIdCandidate, now, options);
     if (pipelineResult) {
       events = pipelineResult.events;
       resolvedPipelineId = pipelineIdCandidate;

@@ -22,6 +22,7 @@ import {
 } from '@/services/conversation.service';
 import { ConversationEvent } from './ConversationEvent';
 import { HandoffDivider } from './HandoffDivider';
+import { useConversationStream } from './useConversationStream';
 import styles from './ConversationThreadView.module.css';
 
 /**
@@ -107,6 +108,28 @@ export function ConversationThreadView(props: ConversationThreadViewProps) {
   const focusId = 'pipeline_id' in props ? props.pipeline_id : props.plan_id;
   const focusLabel = 'pipeline_id' in props ? 'Pipeline conversation' : 'Plan conversation';
   const backRoute = 'pipeline_id' in props ? 'pipelines' : 'deliberation';
+
+  /*
+   * Live updates via the substrate's pipeline SSE stream. For pipeline
+   * scope, the id is the prop directly. For plan scope, the linked
+   * pipeline_id resolves from the conversation envelope's
+   * `pipeline_id` field (null until the first successful fetch, or
+   * when the plan is not yet tied to a pipeline). The hook safely
+   * no-ops on null; the 10s polling fallback in useQuery (above) is
+   * the safety net until SSE engages.
+   *
+   * Subscribing inline (not behind a feature flag): the pipeline
+   * detail surface already opens the same EventSource via
+   * usePipelineStream; the transport seam de-dupes connections per
+   * pipeline-id so this hook does not double-open. On a long-running
+   * conversation, the operator sees new agent-turns / handoffs land
+   * within a frame instead of waiting 10s for the next poll.
+   */
+  const livePipelineId = 'pipeline_id' in props
+    ? props.pipeline_id
+    : (query.data && 'pipeline_id' in query.data ? query.data.pipeline_id : null);
+  const livePlanId = 'plan_id' in props ? props.plan_id : null;
+  useConversationStream(livePipelineId, livePlanId);
 
   return (
     <section
@@ -324,8 +347,19 @@ function renderThread(events: ReadonlyArray<ConversationEventType>) {
       }
     }
 
+    /*
+     * Key uniqueness: tool-call events are projected as N events from
+     * a single agent-turn atom, all sharing the same `atom_id` to keep
+     * the truncation "Show more" deep-link bound to the real source
+     * atom (per the wire shape's atom_id contract). The renderer
+     * disambiguates with `tool_call_index` so React's reconciler has a
+     * stable, unique key per row.
+     */
+    const rowKey = ev.kind === 'tool-call'
+      ? `${ev.atom_id}:tool-${ev.tool_call_index}`
+      : ev.atom_id;
     out.push(
-      <Fragment key={ev.atom_id}>
+      <Fragment key={rowKey}>
         {divider}
         <ConversationEvent event={ev} isLast={isLast} index={i} />
       </Fragment>,
