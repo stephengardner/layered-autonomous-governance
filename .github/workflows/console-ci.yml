@@ -11,6 +11,9 @@ on:
       - 'apps/console/**'
       - '.github/workflows/console-ci.yml'
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: typecheck + build + lint
@@ -49,11 +52,114 @@ jobs:
         # Currently eslint + stylelint are advisory; the flag keeps CI
         # green even if lint has warnings so we can land the CI gate
         # without having to clean every lint message first. Graduates
-        # to a hard gate once we've burned down warnings — follow-up.
+        # to a hard gate once we've burned down warnings, follow-up.
         run: npm run lint || true
 
-  # Playwright e2e deferred to follow-up: the tests depend on a .lag/
-  # atoms directory populated with fixture JSON. Running e2e in CI
-  # requires committing a stable test fixture and pointing
-  # LAG_CONSOLE_LAG_DIR at it. Tracked separately so this workflow
-  # can land and start providing typecheck+build signal immediately.
+  e2e-stubbed:
+    name: playwright e2e (stubbed-only chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/console
+    steps:
+      - name: Checkout
+        # Pinned to actions/checkout@v4.2.2 SHA (latest v4 patch on
+        # 2026-05-30) to satisfy zizmor unpinned-uses + persist-
+        # credentials: false to drop the post-checkout
+        # x-access-token URL from .git/config.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node 22
+        # Pinned to actions/setup-node@v4.4.0 SHA (latest v4 patch on
+        # 2026-05-30).
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: apps/console/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        # Only the chromium browser is needed; --with-deps installs the
+        # system libraries Playwright requires on ubuntu-latest. Skipping
+        # firefox + webkit halves the install time.
+        run: npx playwright install --with-deps chromium
+
+      - name: Seed empty CI LAG dir
+        # The server handles a missing atoms dir gracefully (logs and
+        # returns empty results), but stubbed specs still need the
+        # backend to boot. Create an empty .lag/atoms so the directory
+        # exists before primeAtomIndex runs. The CI-managed location is
+        # outside the repo so the existing path-filter for apps/console
+        # does not trigger on it.
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/lag-ci/atoms"
+          mkdir -p "$RUNNER_TEMP/lag-ci/principals"
+          echo "LAG_CONSOLE_LAG_DIR=$RUNNER_TEMP/lag-ci" >> "$GITHUB_ENV"
+
+      - name: Run stubbed Playwright specs (chromium only)
+        # First incremental ship per docs/audit/2026-05-30-console-e2e-audit.md
+        # recommendation 3. Runs the 13 specs that drive ALL backend
+        # calls through page.route stubs (or stub the navigation entry
+        # via `page.route('**/api/**', ...)` before the goto), so they
+        # pass deterministically against an empty atom store. Other 47
+        # specs depend on real atom/principal data and are deferred to
+        # a follow-up that commits a canonical fixture set.
+        #
+        # Specs intentionally excluded from this first cut despite using
+        # page.route:
+        #   - hover-card-loading.spec.ts: requires canon-card visibility
+        #     on /canon which expects real L3 atoms on disk.
+        #   - error-states.spec.ts: navigates to /principals/cto-actor
+        #     and waits on the principal-card before triggering the
+        #     stubbed error; that hop needs a real principals file.
+        #   - inline-error-sub-blocks.spec.ts: same /principals
+        #     dependency for the statsQuery sub-block test.
+        #
+        # CI sets process.env.CI which makes playwright.config.ts pick
+        # retries=2 + 'github' reporter automatically.
+        env:
+          CI: 'true'
+        run: |
+          npx playwright test \
+            --project=chromium \
+            conversation-thread.spec.ts \
+            pipeline-resume.spec.ts \
+            pipeline-observability.spec.ts \
+            pipeline-abandon.spec.ts \
+            live-ops-status-badge.spec.ts \
+            control-panel.spec.ts \
+            resume-audit.spec.ts \
+            file-intent.spec.ts \
+            system-health.spec.ts \
+            pipeline-deliberation-thread.spec.ts \
+            pipeline-error-state.spec.ts \
+            deliberation-surface.spec.ts \
+            audit-chain.spec.ts
+
+      - name: Upload Playwright report on failure
+        # The HTML report makes failure triage one click instead of a
+        # log dig. Uploaded only on failure so green runs stay light.
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report-${{ github.run_id }}
+          path: apps/console/playwright-report/
+          retention-days: 14
+
+      - name: Upload Playwright traces on failure
+        # `trace: 'on-first-retry'` (playwright.config.ts) writes a
+        # trace.zip per retried-then-failed test. Surface those too so
+        # an operator can replay the run frame-by-frame.
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-traces-${{ github.run_id }}
+          path: apps/console/test-results/
+          retention-days: 14
