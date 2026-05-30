@@ -324,8 +324,19 @@ function renderThread(events: ReadonlyArray<ConversationEventType>) {
       }
     }
 
+    /*
+     * Key uniqueness: tool-call events are projected as N events from
+     * a single agent-turn atom, all sharing the same `atom_id` to keep
+     * the truncation "Show more" deep-link bound to the real source
+     * atom (per the wire shape's atom_id contract). The renderer
+     * disambiguates with `tool_call_index` so React's reconciler has a
+     * stable, unique key per row.
+     */
+    const rowKey = ev.kind === 'tool-call'
+      ? `${ev.atom_id}:tool-${ev.tool_call_index}`
+      : ev.atom_id;
     out.push(
-      <Fragment key={ev.atom_id}>
+      <Fragment key={rowKey}>
         {divider}
         <ConversationEvent event={ev} isLast={isLast} index={i} />
       </Fragment>,

@@ -157,6 +157,17 @@ export interface ConversationToolCallEvent extends ConversationEventBase {
   readonly parent_turn_index: number;
   readonly session_atom_id: string;
   readonly tool_name: string;
+  /**
+   * Zero-based index of this tool call WITHIN the agent-turn's
+   * `tool_calls` array. Used by the renderer to key per-row uniqueness
+   * because a single agent-turn atom fans out into N tool-call events
+   * that all share the same backing `atom_id`. Per CR feedback on
+   * PR #483: keeping `atom_id` bound to the real atom preserves the
+   * truncation contract (the UI can deep-link to the source atom to
+   * see the full unbounded body), while `tool_call_index` gives the
+   * renderer a stable per-row key.
+   */
+  readonly tool_call_index: number;
   /** JSON-stringified args; '' when the substrate did not record any. */
   readonly args: string;
   /** True when the substrate args exceeded the inline cap; the args field is truncated. */
@@ -262,6 +273,32 @@ export type ConversationEvent =
  * missing branch at compile time.
  */
 export type ConversationEventKind = ConversationEvent['kind'];
+
+/**
+ * Optional injectable configuration for the assembler. Decouples the
+ * projection from the canonical 5-stage pipeline composition so a
+ * deployment with a different pipeline shape (extra stages, renamed
+ * stages, alternate dispatch observation kinds) does not have to patch
+ * the assembler module. Per CR feedback on PR #483: "Hardcoded stage/
+ * dispatch kinds couple this wire projection to one org's pipeline
+ * shape." Both fields default to the canonical sets that match canon
+ * `dev-deep-planning-pipeline` and the substrate's
+ * `code-author-invoked` observation contract; org-ceiling deployments
+ * can pass an alternative set without touching the assembler source.
+ */
+export interface ConversationAssembleOptions {
+  /**
+   * Atom types that resolve to `stage-output` events. Defaults to
+   * the 5-stage substrate-deep composition: brainstorm-output,
+   * spec-output, plan-output, review-report, dispatch-record.
+   */
+  readonly stageOutputTypes?: ReadonlySet<string>;
+  /**
+   * `metadata.kind` values on observation atoms that resolve to
+   * `dispatch-result` events. Defaults to ['code-author-invoked'].
+   */
+  readonly dispatchObservationKinds?: ReadonlySet<string>;
+}
 
 /**
  * Result envelope for POST /api/pipelines.conversation. Carries the
