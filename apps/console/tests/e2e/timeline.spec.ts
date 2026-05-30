@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 /**
  * Timeline view smoke spec.
@@ -13,28 +13,29 @@ import { test, expect } from '@playwright/test';
  *   - /timeline loads and exits the loading state
  *   - at least one principal row renders (the substrate always has at
  *     least the operator principal)
- *   - the sidebar shows the timeline nav as active
  *   - mobile viewport renders without horizontal scroll
  */
 
+async function loadTimelineView(page: Page): Promise<void> {
+  await page.goto('/timeline');
+  // The view emits a `timeline-loading` testid while data fetches.
+  // After load, the row container holds at least one principal row.
+  await expect.poll(
+    () => page.locator('[data-testid="timeline-row"]').count(),
+    { timeout: 15_000, intervals: [200, 500] },
+  ).toBeGreaterThanOrEqual(1);
+}
+
 test.describe('timeline view', () => {
   test('loads and renders at least one principal row', async ({ page }) => {
-    await page.goto('/timeline');
-
-    // The view emits a `timeline-loading` testid while data fetches.
-    // After load, the row container holds at least one principal row.
-    await expect.poll(
-      () => page.locator('[data-testid="timeline-row"]').count(),
-      { timeout: 15_000, intervals: [200, 500] },
-    ).toBeGreaterThanOrEqual(1);
+    await loadTimelineView(page);
+    // Sanity assertion after the helper's poll converged.
+    const rows = await page.locator('[data-testid="timeline-row"]').count();
+    expect(rows).toBeGreaterThanOrEqual(1);
   });
 
   test('no horizontal scroll at the running viewport', async ({ page, viewport }) => {
-    await page.goto('/timeline');
-    await expect.poll(
-      () => page.locator('[data-testid="timeline-row"]').count(),
-      { timeout: 15_000 },
-    ).toBeGreaterThanOrEqual(1);
+    await loadTimelineView(page);
 
     /*
      * The timeline view itself is a wide horizontal canvas (atoms
@@ -42,6 +43,13 @@ test.describe('timeline view', () => {
      * INSIDE the grid is expected. What's NOT expected is the page
      * body overflowing the viewport. We assert the document-level
      * scrollWidth stays bounded to clientWidth.
+     *
+     * The +1 tolerance absorbs a single sub-pixel rounding step that
+     * browser layout engines emit when the viewport width is an odd
+     * value (e.g. 393 on iPhone 13). A legitimate 1px overflow would
+     * still fail the parent app's design tokens (rem-multiple values
+     * never produce exactly 1px overflow); the tolerance only relaxes
+     * the pure pixel-rounding edge.
      */
     const docOverflow = await page.evaluate(() => ({
       clientWidth: document.documentElement.clientWidth,
