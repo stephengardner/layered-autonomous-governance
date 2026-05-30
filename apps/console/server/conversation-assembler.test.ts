@@ -451,6 +451,49 @@ describe('assembleConversationForPipeline', () => {
       }
     });
 
+    /*
+     * CR feedback on PR #483 (Major / Quick win): the tool-call
+     * atom_id was being synthesized as `${atom.id}:tool-${callIndex}`,
+     * which broke the truncation "Show more" contract because the
+     * renderer used atom_id to deep-link to the source atom.
+     * atom_id MUST equal the real backing atom id; per-row uniqueness
+     * is carried on the separate `tool_call_index` field.
+     */
+    it('keeps tool-call atom_id bound to the real source atom and adds tool_call_index for per-row uniqueness', () => {
+      const sid = 'agent-session-atom-id-binding';
+      const TURN_ID = 'turn-multi-tool';
+      const atoms = [
+        pipeline(),
+        agentSession({ id: sid, created_at: '2026-05-28T10:08:00.000Z' }),
+        agentTurn({
+          id: TURN_ID,
+          created_at: '2026-05-28T10:09:00.000Z',
+          session_atom_id: sid,
+          turn_index: 0,
+          llm_input: 'do',
+          llm_output: 'ok',
+          tool_calls: [
+            { name: 'Read', args: { path: '/foo' }, result: 'a' },
+            { name: 'Edit', args: { path: '/foo' }, result: 'b' },
+            { name: 'Write', args: { path: '/foo' }, result: 'c' },
+          ],
+        }),
+      ];
+      const result = assembleConversationForPipeline(atoms, PIPELINE_ID, NOW);
+      const toolCalls = result!.events.filter((e) => e.kind === 'tool-call');
+      expect(toolCalls).toHaveLength(3);
+      for (const ev of toolCalls) {
+        expect(ev.atom_id).toBe(TURN_ID);
+      }
+      if (toolCalls[0].kind === 'tool-call'
+          && toolCalls[1].kind === 'tool-call'
+          && toolCalls[2].kind === 'tool-call') {
+        expect(toolCalls[0].tool_call_index).toBe(0);
+        expect(toolCalls[1].tool_call_index).toBe(1);
+        expect(toolCalls[2].tool_call_index).toBe(2);
+      }
+    });
+
     it('emits cross-stage-reprompt events', () => {
       const atoms = [
         pipeline(),
@@ -756,6 +799,104 @@ describe('assembleConversationForPipeline', () => {
         expect(lastResponse.turn_index).toBeGreaterThan(MAX_CONVERSATION_EVENTS / 2);
       }
     });
+  });
+});
+
+/*
+ * CR feedback on PR #483 (Nitpick / body-scoped):
+ * STAGE_OUTPUT_TYPES and DISPATCH_OBSERVATION_KINDS bake the canonical
+ * 5-stage composition into the assembler. A deployment with a
+ * different pipeline shape silently produces incomplete threads.
+ * These tests pin the contract that the recognized sets are injectable
+ * via `ConversationAssembleOptions` so org-ceiling deployments do not
+ * patch the module.
+ */
+describe('injectable options', () => {
+  it('uses caller-supplied stageOutputTypes instead of the canonical defaults', () => {
+    const atoms = [
+      pipeline(),
+      // A custom stage-output atom type that the canonical default set
+      // does NOT contain. Without the override, this row would be
+      // silently dropped from the conversation.
+      atom({
+        id: 'out-custom-1',
+        type: 'legal-review-output',
+        created_at: '2026-05-28T10:10:00.000Z',
+        content: '# Legal review\nclear',
+        metadata: {
+          pipeline_id: PIPELINE_ID,
+          stage_name: 'legal-review-stage',
+        },
+        provenance: { derived_from: [PIPELINE_ID] },
+      }),
+    ];
+    // Without options: the custom atom type is unknown, no event minted.
+    const without = assembleConversationForPipeline(atoms, PIPELINE_ID, NOW);
+    expect(without!.events.filter((e) => e.kind === 'stage-output')).toHaveLength(0);
+    // With options: the projection recognizes the custom type.
+    const with_ = assembleConversationForPipeline(atoms, PIPELINE_ID, NOW, {
+      stageOutputTypes: new Set(['legal-review-output']),
+    });
+    const outs = with_!.events.filter((e) => e.kind === 'stage-output');
+    expect(outs).toHaveLength(1);
+    expect(outs[0]).toMatchObject({
+      kind: 'stage-output',
+      stage: 'legal-review-stage',
+      output_type: 'legal-review-output',
+    });
+  });
+
+  it('uses caller-supplied dispatchObservationKinds instead of the canonical defaults', () => {
+    const atoms = [
+      pipeline(),
+      // A custom observation kind not in the canonical default set.
+      atom({
+        id: 'obs-custom-1',
+        type: 'observation',
+        principal_id: 'custom-dispatcher',
+        created_at: '2026-05-28T10:40:00.000Z',
+        content: 'custom-dispatcher invoked',
+        metadata: {
+          kind: 'custom-author-invoked',
+          pipeline_id: PIPELINE_ID,
+          executor_result: { kind: 'ok', pr_url: 'https://example.com/pr/1' },
+        },
+        provenance: { derived_from: [PIPELINE_ID] },
+      }),
+    ];
+    // Without options: the custom kind is unknown, no event minted.
+    const without = assembleConversationForPipeline(atoms, PIPELINE_ID, NOW);
+    expect(without!.events.filter((e) => e.kind === 'dispatch-result')).toHaveLength(0);
+    // With options: the projection accepts the custom kind.
+    const with_ = assembleConversationForPipeline(atoms, PIPELINE_ID, NOW, {
+      dispatchObservationKinds: new Set(['custom-author-invoked']),
+    });
+    const dispatches = with_!.events.filter((e) => e.kind === 'dispatch-result');
+    expect(dispatches).toHaveLength(1);
+  });
+
+  it('plan-scope assembler forwards options to the pipeline-scope path', () => {
+    const atoms = [
+      intent(),
+      pipeline(),
+      planAtom(),
+      atom({
+        id: 'out-custom-plan',
+        type: 'legal-review-output',
+        created_at: '2026-05-28T10:50:00.000Z',
+        content: '# Legal review',
+        metadata: {
+          pipeline_id: PIPELINE_ID,
+          stage_name: 'legal-review-stage',
+        },
+        provenance: { derived_from: [PIPELINE_ID] },
+      }),
+    ];
+    const result = assembleConversationForPlan(atoms, PLAN_ID, NOW, {
+      stageOutputTypes: new Set(['legal-review-output']),
+    });
+    const outs = result!.events.filter((e) => e.kind === 'stage-output');
+    expect(outs).toHaveLength(1);
   });
 });
 

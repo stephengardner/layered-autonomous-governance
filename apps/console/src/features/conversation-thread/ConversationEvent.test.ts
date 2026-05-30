@@ -193,6 +193,7 @@ function mkEvent(kind: ConversationEventKind): ConversationEvent {
       return {
         kind: 'tool-call',
         atom_id: 'agent-turn-fixture-tool',
+        tool_call_index: 0,
         ts: '2026-05-28T00:00:04.000Z',
         principal_id: 'cto-actor',
         parent_turn_index: 0,

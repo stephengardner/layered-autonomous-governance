@@ -93,10 +93,12 @@ function toolCall(opts: {
   tool_name: string;
   args: string;
   result: string;
+  tool_call_index?: number;
 }) {
   return {
     kind: 'tool-call' as const,
     atom_id: `agent-turn-fixture-${opts.suffix}-tool`,
+    tool_call_index: opts.tool_call_index ?? 0,
     ts: opts.ts,
     principal_id: 'cto-actor',
     stage: opts.stage,
@@ -424,6 +426,101 @@ test.describe('conversation thread', () => {
       'https://github.com/fixture/repo/pull/999',
     );
     await expect(page.getByTestId('conversation-dispatch-result-outcome')).toContainText('pr-opened');
+  });
+
+  /*
+   * CR feedback on PR #483 (Major / Quick win): a single agent-turn
+   * fans out into N tool-call events that all share the same backing
+   * atom_id; per-row uniqueness is carried on `tool_call_index`. This
+   * spec verifies the renderer survives a multi-tool turn without
+   * React-key collisions or rendering only the first row.
+   */
+  test('multiple tool calls in one turn render distinct rows sharing one atom_id', async ({ page }) => {
+    await mockBaseRoutes(page);
+    const SHARED_TURN_ATOM = 'agent-turn-fixture-multitool';
+    const SESSION_ID = 'agent-session-multitool';
+    await page.route('**/api/pipelines.conversation', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: {
+            pipeline_id: FIXTURE_PIPELINE_ID,
+            intent_id: 'intent-fixture-conversation',
+            computed_at: '2026-05-21T12:00:00.000Z',
+            events: [
+              intentEvent('multi-tool turn fixture'),
+              stageStarted('brainstorm-stage', '2026-05-21T10:00:10.000Z', 'multitool'),
+              {
+                kind: 'tool-call' as const,
+                atom_id: SHARED_TURN_ATOM,
+                tool_call_index: 0,
+                ts: '2026-05-21T10:00:11.000Z',
+                principal_id: 'cto-actor',
+                stage: 'brainstorm-stage',
+                parent_turn_index: 0,
+                session_atom_id: SESSION_ID,
+                tool_name: 'Read',
+                args: '{"path":"/a"}',
+                args_truncated: false,
+                result: 'file a',
+                result_truncated: false,
+              },
+              {
+                kind: 'tool-call' as const,
+                atom_id: SHARED_TURN_ATOM,
+                tool_call_index: 1,
+                ts: '2026-05-21T10:00:12.000Z',
+                principal_id: 'cto-actor',
+                stage: 'brainstorm-stage',
+                parent_turn_index: 0,
+                session_atom_id: SESSION_ID,
+                tool_name: 'Edit',
+                args: '{"path":"/b"}',
+                args_truncated: false,
+                result: 'file b',
+                result_truncated: false,
+              },
+              {
+                kind: 'tool-call' as const,
+                atom_id: SHARED_TURN_ATOM,
+                tool_call_index: 2,
+                ts: '2026-05-21T10:00:13.000Z',
+                principal_id: 'cto-actor',
+                stage: 'brainstorm-stage',
+                parent_turn_index: 0,
+                session_atom_id: SESSION_ID,
+                tool_name: 'Write',
+                args: '{"path":"/c"}',
+                args_truncated: false,
+                result: 'file c',
+                result_truncated: false,
+              },
+            ],
+          },
+        }),
+      });
+    });
+    await page.goto(`/pipelines/${encodeURIComponent(FIXTURE_PIPELINE_ID)}/conversation`);
+    await expect(page.getByTestId('conversation-thread-view')).toBeVisible({ timeout: 10_000 });
+
+    // 5 rows: intent + stage-started + 3 tool-call events.
+    const rows = page.getByTestId('conversation-event');
+    await expect(rows).toHaveCount(5);
+
+    // Three tool-call rows render. The renderer keys per row by
+    // tool_call_index so atom_id collisions do not collapse the list.
+    const toolCalls = page.getByTestId('conversation-tool-call');
+    await expect(toolCalls).toHaveCount(3);
+
+    // All three tool-call rows share the same atom_id (the agent-turn
+    // atom they were projected from).
+    const toolCallEventRows = rows.filter({ has: page.getByTestId('conversation-tool-call') });
+    await expect(toolCallEventRows).toHaveCount(3);
+    for (let i = 0; i < 3; i++) {
+      await expect(toolCallEventRows.nth(i)).toHaveAttribute('data-atom-id', SHARED_TURN_ATOM);
+    }
   });
 
   test('expandable body collapses long agent-response and toggles open', async ({ page }) => {
