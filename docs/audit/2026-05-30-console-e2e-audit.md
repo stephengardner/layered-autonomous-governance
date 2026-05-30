@@ -138,7 +138,7 @@ Each route has at least one passing e2e spec (verified by spec name list in test
 
 The Playwright e2e suite is NOT in CI per `console-ci.yml`:
 
-```
+```yaml
 # Playwright e2e deferred to follow-up: the tests depend on a .lag/
 # atoms directory populated with fixture JSON. Running e2e in CI
 # requires committing a stable test fixture and pointing
