@@ -11,6 +11,9 @@ on:
       - 'apps/console/**'
       - '.github/workflows/console-ci.yml'
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: typecheck + build + lint
