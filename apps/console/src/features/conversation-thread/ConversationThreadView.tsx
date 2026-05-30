@@ -22,6 +22,7 @@ import {
 } from '@/services/conversation.service';
 import { ConversationEvent } from './ConversationEvent';
 import { HandoffDivider } from './HandoffDivider';
+import { useConversationStream } from './useConversationStream';
 import styles from './ConversationThreadView.module.css';
 
 /**
@@ -107,6 +108,28 @@ export function ConversationThreadView(props: ConversationThreadViewProps) {
   const focusId = 'pipeline_id' in props ? props.pipeline_id : props.plan_id;
   const focusLabel = 'pipeline_id' in props ? 'Pipeline conversation' : 'Plan conversation';
   const backRoute = 'pipeline_id' in props ? 'pipelines' : 'deliberation';
+
+  /*
+   * Live updates via the substrate's pipeline SSE stream. For pipeline
+   * scope, the id is the prop directly. For plan scope, the linked
+   * pipeline_id resolves from the conversation envelope's
+   * `pipeline_id` field (null until the first successful fetch, or
+   * when the plan is not yet tied to a pipeline). The hook safely
+   * no-ops on null; the 10s polling fallback in useQuery (above) is
+   * the safety net until SSE engages.
+   *
+   * Subscribing inline (not behind a feature flag): the pipeline
+   * detail surface already opens the same EventSource via
+   * usePipelineStream; the transport seam de-dupes connections per
+   * pipeline-id so this hook does not double-open. On a long-running
+   * conversation, the operator sees new agent-turns / handoffs land
+   * within a frame instead of waiting 10s for the next poll.
+   */
+  const livePipelineId = 'pipeline_id' in props
+    ? props.pipeline_id
+    : (query.data && 'pipeline_id' in query.data ? query.data.pipeline_id : null);
+  const livePlanId = 'plan_id' in props ? props.plan_id : null;
+  useConversationStream(livePipelineId, livePlanId);
 
   return (
     <section
