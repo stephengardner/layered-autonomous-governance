@@ -207,7 +207,19 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  min-height: var(--size-touch-target-min);
+  /*
+   * Pad the floor by --space-px (2px) on top of the canon 44px tap-target
+   * minimum. Same cushion pattern PR #491 applied to FileIntentPanel
+   * `.select` (the canon dev-web-mobile-first-required floor is 44px,
+   * but Chromium mobile emulation sub-pixel-rounds occasionally on the
+   * action-buttons under test contention down to 43.99...px). The
+   * cushion absorbs the rounding without violating the canon floor;
+   * users see a 46px-tall control on the affected sub-pixel devices
+   * and the same height elsewhere, both at-or-above the 44px floor.
+   * Tokenized per apps/console CLAUDE.md rule "No hardcoded px or hex
+   * outside src/tokens/tokens.css".
+   */
+  min-height: calc(var(--size-touch-target-min) + var(--space-px));
   padding: var(--space-2) var(--space-4);
   background: var(--surface-raised);
   color: var(--text-primary);
