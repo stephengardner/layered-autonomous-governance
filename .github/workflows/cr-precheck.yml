@@ -32,8 +32,12 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # Pinned + persist-credentials:false per the workflow-hardening
+        # sweep that pairs with PR #493 (verify job) and PR #492
+        # (e2e-stubbed job).
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           # Full history so the helper's `git diff origin/<base>...HEAD`
           # can resolve both endpoints. The default shallow checkout
           # would fail the merge-base computation on any non-trivial
@@ -41,7 +45,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           cache: 'npm'
